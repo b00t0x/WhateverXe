@@ -283,10 +283,19 @@ int main() {
     assert(delayedProof.status==Status::Complete && delayedProof.frameAfter!=delayedProof.frameBefore && delayedProof.waitUs==3000);
     DelayedCursor stuckCursor(p,cursor);stuckCursor.stuck=true;
     const auto stuckProof=latch(stuckCursor,stuckCursor.snapshot(p,&cursor));
-    assert(stuckProof.status==Status::Readback && stuckProof.waitUs==52000 && stuckProof.lastReg==0x700AC);
+    assert(stuckProof.status==Status::Unavailable && stuckProof.check==LatchCheck::AwaitingFlip && stuckProof.waitUs==52000 && stuckProof.lastReg==0x700AC);
     LatchIO oldLive(p);oldLive.surface=finalFlip.primary;oldLive.regs[0x7019C]=oldLive.surface;
     oldLive.oldSurface=true;
-    assert(latch(oldLive,oldLive.snapshot(p)).status==Status::Readback);
+    const auto pendingFlip=latch(oldLive,oldLive.snapshot(p));
+    assert(pendingFlip.status==Status::Unavailable && pendingFlip.check==LatchCheck::AwaitingFlip && oldLive.writes.empty());
+    // Repeated attempts cannot manufacture completion or retire anything.
+    oldLive.elapsed=0;
+    assert(latch(oldLive,oldLive.snapshot(p)).status==Status::Unavailable);
+    oldLive.elapsed=0;oldLive.oldSurface=false;
+    assert(latch(oldLive,oldLive.snapshot(p)).status==Status::Complete);
+    // An invalid read remains a fault, even at the live-register boundary.
+    LatchIO invalidLive(p);invalidLive.oldSurface=true;invalidLive.regs[0x701AC]=UINT32_MAX;
+    assert(latch(invalidLive,invalidLive.snapshot(p)).status==Status::Readback);
     auto clockPlan=committed.snapshot(p);
     assert(clockFits(clockPlan,1305600000) && clockFits(clockPlan,297000000));
     assert(!clockFits(clockPlan,296999999));
@@ -301,7 +310,7 @@ int main() {
     const auto timeoutProof=latch(sameFrame,sameFrame.snapshot(p));
     assert(timeoutProof.status==Status::CommitTimeout && timeoutProof.waitUs==52000);
     LatchIO staleSurface(p);staleSurface.oldSurface=true;
-    assert(latch(staleSurface,staleSurface.snapshot(p)).status==Status::Readback);
+    assert(latch(staleSurface,staleSurface.snapshot(p)).status==Status::Unavailable);
     LatchIO poweredOff(p);poweredOff.losePower=true;
     assert(latch(poweredOff,poweredOff.snapshot(p)).status==Status::Power);
     LatchIO invalidWM(p);invalidWM.regs[0x70258]^=1;

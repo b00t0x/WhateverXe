@@ -289,7 +289,7 @@ inline bool clockFits(const Snapshot &s,uint64_t nativeHz) {
         (!s.cursorActive || (s.cursor && s.cursor->status==Status::Complete &&
             s.cursor->pixelHz && s.cursor->pixelHz<=nativeHz/2));
 }
-enum class LatchCheck : uint32_t {None,Controls,OtherPlane,DSB,Clock,Registers,Live,Frame,AwaitingScanout};
+enum class LatchCheck : uint32_t {None,Controls,OtherPlane,DSB,Clock,Registers,Live,Frame,AwaitingScanout,AwaitingFlip};
 struct Latch {
     Status status {Status::Unavailable};
     uint32_t frameBefore {},frameAfter {},waitUs {},budgetUs {},lastReg {},expected {},observed {};
@@ -390,12 +390,20 @@ template<class IO> Latch latch(IO &io,const Snapshot &s) {
             // readback catches up (observed for a native direct cursor swap).
             // Keep every programmed/control/clock check on each poll; qualify
             // retirement only after both actual live surfaces match. A stable
-            // mismatch at the existing deadline remains a Readback failure.
+            // mismatch at the existing deadline leaves retirement pending.
+            // A later native flush may prove it; do not fault the owner or
+            // infer success from the programmed surface. WM/DDB resources
+            // and clock qualification remain held until a complete proof.
             r.check=LatchCheck::Live;
             const bool live=compare(io,r,0x701AC+bank,s.primarySurface) &&
                 (!s.cursorActive || compare(io,r,0x700AC+bank,s.cursorSurface));
             if(live) {r.status=Status::Complete;return r;}
-            if(r.waitUs>=r.budgetUs)return r;
+            if(r.waitUs>=r.budgetUs) {
+                if(r.status==Status::Readback && r.observed!=UINT32_MAX) {
+                    r.status=Status::Unavailable;r.check=LatchCheck::AwaitingFlip;
+                }
+                return r;
+            }
         }
         if(r.waitUs>=r.budgetUs) {r.status=Status::CommitTimeout;return r;}
         io.delayUs(1000);
