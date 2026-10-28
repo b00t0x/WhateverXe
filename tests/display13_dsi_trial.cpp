@@ -6,7 +6,7 @@
 #include <cstdio>
 struct IO {
  std::map<unsigned,unsigned> regs;
- std::vector<unsigned> writes;
+ std::vector<std::pair<unsigned,unsigned>> writes;
  XELPMemory::Layout memory=XELPMemory::decode(0x3c1,0x7a800000,0);
  unsigned time=0,fail=0;bool badPTE=false;
  IO():regs{
@@ -218,7 +218,7 @@ struct IO {
  bool readable(unsigned) {return true;}
  unsigned read(unsigned r) {if(r==0x70040)return time/1000;return regs[r];}
  void write(unsigned r,unsigned v) {
-  writes.push_back(r);
+  writes.push_back({r,v});
   if(r==0x7b008)assert((regs[0x46010]&0xcc000000)==0xcc000000);
   if(r==0x60400 && (v&0x80000000))assert(!(regs[0x7b008]&0xc0000000));
   if(r==0x138124) {regs[r]=0;regs[0x138128]=(v&255)==0x23?35:0x09090909;return;}
@@ -242,6 +242,16 @@ int main() {
  auto after=AlderLakeN::readDisplay(io,true);AlderLakeN::LinearPlan plan;
  assert(AlderLakeN::linearPlan(after,plan,1)==AlderLakeN::LinearStatus::Ready);
  assert(plan.geometry.width==1920 && plan.geometry.height==1080 && plan.geometry.pitch==7680);
+ // Warm firmware can leave the idle B mux ungated. Its first mutation must
+ // close only B before the free PLL is powered; preserve the active DSI mux.
+ IO ungated;ungated.regs[0x164280]&=~(1U<<11);
+ auto ub=AlderLakeN::readDisplay(ungated,true);
+ auto ur=transfer(ungated,true,ub,ungated.memory,2);
+ assert(ur.status==Status::Complete);
+ bool gated=false;for(const auto &w:ungated.writes) {
+  if(w.first==0x164280){assert(w.second==0x01e07801);gated=true;break;}
+  assert(w.first!=0x46010);
+ }assert(gated);
  for(unsigned mode=0;mode<5;++mode) {
   IO x;if(mode==1)x.regs[0x46010]=0xcc000000;
   if(mode==2)x.badPTE=true;

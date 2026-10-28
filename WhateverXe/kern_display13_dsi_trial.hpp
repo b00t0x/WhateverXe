@@ -51,7 +51,7 @@ template<class IO> Result transfer(IO &io,bool requested,const AlderLakeN::Displ
     const auto cdclk=Display13Clock::read(io);
     if(cdclk.status!=Display13Clock::Status::Complete || cdclk.refKHz!=38400 || cdclk.cdclkKHz<148500)return r;
     const auto mux=read(0x164280);r.sourcePLL=mux&3;
-    if(r.sourcePLL>=2 || (mux&(1U<<10)) || !(mux&(1U<<11)))return r;
+    if(r.sourcePLL>=2 || (mux&(1U<<10)))return r;
     r.pll=r.sourcePLL^1;
     XELPComboClock::PLL target,source;
     if(!XELPComboClock::PLL::resolve(r.pll,target) || !XELPComboClock::PLL::resolve(r.sourcePLL,source) ||
@@ -90,7 +90,12 @@ template<class IO> Result transfer(IO &io,bool requested,const AlderLakeN::Displ
     };
     // 148.5 MHz * 5 * 12 = 8.91 GHz. P=2,Q=3,K=2. 38.4MHz
     // reference uses 19.2MHz arithmetic and WA_22010492432 halves fraction.
-    r.stage=1;write(0x45454,ddiPower|8);
+    // Firmware may leave B's mux ungated even though its buffer is idle and
+    // no ordinary transcoder is active. Gate that qualified unused consumer
+    // before powering/programming the free PLL; A's DSI clock stays intact.
+    r.stage=1;write(0x164280,mux|(1U<<11));
+    if(read(0x164280)!=(mux|(1U<<11))){r.status=Status::Readback;return r;}
+    write(0x45454,ddiPower|8);
     if(!wait(0x45454,12,12,1000))return r;
     write(target.enable,0x08000000);
     if(!wait(target.enable,0x0C000000,0x0C000000,1000))return r;
