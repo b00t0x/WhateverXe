@@ -15,6 +15,7 @@
 #include "kern_xelp_memory_layout.hpp"
 #include "kern_xelp_forcewake_irq.hpp"
 #include "kern_display13_boot.hpp"
+#include "kern_display13_dsi_trial.hpp"
 #include "kern_display13_firmware.hpp"
 #include "kern_display13_tc_aux.hpp"
 #include "kern_display13_tc_mode.hpp"
@@ -3934,6 +3935,29 @@ void XE::adlnBootstrap(IOPCIDevice *pci) {
     pci->setProperty("N97StolenReservation",reservation,sizeof(reservation));
 	AlderLakeN::readDisplay(io,barReady,result);
 	pci->setProperty("N97Display13Boot", &result, sizeof(result));
+    // Observe the separate DSI transcoder without treating it as a normal
+    // DDI GOP. Cached words only; no command FIFO or clear-on-read registers.
+    if(barReady && !result.activePipes && (result.poweredPipes&1)) {
+        static const uint32_t regs[] {0x7B008,0x7B808,0x6B000,0x6B004,0x6B008,0x6B00C,0x6B010,0x6B014,
+            0x6B030,0x6B034,0x6B090,0x6B094,0x6B0D8,0x6B400,0x6B404,0x6B894,0x6BC00,
+            0x46010,0x46014,0x164280,0x164284,0x164288,0x16428C,0x164290,
+            0xC7200,0xC7204,0xC8250,0xC8254,0xC8258,0x48400,0x51004,0x46070,0x46008,
+            0x44300,0x45008,0x4500C,0x45500,0x45504,0x7017C,0x7027C,0x7037C,
+            0x162028,0x6C028,0x6C100,0x6C104,0x6C10C,0x6C120,0x6C124,0x6C128,0x64C04,
+            0x6C804,0x6C014,0x6C894,0x6C888,0x6C890,0x6C89C,0x6C898};
+        auto words=static_cast<uint32_t *>(IOMalloc(sizeof(regs)*2));
+        if(words) {
+            for(unsigned i=0;i<arrsize(regs);++i){words[2*i]=regs[i];words[2*i+1]=io.read(regs[i]);}
+            pci->setProperty("WEXDisplay13DSIBoot",words,sizeof(regs)*2);
+            IOFree(words,sizeof(regs)*2);
+        }
+    }
+    if(checkKernelArgument("-wex-dsi-hdmi-test")) {
+        auto handoff=Display13DSITrial::transfer(io,barReady && xelpMemoryMatches(pci),result,xelpMemory,board.hdmi);
+        pci->setProperty("WEXDisplay13DSIHandoff",&handoff,sizeof(handoff));
+        AlderLakeN::readDisplay(io,barReady,result);
+        pci->setProperty("WEXDisplay13DSIAfter",&result,sizeof(result));
+    }
     // Bounded pre-native evidence for selected fixed TC ports, including ports
     // which firmware owns without routing a transcoder to them.
     uint32_t bootTC[1+4*8] {1},bootPower=0;

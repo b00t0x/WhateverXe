@@ -138,5 +138,6 @@
   "-wex-display-trace": [],
   "-wex-adlp-readout": [],
   "-wex-adlp-load-only": [],
-  "-wex-display13-offline": []
+  "-wex-display13-offline": [],
+  "-wex-dsi-hdmi-test": []
 }

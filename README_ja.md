@@ -102,6 +102,8 @@ ADL-Hでは、固定HDMIとDP→HDMI変換器を使い、3画面接続での起�
 
 ADL-P/RPL-Pは物理IDと検出したGPU資源を自動で使用します。device-ID上書きや機種別AGDP kextは不要です。`-wex-noaccel`でFramebufferのみの動作を維持します。
 
+試験用の `-wex-dsi-hdmi-test` は、限定したDisplay13のDSI-A GOPからCombo-Bへ1080p60で移す開発用経路です。内蔵表示を停止します。既定では無効で、DSI対応や汎用のcold起動を提供するものではありません。
+
 ### 内蔵パネルの輝度
 
 内蔵ディスプレイの輝度調整には、OpenCoreへ`SSDT-PNLF`を追加してください。

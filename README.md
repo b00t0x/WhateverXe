@@ -141,6 +141,8 @@ ADL-P/RPL-P uses its physical ID and detected GPU resources automatically.
 No device-ID override or machine-specific AGDP kext is required.
 `-wex-noaccel` retains framebuffer-only operation.
 
+The experimental `-wex-dsi-hdmi-test` argument transfers a qualified Display13 DSI-A GOP to Combo B at 1080p60 for development. It stops the internal display. It is disabled by default and does not provide DSI support or general cold startup.
+
 ### Internal-panel brightness
 
 Add `SSDT-PNLF` to OpenCore to enable internal-display brightness control.
