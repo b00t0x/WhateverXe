@@ -348,9 +348,10 @@ template<class IO> Latch latch(IO &io,const Snapshot &s) {
         // Native enablePlane may return before any scanout is attached, while
         // programPipeScaler still flushes a zero SURF trigger via armUpdate.
         // A disabled primary with no intended surface is not a live latch to
-        // prove yet. Keep WM/DDB pending; never retire storage or certify the
+        // prove yet, even if the native cursor becomes active first. Keep
+        // WM/DDB pending; never retire storage or certify the
         // shared clock until a later real plane/surface update passes below.
-        const bool preparing=plane!=UINT32_MAX && !(plane&Enabled) && !s.primarySurface && !cursor && !s.cursorActive;
+        const bool preparing=plane!=UINT32_MAX && !(plane&Enabled) && !s.primarySurface;
         if(pipe==UINT32_MAX || plane==UINT32_MAX || cursor==UINT32_MAX || (pipe&0xC0000000)!=0xC0000000 ||
            (!preparing && (!(plane&Enabled) || !supportedRGBControl(plane) || (((plane>>10)&7)==4)!=s.primary->yTiled)) ||
            bool(cursor&0x27)!=s.cursorActive || (s.cursorActive && !cursorMatches(cursor,s.cursor->width))) {r.status=Status::Conflict;return r;}

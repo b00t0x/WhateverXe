@@ -385,6 +385,22 @@ int main() {
         LatchIO blankWithCursor(p);blankWithCursor.moveToPipe(pipe);blankWithCursor.surface=0;
         blankWithCursor.regs[0x70180+bank]=0;blankWithCursor.regs[0x70080+bank]=7;
         assert(latch(blankWithCursor,blankWithCursor.snapshot(p)).status==Status::Conflict);
+        // A qualified cursor may arrive before the first primary surface.
+        // It cannot certify retirement; the later primary still needs VBlank
+        // and live-surface evidence. An inconsistent cursor remains a fault.
+        LatchIO cursorFirst(p,&cursor);cursorFirst.moveToPipe(pipe);
+        cursorFirst.surface=0;cursorFirst.regs[0x70180+bank]=0;cursorFirst.regs[0x7019C+bank]=0;
+        const auto cursorPending=latch(cursorFirst,cursorFirst.snapshot(p,&cursor));
+        assert(cursorPending.status==Status::Unavailable && cursorPending.check==LatchCheck::AwaitingScanout &&
+            cursorFirst.writes.empty() && !cursorFirst.elapsed);
+        cursorFirst.regs[0x70080+bank]=0;
+        assert(latch(cursorFirst,cursorFirst.snapshot(p,&cursor)).status==Status::Conflict);
+        cursorFirst.regs[0x70080+bank]=0x22;
+        assert(latch(cursorFirst,cursorFirst.snapshot(p,&cursor)).status==Status::Conflict);
+        cursorFirst.regs[0x70080+bank]=7;
+        cursorFirst.regs[0x70180+bank]=0x84000000;
+        cursorFirst.regs[0x7019C+bank]=cursorFirst.surface=0x100000;
+        assert(latch(cursorFirst,cursorFirst.snapshot(p,&cursor)).status==Status::Complete && cursorFirst.elapsed==2000);
         LatchIO peerPlane(p);peerPlane.moveToPipe(pipe);peerPlane.regs[0x70280+0x1000*pipe]=Enabled;
         const auto peer=latch(peerPlane,peerPlane.snapshot(p));
         assert(peer.status==Status::Conflict && peer.check==LatchCheck::OtherPlane &&
