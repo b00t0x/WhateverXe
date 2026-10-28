@@ -13,7 +13,7 @@ struct IO {
     uint32_t rejectRegister {UINT32_MAX};
     IO() {
         r[Master]=r[GfxMaster]=0;r[DDIControl]=0x3300;r[0x64100]=r[0x64000]=0;
-        r[TCControl]=0;
+        r[TCControl]=r[NorthControl]=0;
         r[0xC4004]=~0U;r[0xC4008]=r[0xC400C]=0;
         for(unsigned p=0;p<3;++p) {
             r[0x70008+p*0x1000]=p ? 0 : 0xC0000000;
@@ -36,7 +36,7 @@ struct IO {
         writes.push_back(reg);check(reg);assert(r.count(reg));
         if(reg==rejectRegister)return;
         if(reg==Master || reg==GfxMaster) {r[reg]=(r[reg]&~Enable)|(rejectEnable ? 0 : value&Enable);return;}
-        if(reg==TCControl) {r[reg]=(value&~0x333333U)|((r[reg]&0x333333U)&~value);return;}
+        if(reg==TCControl || reg==NorthControl) {r[reg]=(value&~0x333333U)|((r[reg]&0x333333U)&~value);return;}
         if(reg==DDIControl) {r[reg]=(value&~0x3333U)|((r[reg]&0x3333U)&~value);return;}
         for(unsigned p=0;p<3;++p) {
             if(reg==PipeIIR(p)) {r[reg]&=~value;return;}
@@ -44,10 +44,24 @@ struct IO {
                 r[reg]=(value&~0xFU)|((r[reg]&0xFU)&~value);return;
             }
         }
-        if(reg==0xC4008)r[reg]&=~value;else r[reg]=value;
+        if(reg==0xC4008 || reg==HPDBank)r[reg]&=~value;else r[reg]=value;
     }
 };
 int main() {
+    // DP-alt and HDMI notifications use different native output words.
+    // A short pulse must not become a fake fixed-DP hotplug on the same DDI.
+    for(unsigned tc=0;tc<4;++tc)for(unsigned pulse:{1U,2U,3U}) {
+        IO io;State state;const auto alt=8U<<tc,north=1U<<(16+tc);
+        assert(enable(io,state,0,0,1,2|alt,alt)==Status::Complete);
+        assert((io.r[HPDBank+4]&north) && !(io.r[0xc400c]&(1U<<(24+tc))));
+        io.r[Master]=Enable|(1U<<21)|(1U<<23);
+        io.r[HPDBank]=north|(1U<<tc); // masked TBT status remains untouched
+        io.r[NorthControl]|=pulse<<(4*tc);io.r[DDIControl]|=0x20;io.r[0xc4008]=1U<<17;
+        const auto e=collect(io,state);
+        const auto expected=((pulse&1)?2U:0U)|((pulse&2)?1U:0U);
+        assert(e.status==Status::Complete && e.aux==(expected<<(2*tc)) && e.hotplug==4);
+        assert(io.r[HPDBank]==(1U<<tc) && !(io.r[NorthControl]&(3U<<(4*tc))));
+    }
     // Actual TC1-only firmware enable masks: north TC3/TBT3 and PCH DDI B.
     {IO io;State state;io.r[HPDBank+4]=0x40004;io.r[HPDBank-4]=0;
      io.r[0xC400C]=0x07020000;io.r[0xC4004]=0x38853f07;io.r[0xC4008]=0x20000;

@@ -174,7 +174,7 @@ private:
  static uint32_t wrapDisplay13TrainingPattern(void *path,uint32_t pattern);
  static uint32_t wrapDisplay13SignalLevels(void *port,uint32_t swing,uint32_t emphasis,void *overrideConfig);
 	mach_vm_address_t xelpProviderProbe {},xelpProviderConfigureProbe {};
- bool display13DPProbeReady {},display13TCProbeReady {},display13TCDPProbeReady {},display13FBDPHooksReady {};
+ bool display13DPAltProbeReady {},display13DPProbeReady {},display13TCProbeReady {},display13TCDPProbeReady {},display13FBDPHooksReady {};
  bool adlpDisplaySelected {};
  bool adlpRenderRequested {};
  Display13OutputWiring display13BoardWiring(IOService *);
@@ -242,6 +242,9 @@ private:
     mach_vm_address_t orgDisplay13FBEnable {},orgAlderLakeNConnectionAttr {},orgAlderLakeNPortDDC {},orgDisplay13FBDDC {};
     static uint32_t wrapDisplay13FBEnable(IOService *fb);
     bool processFramebufferAGDC(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    bool processDisplay13TrialAGDC(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    static uint32_t wrapDisplay13TrialCommit(void *,void *,void *);
+    mach_vm_address_t orgDisplay13TrialCommit {};
     mach_vm_address_t orgFramebufferUserClient {},orgFramebufferAGDCCallback {};
     static uint32_t wrapFramebufferUserClient(IOService *,void *,void *,uint32_t,void **);
     static uint32_t wrapFramebufferAGDCCallback(IOService *,uint32_t,unsigned long,uint32_t);

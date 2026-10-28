@@ -49,7 +49,7 @@ struct State {
     bool begun {},enabled {},faulted {};
     Status firstFailure {Status::Unavailable};
     uint32_t failureRegister {},failureBits {};
-    uint32_t excludedPCH {},ports {3};
+    uint32_t excludedPCH {},ports {3},typeC {};
     uint32_t active {},configured {},priorIER[3] {},priorIMR[3] {},priorPCHIER {},priorPCHIMR {};
     uint32_t priorTCEnable {},priorDDIEnable {},priorDSB[3][3] {},lastMaster {},raw[3] {},lastPCH {},lastDDI {},lastTC {},foreign {};
     uint64_t interrupts {},vblanks[3] {},flips[3] {},underruns[3] {},dsbErrors[3] {};
@@ -81,7 +81,20 @@ inline uint32_t nativePipe(uint32_t raw,unsigned pipe) {
     for(unsigned dsb=0;dsb<3;++dsb)if(raw&(1U<<(13+dsb)))result|=1U<<(14+3*dsb+pipe);
     return result;
 }
-inline uint32_t pchOwned(const State &s) {return ((s.ports&7)<<16)|((s.ports>>3)<<24);}
+inline uint32_t pchOwned(const State &s) {return ((s.ports&7)<<16)|(((s.ports&~s.typeC)>>3)<<24);}
+inline uint32_t northOwned(const State &s) {return (s.typeC>>3)<<16;}
+constexpr uint32_t NorthControl=0x44038;
+inline uint32_t northControl(const State &s,uint32_t value) {
+    uint32_t r=0;for(unsigned tc=0;tc<4;++tc)if(s.typeC&(8U<<tc))r|=value<<(4*tc);return r;
+}
+// Exact c004fc1a processDEInterrupt: DP-alt events occupy the second output
+// word, bits2*TC (long) / 2*TC+1 (short), not PCH legacy hotplug bits6+.
+inline uint32_t nativeDPAlt(uint32_t pending,uint32_t control) {
+    uint32_t r=0;for(unsigned tc=0;tc<4;++tc)if(pending&(1U<<(16+tc))) {
+        if(control&(2U<<(4*tc)))r|=1U<<(2*tc);
+        if(control&(1U<<(4*tc)))r|=2U<<(2*tc);
+    }return r;
+}
 // Linux GEN11_DE_HPD: TC1..6 at bits16..21, TBT1..6 at bits0..5.
 // Apply the same connector exclusion to both PCH and north HPD banks.
 // Reference: samranahmad09/WhateverXe-RaptorLakeP, 2195924, this header.
@@ -93,7 +106,7 @@ inline uint32_t ddiMask(const State &s,uint32_t value) {
     uint32_t m=0;for(unsigned p=0;p<3;++p)if(s.ports&(1U<<p))m|=value<<(4*p);return m;
 }
 inline uint32_t tcMask(const State &s,uint32_t value) {
-    uint32_t m=0;for(unsigned tc=0;tc<4;++tc)if(s.ports&(8U<<tc))m|=value<<(4*tc);return m;
+    uint32_t m=0;for(unsigned tc=0;tc<4;++tc)if((s.ports&~s.typeC)&(8U<<tc))m|=value<<(4*tc);return m;
 }
 inline uint32_t nativeHotplug(uint32_t sde,uint32_t ddi,uint32_t tcStatus=0) {
     uint32_t result=0;
@@ -124,12 +137,12 @@ constexpr uint32_t NativeGT=(3U)|(1U<<29); // Exact donor non-display callback d
 // pipe's resources. Keep the live boot backend's default at pipe A. Changing
 // the set requires the existing masked/quiesced transition, not an idempotent
 // enable that silently admits a newly active bank.
-template<class IO> Status enable(IO &io,State &s,uint32_t excludedPCH=0,uint32_t sharedGT=0,uint32_t expectedPipes=1,uint32_t ports=3) {
+template<class IO> Status enable(IO &io,State &s,uint32_t excludedPCH=0,uint32_t sharedGT=0,uint32_t expectedPipes=1,uint32_t ports=3,uint32_t typeC=0) {
     if(s.faulted)return Status::Faulted;
-    if(!ports || (ports&~0x7FU) || (s.begun && ports!=s.ports))return fail(io,s,Status::Topology);
-    s.ports=ports;
+    if(!ports || (ports&~0x7FU) || (typeC&~(ports&0x78)) || (s.begun && (ports!=s.ports || typeC!=s.typeC)))return fail(io,s,Status::Topology);
+    s.ports=ports;s.typeC=typeC;excludedPCH|=(typeC>>3)<<24;
     if((excludedPCH&pchOwned(s)) || (excludedPCH&~(PCHTypeC|PCHCombo)) || (sharedGT && sharedGT!=NativeGT) || !expectedPipes || (expectedPipes&~7U))return fail(io,s,Status::Topology);
-    if(!available(io) || ((ports&0x78) && !io.readable(TCControl)))return Status::Unavailable;
+    if(!available(io) || (typeC && !io.readable(NorthControl)) || ((ports&0x78) && !io.readable(TCControl)))return Status::Unavailable;
     // Native repeated enable is idempotent. Do not drop a pending flip/DSB
     // completion or undo hwSetInterruptForTransaction's VBL mask.
     if(s.enabled && excludedPCH!=s.excludedPCH)return fail(io,s,Status::Topology);
@@ -149,15 +162,13 @@ template<class IO> Status enable(IO &io,State &s,uint32_t excludedPCH=0,uint32_t
         configured|=1U<<p;
     }
     if(active!=expectedPipes)return fail(io,s,Status::Topology);
-    // This backend owns fixed legacy TC via PCH HPD. North TC/TBT
-    // interrupts describe DP-alt/TBT transports, even on the same physical
-    // connector. Mask those firmware enables for selected fixed ports too.
-    // Linux adlp_tc_phy_hpd_live_status separates these from PCH legacy HPD.
-    const uint32_t excludedHPD=hpdExcluded(excludedPCH|((ports&0x78)<<21));
+    // Fixed links use PCH HPD; USB-C DP-alt uses north TC HPD. TBT is not
+    // implemented. Preserve status for excluded transports while masking them.
+    const uint32_t excludedHPD=hpdExcluded(excludedPCH|((ports&0x78)<<21))&~northOwned(s);
     constexpr uint32_t otherBanks[] {0x44448,0x44468,HPDBank,0x44488};
     for(auto iir : otherBanks) {
         auto pending=io.read(iir+4)&~io.read(iir-4);
-        if(iir==HPDBank)pending&=~excludedHPD;
+        if(iir==HPDBank)pending&=~(excludedHPD|northOwned(s));
         if(pending)return fail(io,s,Status::ForeignIRQ,iir+4,pending);
     }
     const auto pchIER=io.read(0xC400C),pchIMR=io.read(0xC4004);
@@ -185,6 +196,17 @@ template<class IO> Status enable(IO &io,State &s,uint32_t excludedPCH=0,uint32_t
         io.write(HPDBank-4,io.read(HPDBank-4)|excludedHPD);
         io.write(HPDBank+4,io.read(HPDBank+4)&~excludedHPD);
         if((io.read(HPDBank+4)&excludedHPD) || (~io.read(HPDBank-4)&excludedHPD))
+            return fail(io,s,Status::Readback);
+    }
+    if(typeC) {
+        const auto ctl=io.read(NorthControl);
+        if(ctl==UINT32_MAX)return fail(io,s,Status::Readback);
+        io.write(NorthControl,(ctl&~0x333333U)|northControl(s,8)|(ctl&northControl(s,3)));
+        io.write(HPDBank-4,io.read(HPDBank-4)&~northOwned(s));
+        io.write(HPDBank+4,io.read(HPDBank+4)|northOwned(s));
+        const auto stale=io.read(HPDBank)&northOwned(s);if(stale)io.write(HPDBank,stale);
+        if((io.read(NorthControl)&northControl(s,8))!=northControl(s,8) ||
+           (io.read(HPDBank+4)&northOwned(s))!=northOwned(s) || (io.read(HPDBank-4)&northOwned(s)))
             return fail(io,s,Status::Readback);
     }
     s.excludedPCH=excludedPCH;
@@ -518,7 +540,18 @@ template<class IO> Events collect(IO &io,State &s) {
         if(status)io.write(DDIControl,(ddi&~0x3333U)|status);
         const auto owned=sde&pchOwned(s);if(owned)io.write(0xC4008,owned);
     }
-    constexpr uint32_t supported=(7U<<16)|(1U<<23)|Enable;
+    if(master&(1U<<21)) {
+        const auto status=io.read(HPDBank);
+        const auto pending=status&io.read(HPDBank+4)&~io.read(HPDBank-4);
+        if(status==UINT32_MAX || (pending&~northOwned(s))) {e.status=fail(io,s,Status::ForeignIRQ,HPDBank,pending);return e;}
+        const auto ctl=io.read(NorthControl);
+        if(ctl==UINT32_MAX){e.status=fail(io,s,Status::Readback);return e;}
+        e.aux=nativeDPAlt(pending,ctl);
+        uint32_t ack=0;for(unsigned tc=0;tc<4;++tc)if(pending&(1U<<(16+tc)))ack|=ctl&(3U<<(4*tc));
+        if(ack)io.write(NorthControl,(ctl&~0x333333U)|ack);
+        const auto owned=status&northOwned(s);if(owned)io.write(HPDBank,owned);
+    }
+    const uint32_t supported=(7U<<16)|(1U<<23)|(s.typeC?(1U<<21):0U)|Enable;
     if(master&~supported) {s.foreign|=master&~supported;e.status=fail(io,s,Status::ForeignIRQ);return e;}
     io.write(Master,Enable);e.status=Status::Complete;return e;
 }

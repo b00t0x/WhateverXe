@@ -4218,9 +4218,11 @@ bool XE::xelpBindProbe(void *controller) {
             !Display13FBTopology::supportedWiring(adlnOutputWiring,xeProfile.display==XELP::Display::XeLPD) ||
             ((adlnOutputWiring.selected()&0x78) && (!display13TCProbeReady || !display13FBTCHooksReady)) ||
             (adlnOutputWiring.dp && (!display13TCDPProbeReady || !display13FBSSTHooksReady || !display13FBAUXHooksReady)) ||
+            (adlnOutputWiring.typeC && !display13DPAltProbeReady) ||
             (adlnOutputWiring.panel && (!display13PanelProbeReady || !display13PanelPowerReady || !display13FBSSTHooksReady || !display13FBAUXHooksReady)))return false;
         config.combo=adlnOutputWiring.selected()&3;config.comboBackend=3;
-        config.legacy=adlnOutputWiring.selected()&0x78;config.legacyBackend=config.legacy?0x78:0;
+        config.typeC=adlnOutputWiring.typeC;
+        config.legacy=(adlnOutputWiring.selected()&0x78)&~config.typeC;config.legacyBackend=(config.legacy|config.typeC)?0x78:0;
     }
     const bool bound=config.valid() && reinterpret_cast<XELP::ConfigureProbe>(xelpProviderConfigureProbe)(controller,&config);
     IORegistryEntry::getRegistryRoot()->setProperty("XELPSharedProbeBound",bound);
@@ -4440,6 +4442,8 @@ bool XE::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t add
                 XELP::display13PanelProbeCapable(reinterpret_cast<XELP::QueryProbeCapabilities>(query));
             display13TCProbeReady=query>=address && query-address<size &&
                 XELP::display13TCProbeCapable(reinterpret_cast<XELP::QueryProbeCapabilities>(query));
+            display13DPAltProbeReady=query>=address && query-address<size &&
+                XELP::display13DPAltProbeCapable(reinterpret_cast<XELP::QueryProbeCapabilities>(query));
             display13TCDPProbeReady=query>=address && query-address<size &&
                 XELP::display13TCDPProbeCapable(reinterpret_cast<XELP::QueryProbeCapabilities>(query));
         }
@@ -4803,7 +4807,8 @@ struct Display13FBTCAuxIO {
         if(!admitted(tc))return false;
         const auto pw=read(Display13Power::Driver),buffer=read(0x64300+0x100*tc),mode=read(0x161500+4*tc);
         return pw!=UINT32_MAX && buffer!=UINT32_MAX && mode!=UINT32_MAX && (pw&5)==5 &&
-            (buffer&64) && (mode&7)==4;
+            (buffer&64) && (mode&4) && Display13TC::Port::modeMatches(mode,
+                display13FBPower.tcMode[tc].selectedMode==3?3:4);
     }
     bool auxPowered(unsigned candidate) const {
         if(!admitted(candidate))return false;const auto value=read(Display13Power::AUX);
@@ -4908,7 +4913,9 @@ struct Display13FBTCIO : Display13FBTCAuxIO {
         const auto &m=display13FBPower.tcMode[tc];
         return ddi==tc+3 && powerHeld() && m.phase==Display13TC::Mode::Phase::Active &&
             m.ownership.active && m.ownership.identity==reinterpret_cast<uintptr_t>(object) &&
-            Display13FBMemory::field<uint32_t>(object,0x550)==4;
+            Display13FBMemory::field<uint32_t>(object,0x550)==m.selectedMode &&
+            Display13TC::Port::modeMatches(read(m.ownership.port.ready),m.selectedMode) &&
+            (m.selectedMode!=3 || m.lanes.unchanged(*this,m.ownership.port));
     }
     bool quiescent(unsigned ddi) {
         if(ddi!=tc+3 || !accessHeld())return false;
@@ -5885,8 +5892,8 @@ IOReturn XE::wrapDisplay13FBEnableIRQ(IOService *controller) {
 		const auto actual=Display13FBIRQ::readActivePipes(io,admitted);
 		c.status=c.quiescing ? Display13FBIRQ::Status::Power : actual.status;
 		if(c.status==Display13FBIRQ::Status::Complete)c.status=c.state.begun && c.state.enabled ?
-			Display13FBIRQ::extendActivePipes(io,c.state,admitted) : Display13FBIRQ::enable(io,c.state,excluded,adlnSharedGT(controller),actual.active,callbackXE->adlnOutputWiring.selected());
-	} else c.status=c.quiescing ? Display13FBIRQ::Status::Power : Display13FBIRQ::enable(io,c.state,excluded,adlnSharedGT(controller),1,callbackXE->adlnOutputWiring.selected());
+			Display13FBIRQ::extendActivePipes(io,c.state,admitted) : Display13FBIRQ::enable(io,c.state,excluded,adlnSharedGT(controller),actual.active,callbackXE->adlnOutputWiring.selected(),callbackXE->adlnOutputWiring.typeC);
+	} else c.status=c.quiescing ? Display13FBIRQ::Status::Power : Display13FBIRQ::enable(io,c.state,excluded,adlnSharedGT(controller),1,callbackXE->adlnOutputWiring.selected(),callbackXE->adlnOutputWiring.typeC);
 	adlnIRQCache(controller,io);adlnIRQRecord(record,1);
 	check[23]=static_cast<uint32_t>(c.status);check[24]=c.state.begun;
 	check[25]=c.state.enabled;check[26]=c.state.faulted;check[27]=c.state.active;check[28]=c.state.configured;
@@ -5938,7 +5945,7 @@ void XE::wrapDisplay13FBConfigureVBL(IOService *controller,IOService *fb,OSObjec
 			Display13FBIRQ::powered(io.read(Display13FBIRQ::Driver),pipe) && (io.read(0x70008+0x1000*pipe)&Display13FBIRQ::Enable)) {
 			const auto excluded=controller==callbackXE->adlnTopologyController ?
 				Display13FBTopology::excludedHotplug(callbackXE->adlnPlatform,sizeof(callbackXE->adlnPlatform),callbackXE->adlnOutputWiring) : 0;
-			c.status=Display13FBIRQ::enable(io,c.state,excluded,adlnSharedGT(controller),1,callbackXE->adlnOutputWiring.selected());
+			c.status=Display13FBIRQ::enable(io,c.state,excluded,adlnSharedGT(controller),1,callbackXE->adlnOutputWiring.selected(),callbackXE->adlnOutputWiring.typeC);
 		}
 		if(!c.state.faulted)c.status=Display13FBIRQ::vblank(io,c.state,pipe,enabled);
 	}
@@ -6531,7 +6538,8 @@ uint32_t XE::wrapDisplay13TCMode(OSObject *port,uint32_t wanted) {
     if(config && config[0]<3)return FunctionCast(wrapDisplay13TCMode,self->orgDisplay13TCMode)(port,wanted);
     if(!c.lock)return kIOReturnNotReady;
     IOLockLock(c.lock);const auto ddi=display13TCTarget(port,wanted==0);
-    if(ddi>=7 || (wanted!=0 && wanted!=4) || c.tcBusy[ddi-3] ||
+    const auto selected=ddi<7 && (self->adlnOutputWiring.typeC&(1U<<ddi))?3U:4U;
+    if(ddi>=7 || (wanted!=0 && wanted!=selected) || c.tcBusy[ddi-3] ||
        (c.tcObject[ddi-3] && c.tcObject[ddi-3]!=port)) {IOLockUnlock(c.lock);return kIOReturnNotReady;}
     const auto tc=ddi-3;auto &mode=c.tcMode[tc];
     if(!c.tcObject[tc]){c.tcObject[tc]=port;port->retain();}
@@ -6584,15 +6592,16 @@ uint32_t XE::wrapDisplay13TCMode(OSObject *port,uint32_t wanted) {
         auto &source=c.displayScratch;AlderLakeN::readDisplay(bootIO,true,source);
         inherited=source.activePipes==1 && AlderLakeN::dpSourceUnchanged(bootIO,source,0,ddi,0,&boot);
     }
-    const auto preparation=framebufferLinkRequirements(port,4).preparation(inherited);
+    const auto preparation=framebufferLinkRequirements(port,selected).preparation(inherited);
     IO io{port,tc,reinterpret_cast<uint32_t (*)(OSObject *,uint32_t)>(self->display13TCBaseMode),preparation};
     const auto owner=reinterpret_cast<uintptr_t>(c.controller),object=reinterpret_cast<uintptr_t>(port);
-    const auto result=wanted?mode.connect(io,owner,object,ddi):mode.disconnect(io,owner,object,ddi);
+    const auto result=wanted?mode.connect(io,owner,object,ddi,wanted):mode.disconnect(io,owner,object,ddi);
     const bool done=result.status==Display13TC::Status::Complete;
     if(!wanted && done){c.tcSignalReady[tc]=false;c.tcDPLink[tc]={};OSSafeReleaseNULL(c.tcObject[tc]);}
-    uint32_t record[]={1,ddi,wanted,uint32_t(result.status),uint32_t(result.phy.status),uint32_t(result.power.status),uint32_t(mode.phase),mode.disconnectPending};
+    uint32_t record[]={2,ddi,wanted,uint32_t(result.status),uint32_t(result.phy.status),uint32_t(result.power.status),uint32_t(mode.phase),mode.disconnectPending,mode.lanes.mask,mode.lanes.pin};
     IOLockUnlock(c.lock);auto root=IORegistryEntry::getRegistryRoot();
     root->setProperty("WEXDisplay13TCMode",record,sizeof(record));
+    char modeKey[40];snprintf(modeKey,sizeof(modeKey),"WEXDisplay13TCMode%u",ddi);root->setProperty(modeKey,record,sizeof(record));
     // Keep the initiating power-domain result; subsequent native getPG errors
     // can only observe the shared fault and cannot reconstruct this boundary.
     if(result.status==Display13TC::Status::NoPower) {
@@ -6631,7 +6640,9 @@ void XE::wrapDisplay13TCEnableClocks(void *controller,void *raw,void *other,uint
             ok=c.tcSignalReady[tc] && c.tcDPLink[tc].matches(io,p,plan,lanes);
             if(ok)stage=Display13TC::Clock::LinkStage::Complete;
             else {
-                ok=Display13TC::DPSignal::startLink(io,p,plan,lanes,&stage);
+                ok=Display13TC::DPSignal::startLink(io,p,plan,lanes,&stage,
+                    c.tcMode[tc].selectedMode==3?c.tcMode[tc].lanes.pin:0,
+                    c.tcMode[tc].selectedMode==3?c.tcMode[tc].lanes.mask:15);
                 if(ok)c.tcDPLink[tc]={plan.rate,plan.reference,lanes};
             }
         } else {
@@ -6685,7 +6696,8 @@ uint32_t XE::wrapDisplay13TCSignal(void *raw,uint32_t swing,uint32_t emphasis,vo
         Display13FBTCIO io{port,ddi-3};ok=io.owned(ddi) && io.linkHeld() && c.tcSignalReady[ddi-3];
         if(ok && (self->adlnOutputWiring.dp&(1U<<ddi))) {
             Display13TC::Port p;Display13TC::Port::resolve(ddi,p);
-            ok=!drive && Display13TC::DPSignal::program(io,p,Display13FBMemory::field<uint32_t>(port,0x128),swing,emphasis);
+            ok=!drive && Display13TC::DPSignal::program(io,p,Display13FBMemory::field<uint32_t>(port,0x128),swing,emphasis,
+                c.tcMode[ddi-3].selectedMode==3?c.tcMode[ddi-3].lanes.mask:15);
         }
     }
     if(!ok)adlnFault(c.clockFaulted,__LINE__);IOLockUnlock(c.lock);
@@ -6707,8 +6719,10 @@ uint32_t XE::wrapDisplay13DPLaneMask(void *port) {
         return FunctionCast(wrapDisplay13DPLaneMask,s->orgDisplay13DPLaneMask)(port);
     auto &c=display13FBPower;if(!c.lock)return 0;IOLockLock(c.lock);
     const auto ddi=display13TCTarget(object);bool ok=false;
-    if(ddi>=3 && ddi<=6){Display13FBTCIO io{object,ddi-3};ok=io.owned(ddi);}
-    IOLockUnlock(c.lock);return ok?15U:0;
+    uint32_t mask=0;
+    if(ddi>=3 && ddi<=6){Display13FBTCIO io{object,ddi-3};ok=io.owned(ddi);
+        mask=c.tcMode[ddi-3].selectedMode==3?c.tcMode[ddi-3].lanes.mask:15U;}
+    IOLockUnlock(c.lock);return ok?mask:0;
 }
 void XE::wrapDisplay13DPPhyGating(void *port,bool gate) {
     auto s=callbackXE;auto object=static_cast<OSObject *>(port);
@@ -6724,6 +6738,8 @@ void XE::wrapDisplay13DPPhyGating(void *port,bool gate) {
         // Same fixed-DP contract as TGL: Linux leaves DP_MODE bits5:1
         // intact during training. Do not run the donor's clear operation.
         if(ok && gate)for(unsigned group=0;group<2;++group) {
+            const auto &mode=c.tcMode[ddi-3];
+            if(mode.selectedMode==3 && !(mode.lanes.mask&(3U<<(2*group))))continue;
             uint32_t value=0x3e;ok=Display13TC::PHY::access(io,p,0x1000*group+0xa0,0x3e,value,true) && ok;
         }
     }
@@ -7304,7 +7320,7 @@ uint8_t *XE::display13SSTPort(void *port) {
  auto p=static_cast<uint8_t *>(port);auto config=Display13FBMemory::field<uint32_t *>(p,0x548);
  if(!Display13FBTopology::selected(s->adlnPlatform,config,s->adlnOutputWiring) ||
     !(s->adlnOutputWiring.links()&(1U<<config[0])) || p[0x117] ||
-    Display13FBMemory::field<uint32_t>(p,0x120)!=config[0] || Display13FBMemory::field<uint32_t>(p,0x550)!=(config[0]>=3?4U:1U) ||
+    Display13FBMemory::field<uint32_t>(p,0x120)!=config[0] || Display13FBMemory::field<uint32_t>(p,0x550)!=(config[0]>=3?((s->adlnOutputWiring.typeC&(1U<<config[0]))?3U:4U):1U) ||
     Display13FBMemory::field<void *>(p,0x578)!=c.access)return nullptr;
  return p;
 }
@@ -7858,9 +7874,63 @@ bool XE::processFramebufferAGDC(KernelPatcher &patcher,size_t index,mach_vm_addr
         {client,wrapFramebufferUserClient,orgFramebufferUserClient},
         {callback,wrapFramebufferAGDCCallback,orgFramebufferAGDCCallback}
     };
-    const bool ready=patcher.routeMultipleShort(index,routes,arrsize(routes),address,size);patcher.clearError();
+    bool ready=patcher.routeMultipleShort(index,routes,arrsize(routes),address,size);patcher.clearError();
+    if(ready)ready=processDisplay13TrialAGDC(patcher,index,address,size);
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13AGDCGuardReady",ready);
     return ready;
+}
+
+// This belongs to the opt-in DSI bootstrap experiment, not the USB-C backend.
+// A disconnected temporary boot port needs an explicit native retirement when
+// policy first replaces it. Real DSI support can remove this experiment whole.
+bool XE::processDisplay13TrialAGDC(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
+    if(!display13FramebufferRequested || !checkKernelArgument("-wex-dsi-hdmi-test"))return true;
+    const char *symbol="__ZN31AppleIntelFramebufferController30commitResourceConfigurationSetEP30AGDCResourceConfigurationSet_tS1_";
+    const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,symbol,address,size);patcher.clearError();
+    const uint8_t entry[]={0x55,0x48,0x89,0xe5,0x53,0x50};
+    if(size<=0x670B9 || fn!=address+0x66F6E || memcmp(reinterpret_cast<void *>(fn),entry,sizeof(entry)))return false;
+    KernelPatcher::RouteRequest route(symbol,wrapDisplay13TrialCommit,orgDisplay13TrialCommit);
+    const bool ready=patcher.routeMultipleShort(index,&route,1,address,size);patcher.clearError();return ready;
+}
+
+uint32_t XE::wrapDisplay13TrialCommit(void *controller,void *request,void *output) {
+    auto req=static_cast<uint32_t *>(request);
+    const auto count=req ? req[0]:0;
+    const auto index=req && output && count && count<=16 ? req[4]:UINT32_MAX;
+    auto fb=tglResourceFB(controller,index);
+    // Opt-in DSI handoff trial only: an unplugged temporary boot connector
+    // never becomes online, so policy does not retire its boot allocation.
+    // Use the normal stop/free path before committing a different live port.
+    if(callbackXE->display13FramebufferRequested && checkKernelArgument("-wex-dsi-hdmi-test") &&
+       fb && count==1 && display13RetirementHealthy() &&
+       !Display13FBMemory::field<uint8_t>(fb,0x1E0) &&
+       Display13FBMemory::field<uint8_t>(fb,0x44DE) &&
+       Display13FBMemory::field<uint8_t>(fb,0x1E7) &&
+       Display13FBMemory::field<uint32_t>(fb,0x49E8)==1 &&
+       Display13FBMemory::field<uint32_t>(fb,0x4A00)==1) {
+        auto path=Display13FBMemory::singlePath<OSObject *>(fb);
+        const auto binding=adlnInspectPathBinding(static_cast<IOService *>(fb),path,
+            callbackXE->adlnPlatform,callbackXE->adlnOutputWiring);
+        const auto target=req[0x48/4];
+        auto port=path ? Display13FBMemory::field<OSObject *>(path,0x3648) : nullptr;
+        auto next=target && target<=9 && callbackXE->tglPortByDDI ?
+            reinterpret_cast<OSObject *(*)(uint32_t)>(callbackXE->tglPortByDDI)(target-1) : nullptr;
+        if(binding.status==TGLFBBinding::Status::Complete && port && next &&
+           next!=port && next->getMetaClass()->getClassSize()>=0x580 &&
+           Display13FBTopology::selected(callbackXE->adlnPlatform,
+               Display13FBMemory::field<uint32_t *>(next,0x548),callbackXE->adlnOutputWiring) &&
+           Display13FBMemory::field<uint32_t>(next,0x120)==target-1 &&
+           Display13FBMemory::field<uint32_t>(path,0x3644)>=1 &&
+           Display13FBMemory::field<uint32_t>(path,0x3644)<=2 &&
+           Display13FBMemory::field<uint32_t>(port,0x554)<2 &&
+           Display13FBMemory::field<uint32_t>(next,0x554)>1) {
+            const auto retired=wrapDisplay13FreeResources(fb);
+            uint32_t record[]={1,binding.ddi,target-1,retired};
+            IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13TrialBootRetire",record,sizeof(record));
+            if(retired)return retired;
+        }
+    }
+    return FunctionCast(wrapDisplay13TrialCommit,callbackXE->orgDisplay13TrialCommit)(controller,request,output);
 }
 
 uint32_t XE::wrapFramebufferUserClient(IOService *fb,void *task,void *security,uint32_t type,void **client) {
@@ -11588,7 +11658,7 @@ XELP::LinkRequirements XE::framebufferLinkRequirements(void *port,uint32_t mode)
  using R=XELP::LinkRequirements;
  if(self->display13FramebufferRequested) {
   if(!Display13FBTopology::selected(self->adlnPlatform,config,self->adlnOutputWiring) ||
-     mode!=(ddi>=3?4U:1U))return req;
+     mode!=(ddi>=3?((self->adlnOutputWiring.typeC&(1U<<ddi))?3U:4U):1U))return req;
   req={self->xeProfile.display,ddi>=3?R::PHY::TC:R::PHY::Combo,
    (self->adlnOutputWiring.links()&(1U<<ddi))?R::Protocol::FixedDP:R::Protocol::HDMI};
  } else {

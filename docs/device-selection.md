@@ -102,7 +102,10 @@ must match the implemented path; ambiguous or cross-routed AUX layouts are exclu
   supported firmware scaling, and retires secondary fixed TC firmware outputs
   before native startup. ADL-H has been tested with three outputs and a
   DP-to-HDMI adapter. Direct DP sinks remain unverified. External Combo DP, MST,
-  Type-C-managed output and cross-routed AUX still need further implementation.
+  Thunderbolt and cross-routed AUX still need further implementation. Experimental
+  TC1–4 DP Alt Mode accepts firmware-described external USB-C DP with matching AUX,
+  using the live Type-C ownership, pin and lane assignment. USB-C boot-display
+  adoption, hotplug and sleep/wake have not been qualified.
 
 The Display12 small-GT implementation accepts one slice, up to two DSS,
 16/24/32 EUs, four L3 banks and the supported media engines. Different resource

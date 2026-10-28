@@ -134,14 +134,17 @@ Alder Lake-N HDMI property applies only to Combo routes.
 ADL-H has been tested with fixed HDMI outputs and a DP-to-HDMI adapter,
 including three connected displays at startup, firmware-scaled boot displays
 and DP reconnection. Direct DP sinks and other GPUs in these families have
-not been verified with the fixed TC DP path. MST, USB-C DP Alt Mode,
-Thunderbolt and cross-routed AUX remain unsupported on these GPUs.
+not been verified with the fixed TC DP path. Experimental USB-C DP Alt Mode
+supports VBT-described external TC1–TC4 DP wiring with matching AUX. It reuses
+SST link training with Type-C ownership and the detected physical lane assignment.
+MST, Thunderbolt, cross-routed AUX and USB-C boot-display adoption remain unsupported.
+Alder Lake-N USB-C output has been tested at 1080p60 through an HDMI adapter on Big Sur, including Metal and OpenGL acceleration. USB-C hotplug, sleep/wake and other adapter types have not been verified.
 
 ADL-P/RPL-P uses its physical ID and detected GPU resources automatically.
 No device-ID override or machine-specific AGDP kext is required.
 `-wex-noaccel` retains framebuffer-only operation.
 
-The experimental `-wex-dsi-hdmi-test` argument transfers a qualified Display13 DSI-A GOP to Combo B at 1080p60 for development. It stops the internal display. It is disabled by default and does not provide DSI support or general cold startup.
+The experimental `-wex-dsi-hdmi-test` argument transfers a qualified Display13 DSI-A GOP to Combo B at 1080p60 for development. It stops the internal display and retires the temporary HDMI resources when policy switches to another connected output. It is disabled by default and does not provide DSI support or general cold startup.
 
 ### Internal-panel brightness
 

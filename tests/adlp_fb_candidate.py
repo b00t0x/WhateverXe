@@ -24,7 +24,7 @@ struct XE {
  bool adlpDisplaySelected=true,adlsDisplaySelected=false,tglHDMIWiringApplied=false,tglTCWiringLoaded=false;
  bool display13PanelProbeReady=true,display13PanelPowerReady=true;
  bool display13FBTopologyHooksReady=true,display13TCProbeReady=true,display13FBTCHooksReady=true;
- bool display13TCDPProbeReady=true,display13DPProbeReady=false,display13FBSSTHooksReady=true,display13FBAUXHooksReady=true;
+ bool display13DPAltProbeReady=true,display13TCDPProbeReady=true,display13DPProbeReady=false,display13FBSSTHooksReady=true,display13FBAUXHooksReady=true;
  uintptr_t xelpProviderProbe=1,xelpProviderConfigureProbe=reinterpret_cast<uintptr_t>(configure);
  void *adlnTopologyController=(void*)1;Display13OutputWiring adlnOutputWiring,tglHDMIWiring;
  struct {bool valid=false;unsigned excluded=0;unsigned selected(){return 0;}}adlsWiring;

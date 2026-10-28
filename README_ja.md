@@ -98,11 +98,11 @@ Tiger Lakeはnative controllerとAUX配線が一致するVBTの固定DisplayPort
 
 Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/Uでは、Combo A/B・固定TC1〜TC4 HDMI配線をVBTから選択します。試験的な固定TC1〜TC4 SST DisplayPortには、VBTのAUX配線の一致が必要です。Alder Lake-NのHDMI明示propertyはCombo配線にのみ適用します。
 
-ADL-Hでは、固定HDMIとDP→HDMI変換器を使い、3画面接続での起動、ファームウェアによる拡大表示からの起動、DP再接続を確認しています。固定TC DP経路での直接DP接続の表示先と、これらのファミリーの他のGPUは未検証です。これらのGPUではMST、USB-C DP Alt Mode、Thunderbolt、交差AUX配線は未対応です。
+ADL-Hでは、固定HDMIとDP→HDMI変換器を使い、3画面接続での起動、ファームウェアによる拡大表示からの起動、DP再接続を確認しています。固定TC DP経路での直接DP接続の表示先と、これらのファミリーの他のGPUは未検証です。試験的なUSB-C DP Alt Modeは、AUXが一致するVBTの外部TC1〜TC4 DP配線に対応します。既存SSTリンク訓練にType-C所有権と検出した物理レーン割当を組み合わせます。MST、Thunderbolt、交差AUX配線、USB-Cを起動用画面とする引継ぎは未対応です。Alder Lake-NではBig SurでHDMI変換器経由のUSB-C 1080p60表示とMetal/OpenGL加速を確認しています。USB-Cの抜き差し・スリープ復帰・他の変換器は未検証です。
 
 ADL-P/RPL-Pは物理IDと検出したGPU資源を自動で使用します。device-ID上書きや機種別AGDP kextは不要です。`-wex-noaccel`でFramebufferのみの動作を維持します。
 
-試験用の `-wex-dsi-hdmi-test` は、限定したDisplay13のDSI-A GOPからCombo-Bへ1080p60で移す開発用経路です。内蔵表示を停止します。既定では無効で、DSI対応や汎用のcold起動を提供するものではありません。
+試験用の `-wex-dsi-hdmi-test` は、限定したDisplay13のDSI-A GOPからCombo-Bへ1080p60で移す開発用経路です。内蔵表示を停止し、policyが別の接続済み出力へ切り替える際は暫定HDMI資源を解放します。既定では無効で、DSI対応や汎用のcold起動を提供するものではありません。
 
 ### 内蔵パネルの輝度
 

@@ -121,7 +121,9 @@ struct Clock {
            !io.powerHeld() || !io.owned(p.ddi) || !io.quiescent(p.ddi))return false;
         const uint32_t registers[]={p.pll,p.clock,p.ready,p.buffer,Gate};
         for(auto reg:registers)if(!io.readable(reg) || io.read(reg)==UINT32_MAX)return false;
-        return (io.read(p.ready)&7)==4 && (io.read(p.buffer)&0x80000040)==64;
+        // The identity-bound owner has already selected legacy or DP-alt.
+        // Both use Dekel; TBT keeps a separate PLL/ownership contract.
+        return (io.read(p.ready)&6)==4 && (io.read(p.buffer)&0x80000040)==64;
     }
     template<class IO> static bool rmw(IO &io,uint32_t reg,uint32_t mask,uint32_t value) {
         const auto irq=io.lock();const auto old=io.read(reg);

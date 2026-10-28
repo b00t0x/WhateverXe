@@ -6,7 +6,7 @@
 struct Display13OutputWiring {
     static constexpr unsigned Ports=9;
     static constexpr uint32_t Physical=0x7B; // A/B + TC1..4, no Combo C.
-    uint32_t hdmi {},ddc[Ports] {},dp {},panel {};bool valid {};
+    uint32_t hdmi {},ddc[Ports] {},dp {},panel {},typeC {};bool valid {};
     Display13OutputWiring()=default;
     Display13OutputWiring(const TGLHDMIWiring &w):hdmi(w.hdmi),valid(w.valid) {
         for(unsigned d=0;d<3;++d)ddc[d]=w.ddc[d];
@@ -18,7 +18,7 @@ struct Display13OutputWiring {
     uint32_t selected() const {return hdmi|dp|panel;}
     uint32_t links() const {return dp|panel;}
     bool described() const {
-        if(!valid || !selected() || (selected()&~0x7FU) || (dp&~Physical) || (hdmi&dp) || (panel&~3U) || (panel&(panel-1)) || (panel&(hdmi|dp)))return false;
+        if(!valid || !selected() || (selected()&~0x7FU) || (dp&~Physical) || (typeC&~(dp&0x78)) || (hdmi&dp) || (panel&~3U) || (panel&(panel-1)) || (panel&(hdmi|dp)))return false;
         uint32_t used=0;
         for(unsigned d=0;d<Ports;++d) {
             const auto pin=ddc[d];

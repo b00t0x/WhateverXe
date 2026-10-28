@@ -34,7 +34,7 @@ int main(int argc,char **argv) {
  assert(XELP::display13TCDPProbeCapable(xelpProbeCapabilities));
  assert(!XELP::display13TCDPProbeCapable(+[](uint32_t,uint32_t)->uint32_t{return 3;}));
  for(unsigned schema=0;schema<5;++schema)for(unsigned abi=0;abi<6;++abi)
-  assert(xelpProbeCapabilities(schema,abi)==(schema==1&&abi==3?(XELP::ProbeDisplay13ComboDP|XELP::ProbeDisplay13FixedTC|XELP::ProbeDisplay13FixedDP|XELP::ProbeDisplay13Panel):0));
+  assert(xelpProbeCapabilities(schema,abi)==(schema==1&&abi==3?(XELP::ProbeDisplay13ComboDP|XELP::ProbeDisplay13FixedTC|XELP::ProbeDisplay13FixedDP|XELP::ProbeDisplay13Panel|XELP::ProbeDisplay13DPAlt):0));
  assert(!XELP::display13ProbeCapable(+[](uint32_t,uint32_t)->uint32_t{return 0;}));
  assert(!XELP::display13ProbeCapable(+[](uint32_t,uint32_t)->uint32_t{return 2;}));
  assert(argc==2);const bool adln=!strncmp(argv[1],"adln",4);

@@ -45,6 +45,17 @@ struct IO {
     void bankFault(){fault=true;}
 };
 int main() {
+    // Pin D, both physical orientations: do not change the USB pair's
+    // signal coefficients or wake register. Logical main-link lanes stay0/1.
+    for(unsigned ddi=3;ddi<=6;++ddi)for(unsigned physical:{3U,12U}) {
+        IO io(ddi);io.expectedLanes=2;io.regs[io.p.ready]=0x1d;
+        for(unsigned group=0;group<2;++group)for(unsigned reg:{0xa0U,0xd00U,0x2c0U,0x2c4U,0x2c8U})io.bank[group*0x1000+reg]=0xa5a5a5a5;
+        Clock::LinkStage stage;assert(DPSignal::startLink(io,io.p,DPClock::calculate(10,38400),2,&stage,4,physical));
+        const unsigned usb=physical==3?0x1000:0;
+        for(unsigned reg:{0xd00U,0x2c0U,0x2c4U,0x2c8U})assert(io.bank[usb+reg]==0xa5a5a5a5);
+        const auto count=io.writes.size();
+        assert(!DPSignal::startLink(io,io.p,DPClock::calculate(10,38400),4,&stage,4,physical) && io.writes.size()==count);
+    }
     // Independent DP divisor oracle: 8.1 GHz / (5 * link symbol clock).
     const unsigned rates[]={6,10,20,30},high[]={5,3,3,2},div[]={2,2,1,1};
     // Existing independent Linux capture of TC3 at RBR x4.
@@ -138,7 +149,7 @@ int main() {
     for(unsigned failure=0;failure<8;++failure) {
         IO io(3);
         if(failure==0)io.power=false;if(failure==1)io.owner=false;if(failure==2)io.idle=false;
-        if(failure==3)io.regs[io.p.ready]=5;if(failure==4)io.regs[io.p.buffer]|=1U<<31;
+        if(failure==3)io.regs[io.p.ready]=6;if(failure==4)io.regs[io.p.buffer]|=1U<<31;
         if(failure==5)io.regs[io.p.buffer]&=~64U;if(failure==6)io.absent=io.p.pll;if(failure==7)io.regs[io.p.pll]=~0U;
         assert(!Clock::enable(io,io.p,full) && io.writes.empty());
         assert(!Clock::disable(io,io.p) && io.writes.empty());

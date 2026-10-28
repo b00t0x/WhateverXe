@@ -1,4 +1,4 @@
-// ADL-P/N fixed TC HDMI/DP coordinates and PHY ownership.
+// ADL-P/N TC HDMI/DP coordinates and PHY ownership.
 // Linux v6.12 intel_tc.c/i915_reg.h; T8 Pro TC1 Linux values are an
 // independent live fixture. These are not TGL FIA ownership registers.
 #ifndef KERN_DISPLAY13_TC_HPP
@@ -17,6 +17,15 @@ struct Port {
         return true;
     }
     bool legacyHPD(uint32_t sde) const {return sde!=UINT32_MAX && (sde&(1U<<(24+tc)));}
+    bool altHPD(uint32_t sde,uint32_t north) const {
+        return sde!=UINT32_MAX && north!=UINT32_MAX && !legacyHPD(sde) &&
+            !(north&(1U<<tc)) && (north&(1U<<(16+tc)));
+    }
+    uint32_t laneAssignment() const {return (tc<2?0x163000:0x16e000)+0x8a0;}
+    uint32_t pinAssignment() const {return (tc<2?0x163000:0x16e000)+0x880;}
+    static bool modeMatches(uint32_t ready,unsigned mode) {
+        return ready!=UINT32_MAX && (mode==4 ? !(ready&3) : mode==3 && (ready&3)==1);
+    }
     uint32_t bank(uint32_t previous,uint32_t internal) const {
         return (previous&~(15U<<shift))|(((internal>>12)&15U)<<shift);
     }
@@ -24,6 +33,27 @@ struct Port {
 };
 enum class Status : uint32_t {Invalid,NoPower,NeedsAdoption,InUse,Unavailable,UnsupportedMode,NotReady,Readback,Complete};
 struct Result {Status status {Status::Invalid};uint32_t before {},after {},writes {},elapsedUs {};};
+// Read only after ownership and AUX cold blocking. Physical assignment is
+// distinct from logical main-link lane enable and may change on reconnect.
+struct Lanes {
+    uint32_t mask {},pin {};
+    unsigned count() const {unsigned n=0;for(unsigned b=0;b<4;++b)n+=(mask>>b)&1;return n;}
+    bool valid() const {
+        return (mask==1 || mask==2 || mask==4 || mask==8 || mask==3 || mask==12 || mask==15) && pin>=1 && pin<=6;
+    }
+    template<class IO> static Lanes capture(IO &io,const Port &p) {
+        if(!io.readable(p.laneAssignment()) || !io.readable(p.pinAssignment()) ||
+           !io.readable(0xc4000) || !io.readable(0x44470) || !io.readable(p.ready))return {};
+        const auto lanes=io.read(p.laneAssignment()),pins=io.read(p.pinAssignment());
+        if(lanes==UINT32_MAX || pins==UINT32_MAX || !Port::modeMatches(io.read(p.ready),3) ||
+           !p.altHPD(io.read(0xc4000),io.read(0x44470)))return {};
+        Lanes r{(lanes>>(8*(p.tc&1)))&15,(pins>>(4*(p.tc&1)))&15};
+        return r.valid()?r:Lanes{};
+    }
+    template<class IO> bool unchanged(IO &io,const Port &p) const {
+        const auto now=capture(io,p);return valid() && now.mask==mask && now.pin==pin;
+    }
+};
 // Read-only physical certificate for an inherited fixed link. This never takes
 // ownership or programs the PLL. Callers must select the physical Display13
 // backend before reading TCSS; TGL uses a different ownership mechanism.
@@ -77,14 +107,14 @@ struct Boot {
 struct Ownership {
     uintptr_t owner {},identity {};Port port;bool active {};
     Ownership()=default;Ownership(const Ownership&)=delete;Ownership& operator=(const Ownership&)=delete;
-    template<class IO> Result acquire(IO &io,uintptr_t who,uintptr_t object,unsigned ddi,bool adopt=false) {
+    template<class IO> Result acquire(IO &io,uintptr_t who,uintptr_t object,unsigned ddi,bool adopt=false,unsigned mode=4) {
         Result r;Port p;if(!who || !object || !Port::resolve(ddi,p))return r;
         if(owner && (owner!=who || identity!=object || port.ddi!=ddi)){r.status=Status::InUse;return r;}
         if(!io.powerHeld(who,object,ddi)){r.status=Status::NoPower;return r;}
         if(!io.readable(p.ready) || !io.readable(p.buffer)){r.status=Status::Unavailable;return r;}
         const auto initialReady=io.read(p.ready);
         if(initialReady==UINT32_MAX){r.status=Status::Unavailable;return r;}
-        if(initialReady&3){r.status=Status::UnsupportedMode;return r;}
+        if(!Port::modeMatches(initialReady,mode)){r.status=Status::UnsupportedMode;return r;}
         r.before=io.read(p.buffer);if(r.before==UINT32_MAX){r.status=Status::Unavailable;return r;}
         if(owner && active && !(r.before&64)) {r.status=Status::Readback;return r;}
         if(!owner && ((r.before&0x80000040U)!=0) && (!adopt || !io.inheritedVerified(who,object,ddi))) {
@@ -102,7 +132,7 @@ struct Ownership {
         for(;;) {
             const auto ready=io.read(p.ready);
             if(ready==UINT32_MAX){r.status=Status::Unavailable;return r;}
-            if(ready&3){r.status=Status::UnsupportedMode;return r;}
+            if(!Port::modeMatches(ready,mode)){r.status=Status::UnsupportedMode;return r;}
             if(ready&4)break;
             if(r.elapsedUs==500000){r.status=Status::NotReady;return r;}
             io.delayUs(100);r.elapsedUs+=100;

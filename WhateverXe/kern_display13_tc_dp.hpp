@@ -3,6 +3,7 @@
 #ifndef KERN_DISPLAY13_TC_DP_HPP
 #define KERN_DISPLAY13_TC_DP_HPP
 #include "kern_display13_tc_clock.hpp"
+#include "kern_tgl_port_map.hpp"
 namespace Display13TC {
 struct DPClock : TMDSClock {
     static DPClock calculate(uint32_t linkRate,uint32_t ref) {
@@ -57,41 +58,48 @@ struct DPSignal {
         const auto index=starts[swing]+emphasis;
         value=voltage[index]|(uint32_t(rate<=10?low[index]:high[index])<<8);return true;
     }
-    template<class IO> static bool mode(IO &io,const Port &p,unsigned lanes) {
+    template<class IO> static bool mode(IO &io,const Port &p,unsigned lanes,unsigned pin=0) {
         if(!io.powerHeld() || !io.owned(p.ddi) || !io.quiescent(p.ddi) || (lanes!=1 && lanes!=2 && lanes!=4))return false;
+        // The pin-to-X1/X2 calculation is shared with Display12. Only the
+        // powered register access and ownership adapter differ on Display13.
+        uint32_t modes[2];if(!TGLDklDPMode::select(pin,lanes,modes))return false;
         for(unsigned group=0;group<2;++group) {
-            uint32_t value=lanes==1?(group?0x40U:0U):0x80U;
+            uint32_t value=modes[group];
             if(!PHY::access(io,p,0x1000*group+0xa0,0xc0,value,true))return false;
         }
         return true;
     }
     // The donor negotiates a common swing/emphasis for the active lanes.
     // Training can change the electrical level while the DDI buffer is on.
-    template<class IO> static bool program(IO &io,const Port &p,unsigned rate,unsigned swing,unsigned emphasis) {
+    template<class IO> static bool program(IO &io,const Port &p,unsigned rate,unsigned swing,unsigned emphasis,unsigned physical=15) {
         uint32_t selected;
-        if(!io.powerHeld() || !io.owned(p.ddi) || !coefficients(rate,swing,emphasis,selected))return false;
+        if(!physical || physical>15 || !io.powerHeld() || !io.owned(p.ddi) || !coefficients(rate,swing,emphasis,selected))return false;
         for(unsigned group=0;group<2;++group) {
+            if(!(physical&(3U<<(2*group))))continue;
             const auto bank=0x1000*group;uint32_t zero=0;
             if(!PHY::access(io,p,bank+0xd00,UINT32_MAX,zero,true))return false;
             for(unsigned tx=0;tx<2;++tx) {
+                if(!(physical&(1U<<(2*group+tx))))continue;
                 auto value=selected;
                 if(!PHY::access(io,p,bank+0x2c0+4*tx,0x3ff07,value,true))return false;
             }
-            zero=0;if(!PHY::access(io,p,bank+0x2c8,0x7c,zero,true))return false;
+            const auto loadMask=4U|((physical&(1U<<(2*group)))?0x18U:0U)|((physical&(2U<<(2*group)))?0x60U:0U);
+            zero=0;if(!PHY::access(io,p,bank+0x2c8,loadMask,zero,true))return false;
         }
         return true;
     }
-    template<class IO> static bool startLink(IO &io,const Port &p,const DPClock &plan,unsigned lanes,Clock::LinkStage *stage=nullptr) {
+    template<class IO> static bool startLink(IO &io,const Port &p,const DPClock &plan,unsigned lanes,Clock::LinkStage *stage=nullptr,unsigned pin=0,unsigned physical=15) {
         auto step=[&](Clock::LinkStage s){if(stage)*stage=s;};
         step(Clock::LinkStage::Preflight);
-        if(!plan.valid() || (lanes!=1 && lanes!=2 && lanes!=4) || !Clock::preflight(io,p))return false;
+        unsigned available=0;for(unsigned bit=0;bit<4;++bit)available+=(physical>>bit)&1;
+        if(!physical || physical>15 || available<lanes || pin>6 || !plan.valid() || (lanes!=1 && lanes!=2 && lanes!=4) || !Clock::preflight(io,p))return false;
         step(Clock::LinkStage::ReleaseDDI);if(!io.linkPower(false))return false;
         step(Clock::LinkStage::StopPLL);if(!Clock::disable(io,p))return false;
         step(Clock::LinkStage::Lanes);if(!Clock::lanes(io,p,lanes))return false;
         step(Clock::LinkStage::PLL);if(!Clock::enable(io,p,plan))return false;
         step(Clock::LinkStage::DDI);if(!io.linkPower(true))return false;
         step(Clock::LinkStage::Signal);
-        if(!mode(io,p,lanes) || !program(io,p,plan.rate/27000,0,0))return false;
+        if(!mode(io,p,lanes,pin) || !program(io,p,plan.rate/27000,0,0,physical))return false;
         step(Clock::LinkStage::Complete);return true;
     }
 };
