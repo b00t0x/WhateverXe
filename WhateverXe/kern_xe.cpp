@@ -4909,10 +4909,24 @@ struct Display13FBTCIO : Display13FBTCAuxIO {
         const auto pll=read(p.pll);
         return pll!=UINT32_MAX && !(pll&0xcc000000U) && !c.tcSignalReady[tc];
     }
-    bool owned(unsigned ddi) {
+    bool retainedOwned(unsigned ddi) {
+        if(ddi!=tc+3 || !powerHeld())return false;
         const auto &m=display13FBPower.tcMode[tc];
-        return ddi==tc+3 && powerHeld() && m.phase==Display13TC::Mode::Phase::Active &&
-            m.ownership.active && m.ownership.identity==reinterpret_cast<uintptr_t>(object) &&
+        const auto native=Display13FBMemory::field<uint32_t>(object,0x550);
+        return (m.phase==Display13TC::Mode::Phase::Active || m.phase==Display13TC::Mode::Phase::Cleanup) &&
+            (m.selectedMode==3 || m.selectedMode==4) &&
+            (native==m.selectedMode || (m.phase==Display13TC::Mode::Phase::Cleanup && !native)) &&
+            m.ownership.active && m.ownership.owner==m.controller &&
+            m.ownership.identity==reinterpret_cast<uintptr_t>(object) && m.ownership.port.ddi==ddi &&
+            retainedHardwareOwner(m.ownership.port.buffer);
+    }
+    bool retainedHardwareOwner(uint32_t reg) {
+        const auto buffer=read(reg);return buffer!=UINT32_MAX && (buffer&64);
+    }
+    bool owned(unsigned ddi) {
+        if(!retainedOwned(ddi))return false;
+        const auto &m=display13FBPower.tcMode[tc];
+        return m.phase==Display13TC::Mode::Phase::Active &&
             Display13FBMemory::field<uint32_t>(object,0x550)==m.selectedMode &&
             Display13TC::Port::modeMatches(read(m.ownership.port.ready),m.selectedMode) &&
             (m.selectedMode!=3 || m.lanes.unchanged(*this,m.ownership.port));
@@ -6734,7 +6748,7 @@ void XE::wrapDisplay13DPPhyGating(void *port,bool gate) {
     const auto ddi=display13TCTarget(object);bool ok=false;
     if(ddi>=3 && ddi<=6) {
         Display13FBTCIO io{object,ddi-3};Display13TC::Port p;Display13TC::Port::resolve(ddi,p);
-        ok=io.owned(ddi) && io.linkHeld();
+        ok=(io.owned(ddi) || (gate && io.retainedOwned(ddi) && io.quiescent(ddi))) && io.linkHeld();
         // Same fixed-DP contract as TGL: Linux leaves DP_MODE bits5:1
         // intact during training. Do not run the donor's clear operation.
         if(ok && gate)for(unsigned group=0;group<2;++group) {
@@ -7332,7 +7346,7 @@ bool XE::display13HDMIPort(void *port) {
  return Display13FBTopology::selected(s->adlnPlatform,config,s->adlnOutputWiring) && s->adlnOutputWiring.matchesHDMI(config);
 }
 
-bool XE::display13MainLinkAUX(void *port,bool acquire) {
+bool XE::display13MainLinkAUX(void *port,bool acquire,bool stopping) {
  auto &c=display13FBPower;if(!c.lock)return false;
  OSObject *retired=nullptr;bool ok=false;IOLockLock(c.lock);
  auto p=display13SSTPort(port);
@@ -7343,7 +7357,8 @@ bool XE::display13MainLinkAUX(void *port,bool acquire) {
   if(ddi>=3 && ddi<=6) {
    // Mode owns AUX from before first DPCD through buffer/PLL stop. Do not
    // add the Combo main-link lease or release mode power at buffer-disable.
-   Display13FBTCIO tc{static_cast<OSObject *>(port),ddi-3};ok=tc.owned(ddi) && tc.linkHeld();
+   Display13FBTCIO tc{static_cast<OSObject *>(port),ddi-3};
+   ok=(acquire && !stopping ? tc.owned(ddi) : tc.retainedOwned(ddi)) && tc.linkHeld();
   }
   if(ddi<2 && Display13FBMemory::field<uint32_t>(p,0x590)==0x64000+0x100*ddi) {
    auto &link=c.mainLink[ddi];const auto previous=link.owner;Display13FBPowerIO io{c.map};
@@ -7373,10 +7388,10 @@ uint32_t XE::wrapDisplay13DisablePort(void *port) {
  auto s=callbackXE;
  if(!s->adlnOutputWiring.links() || display13HDMIPort(port))
   return FunctionCast(wrapDisplay13DisablePort,s->orgDisplay13DisablePort)(port);
- if(!display13MainLinkAUX(port,true))return kIOReturnNotReady;
+ if(!display13MainLinkAUX(port,true,true))return kIOReturnNotReady;
  const auto result=FunctionCast(wrapDisplay13DisablePort,s->orgDisplay13DisablePort)(port);
  if(!result && s->display13ClockOrderReady && !display13StopTranscoder(port))return kIOReturnNotReady;
- const bool released=display13MainLinkAUX(port,false);
+ const bool released=display13MainLinkAUX(port,false,true);
  return result ? result : released ? 0 : kIOReturnNotReady;
 }
 

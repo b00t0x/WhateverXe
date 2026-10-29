@@ -160,6 +160,7 @@ struct Runtime : IO {
     }
     bool inheritedVerified(uintptr_t,uintptr_t,unsigned){return false;}
     bool powerHeld(){return mode.accessLease.owner && mode.auxLease.owner && Display13Power::held(*this,power,mode.auxLease.domains);}
+    bool retainedOwned(unsigned d){return owned(d);}
     bool owned(unsigned d){return d==port.ddi && mode.phase==Display13TC::Mode::Phase::Active && mode.ownership.active && native==4;}
     bool quiescent(unsigned d){return d==port.ddi && !(read(port.buffer)&0x80000000U);}
     bool quiescent(uintptr_t,uintptr_t,unsigned d){return quiescent(d) && !(read(port.pll)&0xcc000000U) && !ddi.owner;}

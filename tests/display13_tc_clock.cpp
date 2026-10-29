@@ -7,6 +7,7 @@ using namespace Display13TC;
 struct IO {
     Port p;std::map<uint32_t,uint32_t> regs,bank;
     std::vector<std::pair<uint32_t,uint32_t>> writes;
+    bool connected {true};
     bool held {},power {true},owner {true},idle {true},stuckPower {},stuckLock {},fault {};
     unsigned time {},locks {},unlocks {};uint32_t reject {},absent {};
     unsigned expectedLanes {4};
@@ -25,7 +26,8 @@ struct IO {
     }
     bool linkHeld(){return power&&link;}
     bool powerHeld(){return power;}
-    bool owned(unsigned d){return owner && d==p.ddi;}
+    bool retainedOwned(unsigned d){return owner && d==p.ddi;}
+    bool owned(unsigned d){return retainedOwned(d) && connected;}
     bool quiescent(unsigned d){return idle && d==p.ddi;}
     bool readable(uint32_t r){return r!=absent && (regs.count(r) || (r>=p.phy && r<p.phy+0x1000));}
     uint32_t key(uint32_t r){return (((regs[p.hip]>>p.shift)&15)<<12)|(r-p.phy);}
@@ -55,6 +57,27 @@ int main() {
         for(unsigned reg:{0xd00U,0x2c0U,0x2c4U,0x2c8U})assert(io.bank[usb+reg]==0xa5a5a5a5);
         const auto count=io.writes.size();
         assert(!DPSignal::startLink(io,io.p,DPClock::calculate(10,38400),4,&stage,4,physical) && io.writes.size()==count);
+    }
+    // Stop retains ownership and power even when the connector state is gone.
+    for(unsigned ddi=3;ddi<=6;++ddi)for(unsigned gone:{0U,4U,0x1dU,UINT32_MAX}) {
+        IO io(ddi);io.expectedLanes=2;io.regs[io.p.ready]=0x1d;
+        for(unsigned group=0;group<2;++group)for(unsigned reg:{0xa0U,0xd00U,0x2c0U,0x2c4U,0x2c8U})io.bank[group*0x1000+reg]=0;
+        assert(DPSignal::startLink(io,io.p,DPClock::calculate(10,38400),2,nullptr,4,12));
+        io.connected=false;io.regs[io.p.ready]=gone;
+        const auto bank=io.bank;const auto peer=io.regs[Clock::Gate]&~Clock::gateBit(io.p.tc);
+        const auto before=io.writes.size();
+        assert(!Clock::enable(io,io.p,TMDSClock::calculate(148500,38400)) && io.writes.size()==before);
+        assert(Clock::stopLink(io,io.p) && !io.link && io.linkPuts==1);
+        assert(io.bank==bank && !(io.regs[io.p.pll]&0xcc000000U));
+        assert((io.regs[Clock::Gate]&~Clock::gateBit(io.p.tc))==peer);
+        assert(Clock::stopLink(io,io.p) && io.linkPuts==1); // no double put
+    }
+    for(unsigned fault=0;fault<7;++fault) {
+        IO io(4);io.connected=false;io.regs[io.p.ready]=0;
+        if(fault==0)io.owner=false;if(fault==1)io.power=false;if(fault==2)io.idle=false;
+        if(fault==3)io.regs[io.p.buffer]|=1U<<31;if(fault==4)io.regs[io.p.buffer]&=~64U;
+        if(fault==5)io.regs[io.p.buffer]&=~128U;if(fault==6)io.regs[io.p.pll]=UINT32_MAX;
+        assert(!Clock::stopLink(io,io.p) && io.writes.empty() && !io.linkPuts);
     }
     // Independent DP divisor oracle: 8.1 GHz / (5 * link symbol clock).
     const unsigned rates[]={6,10,20,30},high[]={5,3,3,2},div[]={2,2,1,1};

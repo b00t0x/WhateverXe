@@ -154,7 +154,7 @@ private:
  static uint32_t wrapDisplay13RunAUX(void *port,uint32_t command,uint32_t *packet,uint32_t length,bool flag);
  mach_vm_address_t orgDisplay13TrainingPattern {},orgDisplay13SignalLevels {};
  mach_vm_address_t orgDisplay13EnablePort {},orgDisplay13DisablePort {};
- static bool display13MainLinkAUX(void *port,bool acquire);
+ static bool display13MainLinkAUX(void *port,bool acquire,bool stopping=false);
  static uint32_t wrapDisplay13EnablePort(void *port);
  static uint32_t wrapDisplay13DisablePort(void *port);
  bool processDisplay13FramebufferSST(KernelPatcher &,size_t,mach_vm_address_t,size_t);
