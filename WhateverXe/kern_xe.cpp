@@ -4943,6 +4943,17 @@ struct Display13FBTCIO : Display13FBTCAuxIO {
         }
         return true;
     }
+    bool modeQuiescent(uintptr_t controller,uintptr_t port,unsigned ddi) {
+        auto &c=display13FBPower;
+        if(controller!=reinterpret_cast<uintptr_t>(c.controller) || port!=reinterpret_cast<uintptr_t>(object) ||
+           ddi!=tc+3 || c.tcBusy[tc] || c.bridge.nativeDDIRefs(ddi) || c.bridge.nativeAUXRefs(ddi) ||
+           !quiescent(ddi))return false;
+        // 0x570 belongs to cached AGDCDPLinkConfig, cleared by the native
+        // resetSoftwareState callback. It is not an outstanding-use count.
+        Display13TC::Port p;Display13TC::Port::resolve(ddi,p);
+        const auto pll=read(p.pll),aux=read(0x64310+0x100*tc);
+        return pll!=UINT32_MAX && aux!=UINT32_MAX && !(pll&0xcc000000) && !(aux&0x80000000);
+    }
     void delayUs(unsigned us){IODelay(us);}
 };
 // Only used after native object/BAR binding and the power lease proof. The
@@ -6585,13 +6596,7 @@ uint32_t XE::wrapDisplay13TCMode(OSObject *port,uint32_t wanted) {
                 port==reinterpret_cast<uintptr_t>(object) && d==tc+3;
         }
         bool quiescent(uintptr_t controller,uintptr_t port,unsigned d) {
-            auto &c=display13FBPower;
-            if(controller!=reinterpret_cast<uintptr_t>(c.controller) || port!=reinterpret_cast<uintptr_t>(object) ||
-               d!=tc+3 || c.tcBusy[tc] || c.bridge.nativeDDIRefs(d) || c.bridge.nativeAUXRefs(d) ||
-               Display13FBMemory::field<uint32_t>(object,0x570) || !Display13FBTCIO::quiescent(d))return false;
-            Display13TC::Port p;Display13TC::Port::resolve(d,p);
-            const auto pll=read(p.pll),aux=read(0x64310+0x100*tc);
-            return pll!=UINT32_MAX && aux!=UINT32_MAX && !(pll&0xc0000000) && !(aux&0x80000000);
+            return modeQuiescent(controller,port,d);
         }
     };
     // Adopt only the validated, protected firmware boot route. Merely finding
@@ -6629,6 +6634,27 @@ uint32_t XE::wrapDisplay13TCMode(OSObject *port,uint32_t wanted) {
         root->setProperty("WEXDisplay13TCModeFailureState",detail,sizeof(detail));
     }
     return done ? kIOReturnSuccess : kIOReturnNotReady;
+}
+
+void XE::drainDisplay13TCMode(unsigned ddi) {
+    auto &c=display13FBPower;auto self=callbackXE;
+    if(!c.lock || ddi<3 || ddi>6)return;
+    // This continuation runs after native path removal, under its workloop
+    // gate. Never race a new connect while dropping the owner lock for reset.
+    IOLockLock(c.lock);auto port=c.tcObject[ddi-3];
+    const bool gated=c.workLoop && self->adlnWorkLoopInGate &&
+        Display13FBMemory::field<IOWorkLoop *>(c.controller,0xE00)==c.workLoop &&
+        reinterpret_cast<bool (*)(const IOWorkLoop *)>(self->adlnWorkLoopInGate)(c.workLoop);
+    const bool pending=port && c.tcMode[ddi-3].disconnectPending && !c.tcBusy[ddi-3];
+    uint32_t record[]={1,ddi,pending,gated,c.bridge.nativeDDIRefs(ddi),c.bridge.nativeAUXRefs(ddi),
+        port?Display13FBMemory::field<uint32_t>(port,0x570):0,0,0};
+    if(pending && gated)port->retain();
+    IOLockUnlock(c.lock);
+    if(pending && gated) {
+        record[7]=wrapDisplay13TCMode(port,0);
+        record[8]=Display13FBMemory::field<uint32_t>(port,0x550);port->release();
+    }
+    if(pending)IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13TCDrain",record,sizeof(record));
 }
 
 void XE::wrapDisplay13TCEnableClocks(void *controller,void *raw,void *other,uint32_t *params) {
@@ -8689,6 +8715,7 @@ uint32_t XE::releaseDisplay13Path(IOService *fb,OSObject *path) {
     record[7]=released;record[8]=detached;record[9]=removed;record[10]=withdrawn!=nullptr;
     record[11]=c.memoryFaulted;record[12]=c.dbuf.selected;record[13]=c.dbuf.consumers;record[14]=c.dbuf.unretired;record[15]=countOffset;
     IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);
+    if(removed)drainDisplay13TCMode(binding.ddi);
     OSSafeReleaseNULL(withdrawn);path->release();fb->release();
     adlnPublishMemory("N97FBPathFree",pipe,record,sizeof(record));
     return selected && !removed ? kIOReturnNotReady : 0;
