@@ -48,7 +48,7 @@ struct IO {
 };
 int main() {
     // Independent Linux DP DDI rate encodings; retain ownership, lane width,
-    // reversal, enable and all unrelated bits, including stale rate bits.
+    // reversal, enable and unrelated bits; replace the previous rate code.
     for(const auto &pair:std::map<unsigned,unsigned>{{6,0},{10,1},{20,2},{30,3}}) {
         uint32_t value=0xfff1abcd;
         assert(DPSignal::bufferRate(pair.first,value));
