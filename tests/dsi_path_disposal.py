@@ -29,7 +29,7 @@ bool inGate(const IOWorkLoop*){assert(!depth);return gate;}
 bool tryClose(IOWorkLoop*){assert(!depth);++closes;return !busy && (gate=true);}
 void open(IOWorkLoop*){assert(!depth && gate);gate=false;++opens;}
 struct {IOLock *lock=nullptr;IOService *controller=nullptr;IOWorkLoop *workLoop=nullptr;OSObject *dsiPort=nullptr;void *power=nullptr;
- bool memoryFaulted=false,clockFaulted=false;Display13Power::NativeBridge bridge;Display13DBUF::State dbuf;
+ unsigned dsiNativeWriters=0;bool memoryFaulted=false,clockFaulted=false;Display13Power::NativeBridge bridge;Display13DBUF::State dbuf;
  struct {IOService *memoryFramebuffer=nullptr;bool destroyingPath=true;uintptr_t publishedScanout=0;struct {uintptr_t record=0;}scanout;}pipe[3];
 }display13FBPower;
 uint64_t receipt[14]{};
@@ -106,6 +106,7 @@ void run(){
  {Case c;busy=true;c.retained();}
  {Case c;c.xe.dsiMemoryReleased=false;c.retained();}
  {Case c;display13FBPower.memoryFaulted=true;c.retained();}
+ {Case c;display13FBPower.dsiNativeWriters=1;c.retained();}
  {Case c;display13FBIRQ.state.active|=1;c.retained();}
  {Case c;display13FBIRQ.softwareHandlers=1;c.retained();}
  {Case c;put(&c.controller,0xE08,1U);c.retained();}

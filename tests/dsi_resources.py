@@ -47,7 +47,7 @@ struct {uintptr_t base=0;IOSimpleLock *lock=nullptr;IOService *controller=nullpt
  unsigned handlers=0,softwareHandlers=0,admittedPipes=0;bool quiescing=false;} display13FBIRQ;
 XELPMemory::Layout xelpMemory;
 struct XE {
- bool display13FBIRQReady=true,dsiResourcesReady=false;IOService *adlnTopologyController;
+ bool display13FBIRQReady=true,dsiNativeWriterHooksReady=true,dsiResourcesReady=false;IOService *adlnTopologyController;
  struct {unsigned dsi=1;} adlnOutputWiring;
  Profile dsiProfile;Boot dsiBoot;GGTTMode dsiGGTT;
  bool bindDSIResources(IOService *);
@@ -70,6 +70,7 @@ int main(){
  b.ddiRefs[0]=1;b.ddiLease[0].owner=&s;b.ddiLease[0].domains=ddi;
  const auto rejected=[&]{assert(!xe.bindDSIResources(&controller));assert(!lockLevel && !xe.dsiResourcesReady &&
   !irq.controller && c.transcoders.dsi0Pipe==UINT32_MAX && !clock.allocation.external[0]);};
+ xe.dsiNativeWriterHooksReady=false;rejected();xe.dsiNativeWriterHooksReady=true;
  b.ddiRefs[0]=0;rejected();b.ddiRefs[0]=1;
  clock.thread=1;rejected();clock.thread=0;
  c.engineEnabled=true;rejected();c.engineEnabled=false;

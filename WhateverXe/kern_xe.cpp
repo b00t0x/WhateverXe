@@ -4563,6 +4563,7 @@ struct Display13FBPowerContext {
     Display13Transcoder::Bindings transcoders;
     XELP::DSI::Readout bootDSI; // Captured before handoff; not an implicit admission flag.
     OSObject *dsiPort {}; // Retained after source-qualified native mode binding.
+    uint32_t dsiNativeWriters {}; // Owner-lock count; cursor bodies may wait without the FB mutex.
     IOSimpleLock *tcBankLock {};
     bool tcSupported {},tcBankFaulted {};
     Display13TC::Mode tcMode[4];
@@ -5461,6 +5462,7 @@ bool XE::processDisplay13Framebuffer(KernelPatcher &patcher,size_t index,mach_vm
 	IORegistryEntry::getRegistryRoot()->setProperty("N97FBGTTHooksReady",display13FBGTTHooksReady);
 	display13FBTopologyHooksReady=processDisplay13FramebufferTopology(patcher,index,address,size);
     display13DSIModeHooksReady=processDisplay13DSIModes(patcher,index,address,size);
+    dsiNativeWriterHooksReady=!adlnOutputWiring.dsi || processDSINativeWriters(patcher,index,address,size);
     dsiBootProbeReady=processDisplay13DSIBoot(patcher,index,address,size);
     dsiCacheHooksReady=processDisplay13DSICache(patcher,index,address,size);
 	IORegistryEntry::getRegistryRoot()->setProperty("N97FBTopologyHooksReady",display13FBTopologyHooksReady);
@@ -6755,6 +6757,56 @@ bool XE::dsiNativeUpdateAllowed(IOService *fb) {
         Display13FBMemory::field<uint32_t>(path,0x3644)==2 && c.dsiPort && c.dsiPort->getMetaClass()->getClassSize()>=0x580 &&
         Display13FBMemory::field<OSObject *>(path,0x3648)==c.dsiPort && Display13FBMemory::field<uint32_t>(c.dsiPort,0x550)==1;
     IOLockUnlock(c.lock);return ready;
+}
+
+// Cursor image/state bodies can wait for a frame, so do not extend their
+// native FB-lock intervals. Count admitted DSI calls instead. Stop takes the
+// same FB mutex before testing the count and cannot start until it is zero.
+int XE::beginDSINativeWriter(IOService *controller,IOService *fb) {
+    if(!callbackXE->adlnOutputWiring.dsi)return 0;
+    if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return -1;
+    DSIModeScope scope(fb);if(!scope.lock)return -1;
+    if(!dsiLifecycleTarget(fb,Display13FBMemory::singlePath<OSObject *>(fb)))return 0;
+    if(!callbackXE->dsiNativeWriterHooksReady || !dsiNativeUpdateAllowed(fb))return -1;
+    auto &c=display13FBPower;IOLockLock(c.lock);
+    const bool admitted=controller==c.controller && c.dsiNativeWriters!=UINT32_MAX;
+    if(admitted)++c.dsiNativeWriters;
+    IOLockUnlock(c.lock);return admitted ? 1 : -1;
+}
+void XE::endDSINativeWriter(int token) {
+    if(token!=1)return;
+    auto &c=display13FBPower;IOLockLock(c.lock);
+    if(c.dsiNativeWriters)--c.dsiNativeWriters;
+    else adlnFault(c.memoryFaulted,__LINE__);
+    IOLockUnlock(c.lock);
+}
+uint32_t XE::wrapDSICursorImage(IOService *controller,IOService *fb,void *info) {
+    const int token=beginDSINativeWriter(controller,fb);if(token<0)return kIOReturnNotReady;
+    const auto result=FunctionCast(wrapDSICursorImage,callbackXE->orgDSICursor[0])(controller,fb,info);
+    endDSINativeWriter(token);return result;
+}
+uint32_t XE::wrapDSICursorState(IOService *controller,IOService *fb,int32_t x,int32_t y,bool visible,bool commit) {
+    const int token=beginDSINativeWriter(controller,fb);if(token<0)return kIOReturnNotReady;
+    const auto result=FunctionCast(wrapDSICursorState,callbackXE->orgDSICursor[1])(controller,fb,x,y,visible,commit);
+    endDSINativeWriter(token);return result;
+}
+bool XE::processDSINativeWriters(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
+    const char *symbols[]={
+        "__ZN31AppleIntelFramebufferController16hwSetCursorImageEP21AppleIntelFramebufferP20IOHardwareCursorInfo",
+        "__ZN31AppleIntelFramebufferController16hwSetCursorStateEP21AppleIntelFramebufferiibb"};
+    const uint32_t offsets[]={0x558F6,0x55DA8};
+    const uint8_t entries[][20]={
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x28,0x49,0x89,0xD4},
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x38,0x45,0x89,0xCE}};
+    if(!display13FramebufferRequested || size<=0x55DBC)return false;
+    for(unsigned i=0;i<2;++i) {
+        const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,symbols[i],address,size);patcher.clearError();
+        if(fn!=address+offsets[i] || memcmp(reinterpret_cast<void *>(fn),entries[i],20))return false;
+    }
+    KernelPatcher::RouteRequest routes[]={
+        {symbols[0],wrapDSICursorImage,orgDSICursor[0]},
+        {symbols[1],wrapDSICursorState,orgDSICursor[1]}};
+    const bool ready=patcher.routeMultiple(index,routes,arrsize(routes),address,size);patcher.clearError();return ready;
 }
 
 bool XE::updateDSIBootCache(IOService *controller,IOService *fb,OSObject *path) {
@@ -9209,7 +9261,7 @@ bool XE::disposeDSIPath(IOService *fb,OSObject *path) {
         IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);return idle;
     };
     const bool irqBefore=irqIdle();record[12]=irqBefore;
-    const bool ready=irqBefore && adlnOutputWiring.dsi==1 && controller && controller==adlnTopologyController &&
+    const bool ready=irqBefore && !c.dsiNativeWriters && adlnOutputWiring.dsi==1 && controller && controller==adlnTopologyController &&
         controller->getMetaClass()->getClassSize()>=0x1C20 && c.workLoop==loop &&
         Display13FBMemory::field<IOWorkLoop *>(controller,0xE00)==loop &&
         Display13FBMemory::field<IOService *>(fb,0x1D0)==controller &&
@@ -9871,9 +9923,9 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     const bool acquired=boundLoop && !inGate && reinterpret_cast<bool (*)(IOWorkLoop *)>(adlnWorkLoopTryClose)(loop);
     if(!inGate && !acquired) {if(loop)loop->release();IORecursiveLockUnlock(mutex);return false;}
     IORecursiveLockLock(clock.lock);IOLockLock(c.lock);
-    uint64_t record[38] {4};bool masked=false,maskOK=false,parked=false,restored=false,enabled=false,modeWithdrawn=false;uint32_t master=0;
+    uint64_t record[39] {5};record[38]=c.dsiNativeWriters;bool masked=false,maskOK=false,parked=false,restored=false,enabled=false,modeWithdrawn=false;uint32_t master=0;
     const auto qualified=[&]() {
-        if(adlnOutputWiring.dsi!=1 || !dsiResourcesReady || !dsiProfile.valid() ||
+        if(adlnOutputWiring.dsi!=1 || !dsiResourcesReady || !dsiNativeWriterHooksReady || c.dsiNativeWriters || !dsiProfile.valid() ||
            controller!=c.controller || controller!=adlnTopologyController || c.workLoop!=loop ||
            Display13FBMemory::field<IOWorkLoop *>(controller,0xE00)!=loop ||
            c.pipe[0].memoryFramebuffer!=fb || Display13FBMemory::singlePath<OSObject *>(fb)!=path ||
@@ -10931,7 +10983,7 @@ void XE::wrapAlderLakeNOptimizedDBUF(IOService *controller) {adlnSetupDBUF(contr
 bool XE::bindDSIResources(IOService *controller) {
     auto &c=display13FBPower;auto &clock=comboClockTransaction;auto &irq=display13FBIRQ;
     if(!controller || controller->getMetaClass()->getClassSize()<0x1C20 ||
-       !display13FBIRQReady || !clock.lock || !c.lock)return false;
+       !display13FBIRQReady || !dsiNativeWriterHooksReady || !clock.lock || !c.lock)return false;
     IORecursiveLockLock(clock.lock);IOLockLock(c.lock);
     struct IO : Display13FBBootIO {
         explicit IO(IOMemoryMap *map):Display13FBBootIO{map} {}

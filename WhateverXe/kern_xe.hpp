@@ -222,6 +222,13 @@ private:
     static uint32_t wrapDSISetDetailedTimings(IOService *,OSArray *);
     static uint32_t wrapDSISetDisplayMode(IOService *,int32_t,int32_t);
     static bool dsiNativeUpdateAllowed(IOService *);
+    bool processDSINativeWriters(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    bool dsiNativeWriterHooksReady {};
+    mach_vm_address_t orgDSICursor[2] {};
+    static int beginDSINativeWriter(IOService *,IOService *);
+    static void endDSINativeWriter(int);
+    static uint32_t wrapDSICursorImage(IOService *,IOService *,void *);
+    static uint32_t wrapDSICursorState(IOService *,IOService *,int32_t,int32_t,bool,bool);
     static uint32_t wrapDSIValidateMode(IOService *,int32_t,const void **,const void **);
     static uint32_t wrapDSIGetModes(IOService *,int32_t *);
     static uint32_t wrapDSIGetModeCount(IOService *);

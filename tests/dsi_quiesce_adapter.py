@@ -62,7 +62,7 @@ struct Display13FBIRQIO {
 struct {IORecursiveLock *lock=nullptr;uintptr_t thread=0;XELPComboClock::ClockAllocation allocation;}comboClockTransaction;
 struct {IOLock *lock=nullptr;IOService *controller=nullptr;void *power=nullptr;IOMemoryMap *map=nullptr;IOWorkLoop *workLoop=nullptr;OSObject *dsiPort=nullptr;
  Display13Transcoder::Bindings transcoders;Readout bootDSI;Display13Power::NativeBridge bridge;bool clockFaulted=false,memoryFaulted=false;
- Display13DBUF::State dbuf;
+ Display13DBUF::State dbuf;unsigned dsiNativeWriters=0;
  struct {IOService *memoryFramebuffer=nullptr;uintptr_t publishedScanout=0;struct {uintptr_t record=0;}scanout;bool destroyingPath=false,wmProgramming=false,wmCommitting=false;}pipe[3];
 }display13FBPower;
 struct {uintptr_t base=0;IOSimpleLock *lock=nullptr;IOService *controller=nullptr;Display13FBIRQ::State state;
@@ -95,7 +95,7 @@ void IOSleep(unsigned ms){tick(ms*1000);}void IODelay(unsigned us){tick(us);}
 struct XE {
  uintptr_t adlnWorkLoopInGate=reinterpret_cast<uintptr_t>(inGate),adlnWorkLoopTryClose=reinterpret_cast<uintptr_t>(tryClose),adlnWorkLoopOpen=reinterpret_cast<uintptr_t>(open);
  struct {unsigned dsi=1;operator unsigned()const{return dsi;}}adlnOutputWiring;void *adlnPlatform=nullptr;
- bool dsiResourcesReady=true,dsiStopAttempted=false,dsiIRQParked=false,dsiDDIReleased=false,dsiMemoryReleased=false;
+ bool dsiNativeWriterHooksReady=true,dsiResourcesReady=true,dsiStopAttempted=false,dsiIRQParked=false,dsiDDIReleased=false,dsiMemoryReleased=false;
  IOService *adlnTopologyController=nullptr;Profile dsiProfile;Boot dsiBoot;Quiesce::Result dsiStop;Clock::Result dsiClockStop;
  static bool adlnFreeStoppedPipe(IOService *fb){
   assert(locks==std::vector<unsigned>{1} && display13FBPower.workLoop->gate);
@@ -184,6 +184,11 @@ int main(){
   assert(reused.valid && reused.pll==1 && !reused.keepPLL);
   c.retained(true);const auto before=c.map.bar;assert(!c.run() && c.map.bar==before && c.xe.dsiIRQParked); // one-shot journal
  }
+ {Case c;display13FBPower.dsiNativeWriters=1;const auto before=c.map.bar;
+  assert(!c.run() && c.map.bar==before && !c.xe.dsiStopAttempted && !memoryFrees);
+  display13FBPower.dsiNativeWriters=0;assert(c.run() && c.xe.dsiMemoryReleased);}
+ {Case c;c.xe.dsiNativeWriterHooksReady=false;const auto before=c.map.bar;
+  assert(!c.run() && c.map.bar==before && !c.xe.dsiStopAttempted);}
  for(unsigned bad=0;bad<12;++bad){Case c;
   switch(bad){case 0:c.loop.busy=true;break;case 1:mappingBound=false;break;
    case 2:display13FBIRQ.softwareHandlers=1;break;case 3:display13FBIRQ.handlers=1;display13FBIRQ.scopes.total=1;display13FBIRQ.scopes.display=1;break;

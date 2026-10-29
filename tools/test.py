@@ -11,6 +11,7 @@ python_tests += ['tgl_power_fuses', 'display13_boot_aux', 'display13_aux', 'disp
 python_tests += ['dsi_update_dispatch','dsi_path_disposal','dsi_clock','dsi_quiesce_adapter','dsi_quiesce','dsi_surface','dsi_ggtt','dsi_lifecycle_dispatch','dsi_boot_adoption','dsi_native_cache','dsi_boot_probe','dsi_resources','dsi_boot_adapter','dsi_port_adapter','dsi_apple_adapter','fatal_log_storage','boot_stack_limits','xelp_combo_clock_guard','display13_tc_preparation','display13_tc_disconnect','display13_dbuf_setup','display13_retirement','display13_trial_retirement','display13_port_wait','display13_agdc','display13_training_frontend','framebuffer_donor_runtime','compat_bundle_version']
 jobs += [(n,[sys.executable,str(R/'tests'/(n+'.py'))],None) for n in python_tests]
 if a.donor:jobs += [('display13_agdc_native',[sys.executable,str(R/'tests/display13_agdc.py'),str(a.donor.resolve())],None)]
+if a.donor:jobs += [('dsi_update_dispatch_native',[sys.executable,str(R/'tests/dsi_update_dispatch.py'),str(a.donor.resolve())],None)]
 if a.donor:jobs += [('dsi_path_disposal_native',[sys.executable,str(R/'tests/dsi_path_disposal.py'),str(a.donor.resolve())],None)]
 if a.donor:jobs += [('dsi_surface_native',[sys.executable,str(R/'tests/dsi_surface.py'),str(a.donor.resolve())],None)]
 if a.donor:jobs += [('dsi_native_cache_native',[sys.executable,str(R/'tests/dsi_native_cache.py'),str(a.donor.resolve())],None)]
