@@ -136,6 +136,9 @@ private:
     XELP::DSI::Profile dsiProfile;
     XELP::DSI::Boot dsiBoot;
     bool prepareDSIFirmware(IOService *);
+    bool dsiResourcesReady {};
+    bool bindDSIResources(IOService *);
+    static uint32_t wrapDisplay13ProbeMode(OSObject *);
     // Render additionally requires the native GT resource certificate.
     bool adlnNativeReady {false};
 	bool display13FramebufferRequested {false};

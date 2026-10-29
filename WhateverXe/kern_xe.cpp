@@ -4250,13 +4250,16 @@ bool XE::xelpBindProbe(void *controller) {
         config.legacy=tglTCProbeMask();config.typeC=tglTCWiring.typeC;config.excluded=tglTCWiring.excluded;
         config.legacyBackend=tglAUXParentMask;
     } else {
+        auto external=adlnOutputWiring;external.dsi=0;
+        const bool dsi=adlnOutputWiring.dsi!=0;
         if(!display13FBTopologyHooksReady || controller!=adlnTopologyController ||
-            !Display13FBTopology::supportedWiring(adlnOutputWiring,xeProfile.display==XELP::Display::XeLPD) ||
+            (dsi && (!adlnOutputWiring.described() || !__atomic_load_n(&dsiResourcesReady,__ATOMIC_ACQUIRE))) ||
+            !Display13FBTopology::supportedWiring(dsi?external:adlnOutputWiring,xeProfile.display==XELP::Display::XeLPD) ||
             ((adlnOutputWiring.selected()&0x78) && (!display13TCProbeReady || !display13FBTCHooksReady)) ||
             (adlnOutputWiring.dp && (!display13TCDPProbeReady || !display13FBSSTHooksReady || !display13FBAUXHooksReady)) ||
             (adlnOutputWiring.typeC && !display13DPAltProbeReady) ||
             (adlnOutputWiring.panel && (!display13PanelProbeReady || !display13PanelPowerReady || !display13FBSSTHooksReady || !display13FBAUXHooksReady)))return false;
-        config.combo=adlnOutputWiring.selected()&3;config.comboBackend=3;
+        config.combo=(adlnOutputWiring.selected()&~adlnOutputWiring.dsi)&3;config.comboBackend=3;
         config.typeC=adlnOutputWiring.typeC;
         config.legacy=(adlnOutputWiring.selected()&0x78)&~config.typeC;config.legacyBackend=(config.legacy|config.typeC)?0x78:0;
     }
@@ -6676,6 +6679,15 @@ bool XE::wrapAlderLakeNGetOSInformation(IOService *controller) {
 	controller->setProperty("N97FBConnectorPolicy",copy+0x20,24*Display13FBTopology::Ports);
 	controller->setProperty("N97FBDMCPolicy",dcPolicy,sizeof(dcPolicy));
 	return true;
+}
+
+uint32_t XE::wrapDisplay13ProbeMode(OSObject *port) {
+    auto self=callbackXE;
+    if(!port || port->getMetaClass()->getClassSize()<0x6B0)return 0;
+    auto config=Display13FBMemory::field<uint32_t *>(port,0x548);
+    if(self->adlnOutputWiring.dsi && config && config[0]==0)
+        return !display13Offline && __atomic_load_n(&self->dsiResourcesReady,__ATOMIC_ACQUIRE) && setDSIPortMode(port,1)==kIOReturnSuccess ? 1U : 0U;
+    return self->xelpProviderProbe ? reinterpret_cast<uint32_t (*)(OSObject *)>(self->xelpProviderProbe)(port) : 0;
 }
 
 uint32_t XE::wrapAlderLakeNPortState(OSObject *port) {
@@ -9893,7 +9905,7 @@ void XE::wrapAlderLakeNEngineEnable(void *power) {
 		!c.bridge.state.suspended && acquired.status==Display13Power::Status::Complete && !c.clockFaulted && clock.status==Display13Clock::Status::Complete &&
 		Display13Power::objectAssociations(power,0x80,c.controller,0x1C20)) {
 		Display13FBDBUFIO io {c.map};
-		status=Display13DBUF::begin(io,c.dbuf,__builtin_popcount(callbackXE->adlnOutputWiring.selected())>=3 ? 7U : 0U);
+		status=Display13DBUF::begin(io,c.dbuf,__builtin_popcount(callbackXE->adlnOutputWiring.selected())>=3 ? 7U : 0U,c.transcoders);
 		if(status==Display13DBUF::Status::Complete) {
 			if(acquired.status==Display13Power::Status::Complete)status=Display13DBUF::resumeEngine(io,c.dbuf);
 			else status=Display13DBUF::Status::Power;
@@ -10316,6 +10328,41 @@ void XE::adlnSetupDBUFPipe(IOService *controller,IOService *fb,unsigned pipe,boo
 void XE::wrapAlderLakeNDefaultDBUF(IOService *controller) {adlnSetupDBUF(controller,false);}
 void XE::wrapAlderLakeNOptimizedDBUF(IOService *controller) {adlnSetupDBUF(controller,true);}
 
+// Called outside the owner lock, before native engine/probe/IRQ users start.
+// The lock order matches clock clients: Combo clock -> display owner -> IRQ.
+// Failure retains any already acquired boot power references for cleanup.
+bool XE::bindDSIResources(IOService *controller) {
+    auto &c=display13FBPower;auto &clock=comboClockTransaction;auto &irq=display13FBIRQ;
+    if(!controller || controller->getMetaClass()->getClassSize()<0x1C20 ||
+       !display13FBIRQReady || !clock.lock || !c.lock)return false;
+    IORecursiveLockLock(clock.lock);IOLockLock(c.lock);
+    Display13FBBootIO io{c.map};
+    const bool owned=adlnOutputWiring.dsi==1 && dsiProfile.valid() && dsiBoot.complete() &&
+        c.controller==controller && controller==adlnTopologyController && !clock.thread &&
+        !dsiResourcesReady && c.transcoders.dsi0Pipe==UINT32_MAX &&
+        !c.engineEnabled && !c.dbuf.begun && !c.memoryFaulted && !c.clockFaulted &&
+        c.bridge.outputHeld(io,0,0) && XELP::DSI::bootUnchanged(io,dsiBoot,xelpMemory);
+    auto irqLock=Display13FBMemory::field<IOSimpleLock *>(controller,0x90);
+    bool ready=false;
+    if(owned && irqLock) {
+        XELPComboClock::ClockSnapshot snapshot;snapshot.layout=XELPComboClock::Layout::Display13;
+        snapshot.mux[0]=io.read(0x164280);
+        for(unsigned p=0;p<snapshot.pllCount();++p)snapshot.enable[p]=io.read(0x46010+4*p);
+        const auto saved=IOSimpleLockLockDisableInterrupt(irqLock);
+        if(!irq.controller && !irq.handlers && !irq.softwareHandlers && !irq.quiescing &&
+           !irq.admittedPipes && irq.state.transcoders.dsi0Pipe==UINT32_MAX && !irq.state.begun && !irq.state.enabled && !irq.state.faulted &&
+           clock.allocation.retain(0,dsiBoot.source.identity.pll,reinterpret_cast<uintptr_t>(controller),snapshot)) {
+            c.bootDSI=dsiBoot.source;c.transcoders.dsi0Pipe=0;
+            irq.state.transcoders=c.transcoders;irq.base=c.map->getVirtualAddress();irq.lock=irqLock;
+            __atomic_store_n(&irq.admittedPipes,1U,__ATOMIC_RELEASE);
+            __atomic_store_n(&irq.controller,controller,__ATOMIC_RELEASE);
+            __atomic_store_n(&dsiResourcesReady,true,__ATOMIC_RELEASE);ready=true;
+        }
+        IOSimpleLockUnlockEnableInterrupt(irqLock,saved);
+    }
+    IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);return ready;
+}
+
 void XE::wrapAlderLakeNPowerInit(void *power,void *controller) {
 	auto &c=display13FBPower; if(!c.lock)return;
 	uint64_t record[32] {}; Display13Power::Result result;
@@ -10338,16 +10385,23 @@ void XE::wrapAlderLakeNPowerInit(void *power,void *controller) {
 			// Reference failures retain mappings/objects for diagnosis until reboot.
 			service->retain();static_cast<OSObject *>(power)->retain();static_cast<OSObject *>(c.access)->retain();
 			Display13FBPowerIO io {map};
-			const auto wells=io.read(Display13Power::Driver),a=io.read(0x60400),pipeA=io.read(0x70008);
-			const auto bootPort=Display13FBTopology::bootDDI(callbackXE->adlnOutputWiring,a,true);
+            const auto wells=io.read(Display13Power::Driver);
+            const bool pipePowered=Display13FBIRQ::powered(wells,0);
+            const auto a=pipePowered ? io.read(0x60400) : UINT32_MAX;
+            const auto pipeA=pipePowered ? io.read(0x70008) : UINT32_MAX;
+            const bool dsi=callbackXE->adlnOutputWiring.dsi==1;
+			const auto bootPort=dsi ? 0U : Display13FBTopology::bootDDI(callbackXE->adlnOutputWiring,a,true);
 			const bool dpBoot=bootPort<7 && (callbackXE->adlnOutputWiring.links()&(1U<<bootPort));
-			const auto ddi=bootPort<7 ? io.read(0x64000+0x100*bootPort) : UINT32_MAX;
+			const auto ddi=pipePowered && bootPort<7 ? io.read(0x64000+0x100*bootPort) : UINT32_MAX;
 			// The initial protected references belong to the measured pipe A /
 			// selected boot display. Validate that live topology before acquiring
 			// them. Resource/surface/IRQ adoption remains a separate operation.
-			bool boot=bootPort<7 && wells!=UINT32_MAX && (wells&(1U<<10)) &&
+            Display13FBBootIO sourceIO{map};
+			bool boot=dsi ? callbackXE->dsiBoot.complete() &&
+                XELP::DSI::bootUnchanged(sourceIO,callbackXE->dsiBoot,xelpMemory) :
+                bootPort<7 && wells!=UINT32_MAX && (wells&(1U<<10)) &&
 				pipeA!=UINT32_MAX && ddi!=UINT32_MAX && (pipeA&(1U<<31)) && (ddi&(1U<<31));
-			for(unsigned pipe=1;pipe<3;++pipe) if(wells&(1U<<(2*(5+pipe)))) {
+			for(unsigned pipe=1;boot && pipe<3;++pipe) if(Display13FBIRQ::powered(wells,pipe)) {
 				const auto trans=io.read(0x60400+pipe*0x1000);
 				boot=boot && trans!=UINT32_MAX && !(trans&(1U<<31));
 			}
@@ -10373,6 +10427,12 @@ void XE::wrapAlderLakeNPowerInit(void *power,void *controller) {
 			if(result.status==Display13Power::Status::Complete && !Display13Power::publishObject(c.bridge,power,0x80,controller,0xC60)) {
 				result.status=Display13Power::Status::NotReady;adlnFault(c.bridge.state.faulted,__LINE__);
 			}
+            if(result.status==Display13Power::Status::Complete && dsi) {
+                IOLockUnlock(c.lock);
+                const bool bound=callbackXE->bindDSIResources(service);
+                IOLockLock(c.lock);
+                if(!bound){result.status=Display13Power::Status::NotReady;adlnFault(c.bridge.state.faulted,__LINE__);}
+            }
             if(result.status==Display13Power::Status::Complete) {
                 // Initial discovery can call the virtual probe directly without
                 // probePortState. Bind at the proven manager/power-owner boundary
@@ -10381,7 +10441,7 @@ void XE::wrapAlderLakeNPowerInit(void *power,void *controller) {
                 IORegistryEntry::getRegistryRoot()->setProperty("N97FBSharedProbeBound",bound);
                 if(!bound){result.status=Display13Power::Status::NotReady;adlnFault(c.bridge.state.faulted,__LINE__);}
             }
-			if(result.status==Display13Power::Status::Complete && callbackXE->display13FBIRQReady) {
+			if(result.status==Display13Power::Status::Complete && !dsi && callbackXE->display13FBIRQReady) {
 				auto irqLock=*reinterpret_cast<IOSimpleLock **>(static_cast<uint8_t *>(controller)+0x90);
 				if(irqLock) {
 					display13FBIRQ.base=map->getVirtualAddress();display13FBIRQ.lock=irqLock;
@@ -10394,6 +10454,16 @@ void XE::wrapAlderLakeNPowerInit(void *power,void *controller) {
             if(result.status==Display13Power::Status::Complete && dpBoot && bootPort>=3)tcBootDDI=bootPort;
 		} else OSSafeReleaseNULL(map);
 	}
+    if(result.status==Display13Power::Status::Complete && callbackXE->adlnOutputWiring.dsi) {
+        auto getPort=reinterpret_cast<OSObject *(*)(uint32_t)>(callbackXE->tglPortByDDI);
+        auto port=getPort?getPort(0):nullptr;
+        bool adopted=false;
+        if(port) {
+            port->retain();IOLockUnlock(c.lock);adopted=setDSIPortMode(port,1)==kIOReturnSuccess;
+            IOLockLock(c.lock);port->release();
+        }
+        if(!adopted){result.status=Display13Power::Status::NotReady;adlnFault(c.bridge.state.faulted,__LINE__);}
+    }
     if(tcBootDDI<7) {
         // Exact donor start initializes every port before PowerWell::init.
         // Establish the same durable Mode used by probing/hotplug before any
@@ -11828,7 +11898,7 @@ bool XE::processFramebufferCommon(KernelPatcher &patcher,size_t index,mach_vm_ad
  patcher.clearError();
  if(probe) {
   // Slot repair is common; the target retains the existing hardware adapter.
-  auto replacement=display13FramebufferRequested ? xelpProviderProbe : reinterpret_cast<mach_vm_address_t>(wrapTGLProbePort);
+  auto replacement=display13FramebufferRequested ? reinterpret_cast<mach_vm_address_t>(wrapDisplay13ProbeMode) : reinterpret_cast<mach_vm_address_t>(wrapTGLProbePort);
   patcher.routeBlock(table+0x188,reinterpret_cast<uint8_t *>(&replacement),sizeof(replacement));
   probe=patcher.getError()==KernelPatcher::Error::NoError && *reinterpret_cast<mach_vm_address_t *>(table+0x188)==replacement;
   patcher.clearError();

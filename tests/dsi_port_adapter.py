@@ -9,7 +9,7 @@ import hashlib, re, subprocess, sys, tempfile
 root=Path(__file__).resolve().parents[1]
 source=(root/'WhateverXe/kern_xe.cpp').read_text()
 functions='\n'.join(re.search(r'uint32_t XE::'+name+r'\(.*?\n\}',source,re.S)[0]
-                    for name in ['setDSIPortMode','wrapAlderLakeNPortState'])
+                    for name in ['setDSIPortMode','wrapAlderLakeNPortState','wrapDisplay13ProbeMode'])
 dispatch=re.search(r'uint32_t XE::wrapDisplay13TCMode\(.*?\n\}',source,re.S)[0]
 assert dispatch.index('return setDSIPortMode(port,wanted)')<dispatch.index('self->orgDisplay13TCMode')
 donor=None
@@ -50,12 +50,14 @@ unsigned nativeCalls=0,providerCalls=0,modeCalls=0;
 uint32_t nativeProbe(OSObject *){++nativeCalls;return 1;}
 uint32_t baseMode(OSObject *p,uint32_t m){assert(m==1);++modeCalls;Display13FBMemory::field<uint32_t>(p,0x550)=m;return 0;}
 struct XE {
+ bool dsiResourcesReady=false;uintptr_t xelpProviderProbe=reinterpret_cast<uintptr_t>(nativeProbe);
  bool display13FBTCHooksReady=true,display13FBTopologyHooksReady=true;
  uintptr_t display13TCBaseMode=reinterpret_cast<uintptr_t>(baseMode);
  void *adlnTopologyController;alignas(8) uint8_t adlnPlatform[0x1C0]{};Display13OutputWiring adlnOutputWiring;
  uint32_t (*orgAlderLakeNPortState)(OSObject*)=nativeProbe;
  bool xelpBindProbe(void *){++providerCalls;return true;}
  static uint32_t setDSIPortMode(OSObject *,uint32_t);
+ static uint32_t wrapDisplay13ProbeMode(OSObject *);
  static uint32_t wrapAlderLakeNPortState(OSObject *);
 } xe,*callbackXE=&xe;
 bool display13Offline=false;
@@ -110,6 +112,8 @@ int main(int argc,char **argv){
  reject();Display13FBMemory::field<uint32_t*>(&port,0x548)=config;
  assert(XE::setDSIPortMode(&port,0)==kIOReturnUnsupported && !c.dsiPort);
  display13Offline=true;assert(!XE::wrapAlderLakeNPortState(&port) && !c.dsiPort);display13Offline=false;
+ assert(!XE::wrapDisplay13ProbeMode(&port));xe.dsiResourcesReady=true;
+ assert(XE::wrapDisplay13ProbeMode(&port)==1 && !nativeCalls && !providerCalls);
  assert(XE::wrapAlderLakeNPortState(&port)==2 && !nativeCalls && !providerCalls);
  assert(Display13FBMemory::field<uint32_t>(&port,0x550)==1 && Display13FBMemory::field<uint32_t>(&port,0x554)==2);
  assert(c.dsiPort==&port && port.refs==2);

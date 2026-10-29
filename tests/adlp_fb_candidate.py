@@ -23,6 +23,7 @@ struct XE {
  XELP::VBT::Ports firmwarePorts;
  bool adlpDisplaySelected=true,adlsDisplaySelected=false,tglHDMIWiringApplied=false,tglTCWiringLoaded=false;
  bool display13PanelProbeReady=true,display13PanelPowerReady=true;
+ bool dsiResourcesReady=false;
  bool display13FBTopologyHooksReady=true,display13TCProbeReady=true,display13FBTCHooksReady=true;
  bool display13DPAltProbeReady=true,display13TCDPProbeReady=true,display13DPProbeReady=false,display13FBSSTHooksReady=true,display13FBAUXHooksReady=true;
  uintptr_t xelpProviderProbe=1,xelpProviderConfigureProbe=reinterpret_cast<uintptr_t>(configure);
@@ -35,6 +36,10 @@ struct XE {
 };
 FUNCTIONS
 int main(){
+ XE dsi;dsi.adlnOutputWiring.valid=true;dsi.adlnOutputWiring.dsi=1;
+ dsi.adlnOutputWiring.hdmi=2;dsi.adlnOutputWiring.ddc[1]=2;
+ assert(!dsi.xelpBindProbe((void*)1));dsi.dsiResourcesReady=true;
+ assert(dsi.xelpBindProbe((void*)1) && seen.combo==2);
  XE x;IOService pci;x.firmwarePorts.status=XELP::VBT::Status::Valid;x.firmwarePorts.present=0x38;
  for(unsigned d=3;d<=5;++d){auto &p=x.firmwarePorts.port[d];p.type=d==5?4:0x12;p.ddc=d;p.capabilities=3;p.hdmiPreset=7;}
  auto w=x.display13BoardWiring(&pci);assert(w.described() && w.hdmi==0x18 && w.ddc[3]==9 && w.ddc[4]==10 && !w.dp);

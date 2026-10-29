@@ -81,7 +81,7 @@ struct XE {
  static bool wrapFramebufferStart(IOService*,IOService*);
  static bool wrapDisplay13FramebufferStart(IOService*,IOService*);
  static bool wrapTGLFramebufferStart(IOService*,IOService*);
- static void wrapTGLProbePort(){}static void wrapFramebufferInit(){}static void wrapFramebufferComputeLanes(){}
+ static void wrapDisplay13ProbeMode(){}static void wrapTGLProbePort(){}static void wrapFramebufferInit(){}static void wrapFramebufferComputeLanes(){}
 };
 XE *callbackXE;
 bool XE::wrapDisplay13FramebufferStart(IOService*,IOService*){assert(callbackXE->display13FramebufferRequested);assert(!callbackXE->framebufferStartedController);if(callbackXE->stopDuringStart)callbackXE->tglLeasesStopping=true;++callbackXE->startCalls;return callbackXE->nativeOK;}
