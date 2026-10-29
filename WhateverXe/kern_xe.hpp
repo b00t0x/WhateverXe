@@ -11,6 +11,7 @@
 #include "kern_tgl_tc_boot.hpp"
 #include "kern_dsi_boot.hpp"
 #include "kern_dsi_ggtt.hpp"
+#include "kern_dsi_surface.hpp"
 #include "kern_tgl_tc_native.hpp"
 #include "kern_tgl_native_fia.hpp"
 #include "kern_tgl_hdmi_wiring.hpp"
