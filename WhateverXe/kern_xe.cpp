@@ -5539,6 +5539,7 @@ bool XE::processDisplay13FramebufferLifecycle(KernelPatcher &patcher,size_t inde
 	const uint8_t removeCall[] {0xE8,0x67,0x02,0x00,0x00};
 	const bool pathKnown=pathFn==address+0x68AAE && !memcmp(reinterpret_cast<void *>(pathFn),pathEntry,sizeof(pathEntry)) &&
 		!memcmp(reinterpret_cast<void *>(address+0x68C38),removeCall,sizeof(removeCall));
+    if(adlnOutputWiring.dsi && !processDSIPathDisposal(patcher,index,address,size))return false;
 	KernelPatcher::RouteRequest pathRoute {pathSymbol,wrapAlderLakeNFreePath,orgAlderLakeNFreePath};
 	const bool pathRouted=disableRouted && pathKnown && patcher.routeMultipleShort(index,&pathRoute,1,address,size);
 	patcher.clearError();
@@ -9106,8 +9107,131 @@ bool XE::adlnFreeStoppedPipe(IOService *fb) {
     return freed;
 }
 
+// The whole freeDisplayPathResources body also touches global audio and can
+// reset a normal DDI port. Keep only its audited CPU leaves for the DSI path.
+bool XE::processDSIPathDisposal(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
+    const char *symbols[]={
+        "__ZN31AppleIntelFramebufferController9freePlaneEP15AppleIntelPlane",
+        "__ZN31AppleIntelFramebufferController10freeScalerEP16AppleIntelScaler",
+        "__ZN21AppleIntelFramebuffer17detachDisplayPathEP21AppleIntelDisplayPath",
+        "__ZN21AppleIntelFramebuffer17removeDisplayPathEP21AppleIntelDisplayPath"};
+    const uint32_t offsets[]={0x5751C,0x5739A,0x67FB4,0x68EA4};
+    const uint8_t entries[][16]={
+        {0x55,0x48,0x89,0xE5,0x48,0xFF,0x05,0xC9,0x96,0x08,0x00,0x48,0x85,0xF6,0x74,0x50},
+        {0x55,0x48,0x89,0xE5,0x48,0xFF,0x05,0xEB,0x97,0x08,0x00,0x48,0x85,0xF6,0x74,0x20},
+        {0x55,0x48,0x89,0xE5,0x48,0xFF,0x05,0x19,0xC5,0x07,0x00,0x48,0x8B,0x05,0x0A,0xC5},
+        {0x55,0x48,0x89,0xE5,0x41,0x56,0x53,0x48,0xFF,0x05,0xEE,0xB8,0x07,0x00,0x48,0x8B}};
+    if(size<=0x138BB8)return false;
+    mach_vm_address_t functions[4] {};
+    for(unsigned i=0;i<4;++i) {
+        functions[i]=patcher.solveSymbol<mach_vm_address_t>(index,symbols[i],address,size);patcher.clearError();
+        if(functions[i]!=address+offsets[i] || memcmp(reinterpret_cast<void *>(functions[i]),entries[i],16))return false;
+    }
+    const auto map=patcher.solveSymbol<mach_vm_address_t>(index,"__ZN31AppleIntelFramebufferController12fPipeToFBMapE",address,size);
+    patcher.clearError();if(map!=address+0x138BB0)return false;
+    dsiFreePlane=functions[0];dsiFreeScaler=functions[1];dsiDetachPath=functions[2];dsiRemovePath=functions[3];dsiPipeMap=map;
+    return true;
+}
+
+// Caller retains FB/path, owns its recursive mutex, and has detached its DDB
+// reservation. Gate ownership excludes queued native work across PG put and
+// CPU disposal. A failed put leaves the native path arrays and objects intact.
+bool XE::disposeDSIPath(IOService *fb,OSObject *path) {
+    auto &c=display13FBPower;
+    if(!c.lock || !fb || !path || fb->getMetaClass()->getClassSize()<0x4B90 ||
+       path->getMetaClass()->getClassSize()<0x3730 || !dsiFreePlane || !dsiFreeScaler ||
+       !dsiDetachPath || !dsiRemovePath || !dsiPipeMap ||
+       !adlnWorkLoopInGate || !adlnWorkLoopTryClose || !adlnWorkLoopOpen)return false;
+    IOLockLock(c.lock);auto loop=c.workLoop;if(loop)loop->retain();IOLockUnlock(c.lock);
+    if(!loop)return false;
+    const bool inGate=reinterpret_cast<bool (*)(const IOWorkLoop *)>(adlnWorkLoopInGate)(loop);
+    const bool acquired=!inGate && reinterpret_cast<bool (*)(IOWorkLoop *)>(adlnWorkLoopTryClose)(loop);
+    if(!inGate && !acquired){loop->release();return false;}
+    uint64_t record[14] {1};IOLockLock(c.lock);
+    auto controller=static_cast<IOService *>(c.controller);
+    auto port=c.dsiPort;
+    auto plane=Display13FBMemory::field<OSObject *>(path,0x32C8);
+    auto scaler=Display13FBMemory::field<OSObject *>(path,0x32C0);
+    auto planeScaler=plane && plane->getMetaClass()->getClassSize()>=0x1C8 ? Display13FBMemory::field<OSObject *>(plane,0x88) : nullptr;
+    auto pipeMap=*reinterpret_cast<IOService ***>(dsiPipeMap);
+    const auto scalerOwned=[&](OSObject *o) {
+        return !o || (o->getMetaClass()->getClassSize()>=0x58 &&
+            Display13FBMemory::field<IOService *>(o,0x10)==fb && Display13FBMemory::field<uint8_t>(o,0x20)==1 &&
+            Display13FBMemory::field<uint32_t>(o,0x18)==0);
+    };
+    bool planeTailEmpty=true;for(unsigned i=1;i<5;++i)if(Display13FBMemory::field<uintptr_t>(path,0x32C8+8*i))planeTailEmpty=false;
+    const auto attached=Display13FBMemory::field<uint32_t>(fb,0x4A00);
+    const auto irqIdle=[&]() {
+        auto &irq=display13FBIRQ;
+        if(!controller || controller->getMetaClass()->getClassSize()<0x1C20 || !adlnIRQOwner(controller) || !irq.lock)return false;
+        const auto saved=IOSimpleLockLockDisableInterrupt(irq.lock);
+        const bool idle=!irq.state.faulted && !irq.quiescing && !irq.blockedPipes &&
+            !(irq.state.active&1) && !(irq.admittedPipes&1) && irq.scopes.total==irq.handlers &&
+            !irq.scopes.display && !irq.softwareHandlers &&
+            !(__atomic_load_n(reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(controller)+0xE08),__ATOMIC_ACQUIRE)&Display13FBIRQ::pipeEvents(0)) &&
+            !__atomic_load_n(reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(controller)+0xE0C),__ATOMIC_ACQUIRE) &&
+            !(__atomic_load_n(reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(controller)+0xE10),__ATOMIC_ACQUIRE)&3U);
+        IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);return idle;
+    };
+    const bool irqBefore=irqIdle();record[12]=irqBefore;
+    const bool ready=irqBefore && adlnOutputWiring.dsi==1 && controller && controller==adlnTopologyController &&
+        controller->getMetaClass()->getClassSize()>=0x1C20 && c.workLoop==loop &&
+        Display13FBMemory::field<IOWorkLoop *>(controller,0xE00)==loop &&
+        Display13FBMemory::field<IOService *>(fb,0x1D0)==controller &&
+        Display13FBMemory::field<IOService *>(path,0x32B0)==fb &&
+        Display13FBMemory::field<uint32_t>(path,0x3640)==0 && Display13FBMemory::field<uint32_t>(path,0x3644)==1 &&
+        c.pipe[0].memoryFramebuffer==fb && c.pipe[0].destroyingPath && !c.pipe[0].publishedScanout && !c.pipe[0].scanout.record &&
+        !c.memoryFaulted && !c.clockFaulted && !c.bridge.state.faulted && !c.bridge.state.suspended && !c.dbuf.faulted &&
+        !(c.dbuf.selected&1) && !c.dbuf.pipe[0].consumers && !c.dbuf.pipe[0].unretired &&
+        dsiStop.complete() && dsiClockStop.complete() && dsiIRQParked && dsiDDIReleased && dsiMemoryReleased && !dsiPGReleased &&
+        c.bridge.bootAdopted && c.bridge.bootPath==reinterpret_cast<uintptr_t>(path) && c.bridge.bootPort==0 &&
+        !c.bridge.bootPGProtected && c.bridge.pgRefs[0]==1 && !c.bridge.ddiRefs[0] &&
+        Display13FBMemory::field<uint8_t>(fb,0x4288)==0xFF && !Display13FBMemory::field<uintptr_t>(fb,0x4348) &&
+        port && port->getMetaClass()->getClassSize()>=0x580 && Display13FBMemory::field<OSObject *>(path,0x3648)==port &&
+        Display13FBMemory::field<uint32_t>(port,0x550)==1 && Display13FBMemory::field<uint32_t>(port,0x554)<=3 &&
+        !Display13FBMemory::field<uintptr_t>(path,0x32B8) && planeTailEmpty &&
+        plane && plane->getMetaClass()->getClassSize()>=0x1C8 && Display13FBMemory::field<IOService *>(plane,0x68)==fb &&
+        Display13FBMemory::field<OSObject *>(plane,0x70)==path && Display13FBMemory::field<uint32_t>(plane,0x78)==0 &&
+        scalerOwned(scaler) && scalerOwned(planeScaler) &&
+        Display13FBMemory::field<uint32_t>(fb,0x49E8)==1 && Display13FBMemory::field<OSObject *>(fb,0x49F0)==path &&
+        attached<=1 && Display13FBMemory::field<OSObject *>(fb,0x4A08)==(attached ? path : nullptr) && pipeMap && pipeMap[0]==fb;
+    record[1]=ready;record[2]=c.bridge.pgRefs[0];record[3]=c.dbuf.selected;record[4]=attached;
+    auto power=c.power;IOLockUnlock(c.lock);
+    const bool put=ready && power && adlnPowerReference(power,2,1);
+    IOLockLock(c.lock);
+    if(put)dsiPGReleased=c.power==power && c.controller==controller && !c.bridge.state.faulted &&
+        !c.bridge.pgRefs[0] && !c.bridge.pgLease[0].owner;
+    record[5]=put;record[6]=dsiPGReleased;record[7]=c.bridge.pgRefs[0];
+    bool removed=false;const bool irqAfter=put && irqIdle();record[13]=irqAfter;
+    if(irqAfter && dsiPGReleased && !c.memoryFaulted && !c.dbuf.faulted && !c.clockFaulted &&
+       c.pipe[0].memoryFramebuffer==fb && *reinterpret_cast<IOService ***>(dsiPipeMap)==pipeMap && pipeMap[0]==fb) {
+        // These leaves only update CPU objects; no power or MMIO callback.
+        reinterpret_cast<void (*)(IOService *,OSObject *)>(dsiFreePlane)(controller,plane);
+        reinterpret_cast<void (*)(IOService *,OSObject *)>(dsiFreeScaler)(controller,scaler);
+        if(Display13FBMemory::field<uint32_t>(port,0x554)==3)
+            *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(port)+0x554)=2;
+        // The normal setPortMode(0) could reset DDI. Hardware is already stopped.
+        if(!Display13FBMemory::field<uint32_t>(port,0x554))
+            *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(port)+0x550)=0;
+        *reinterpret_cast<OSObject **>(reinterpret_cast<uint8_t *>(path)+0x3648)=nullptr;
+        reinterpret_cast<void (*)(IOService *,OSObject *)>(dsiDetachPath)(fb,path);
+        reinterpret_cast<void (*)(IOService *,OSObject *)>(dsiRemovePath)(fb,path);
+        const auto freedScaler=[](OSObject *o) {return !o || (!Display13FBMemory::field<uintptr_t>(o,0x10) && !Display13FBMemory::field<uint8_t>(o,0x20));};
+        removed=!Display13FBMemory::field<uint32_t>(fb,0x49E8) && !Display13FBMemory::field<uintptr_t>(fb,0x49F0) &&
+            !Display13FBMemory::field<uint32_t>(fb,0x4A00) && !Display13FBMemory::field<uintptr_t>(fb,0x4A08) && !pipeMap[0] &&
+            !Display13FBMemory::field<uint32_t>(path,0x3644) && !Display13FBMemory::field<uintptr_t>(path,0x32B0) &&
+            !Display13FBMemory::field<uintptr_t>(path,0x3648) && !Display13FBMemory::field<uintptr_t>(plane,0x68) &&
+            freedScaler(scaler) && freedScaler(planeScaler);
+    }
+    record[8]=removed;record[9]=Display13FBMemory::field<uint32_t>(fb,0x49E8);
+    record[10]=Display13FBMemory::field<uint32_t>(fb,0x4A00);record[11]=Display13FBMemory::field<uint32_t>(path,0x3644);
+    IOLockUnlock(c.lock);
+    if(acquired)reinterpret_cast<void (*)(IOWorkLoop *)>(adlnWorkLoopOpen)(loop);
+    loop->release();adlnPublishMemory("N97FBDSIPathDispose",0,record,sizeof(record));return removed;
+}
+
 uint32_t XE::releaseDisplay13Path(IOService *fb,OSObject *path) {
-    if(!Display13FBTopology::multiOutputWiring(callbackXE->adlnOutputWiring)) {
+    if(!Display13FBTopology::multiOutputWiring(callbackXE->adlnOutputWiring) && !callbackXE->adlnOutputWiring.dsi) {
         FunctionCast(wrapAlderLakeNFreePath,callbackXE->orgAlderLakeNFreePath)(fb,path);return 0;
     }
     auto &c=display13FBPower;
@@ -9146,6 +9270,15 @@ uint32_t XE::releaseDisplay13Path(IOService *fb,OSObject *path) {
         adlnFault(c.memoryFaulted,__LINE__);IOLockUnlock(c.lock);
         IORecursiveLockUnlock(mutex);path->release();fb->release();return kIOReturnNotReady;
     }
+    // DSI has no audio link or normal-DDI port reset. Dispose only its proven
+    // stopped native CPU associations and PG lease, never the full donor body.
+    if(callbackXE->adlnOutputWiring.dsi && dsiLifecycleTarget(fb,path)) {
+        if(!selected || !callbackXE->disposeDSIPath(fb,path)) {
+            IOLockLock(c.lock);if(pipe<3)c.pipe[pipe].destroyingPath=false;
+            adlnFault(c.memoryFaulted,__LINE__);IOLockUnlock(c.lock);
+            IORecursiveLockUnlock(mutex);path->release();fb->release();return kIOReturnNotReady;
+        }
+    } else
     FunctionCast(wrapAlderLakeNFreePath,callbackXE->orgAlderLakeNFreePath)(fb,path);
     IOLockLock(c.lock);
     record[6]=countOffset ? Display13FBMemory::field<uint32_t>(fb,countOffset) : UINT32_MAX;

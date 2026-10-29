@@ -147,6 +147,10 @@ private:
     XELP::DSI::Clock::Result dsiClockStop;
     bool dsiStopAttempted {},dsiIRQParked {},dsiDDIReleased {},dsiMemoryReleased {};
     bool quiesceDSIPath(IOService *,IOService *,OSObject *);
+    bool processDSIPathDisposal(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    bool disposeDSIPath(IOService *,OSObject *);
+    mach_vm_address_t dsiFreePlane {},dsiFreeScaler {},dsiDetachPath {},dsiRemovePath {},dsiPipeMap {};
+    bool dsiPGReleased {};
     static uint32_t wrapDisplay13ProbeMode(OSObject *);
     bool dsiCacheHooksReady {};
     mach_vm_address_t orgDSICache[2] {};
