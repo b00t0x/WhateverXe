@@ -4534,6 +4534,9 @@ struct Display13FBPipeContext {
     uint64_t watermarkClockHz {};
 };
 struct Display13FBPowerContext {
+    // Publish with IRQ state only under a quiesced adoption/retirement boundary.
+    // No DSI binding is installed until the complete adoption backend exists.
+    Display13Transcoder::Bindings transcoders;
     IOSimpleLock *tcBankLock {};
     bool tcSupported {},tcBankFaulted {};
     Display13TC::Mode tcMode[4];
@@ -5050,7 +5053,7 @@ static bool adlnBeginClockGuard(Display13FBClockGuard &g) {
 		if(quiet)break;
 		if(ms<20)IOSleep(1);
 	}
-	quiet=quiet && !(io.read(Display13FBIRQ::Master)&Display13FBIRQ::Enable) && Display13FBIRQ::consumersStopped(io,7);
+	quiet=quiet && !(io.read(Display13FBIRQ::Master)&Display13FBIRQ::Enable) && Display13FBIRQ::consumersStopped(io,7,c.transcoders);
 	if(!quiet) {failure(3);adlnEndClockGuard(g,true);}
 	return quiet;
 }
@@ -5930,11 +5933,11 @@ IOReturn XE::wrapDisplay13FBEnableIRQ(IOService *controller) {
 	for(unsigned i=0;i<4;++i)check[19+i]=io.read(otherBanks[i]+4)&~io.read(otherBanks[i]-4);
 	if(Display13FBTopology::multiOutputWiring(callbackXE->adlnOutputWiring)) {
 		const auto admitted=__atomic_load_n(&c.admittedPipes,__ATOMIC_ACQUIRE);
-		const auto actual=Display13FBIRQ::readActivePipes(io,admitted);
+		const auto actual=Display13FBIRQ::readActivePipes(io,admitted,c.state.transcoders);
 		c.status=c.quiescing ? Display13FBIRQ::Status::Power : actual.status;
 		if(c.status==Display13FBIRQ::Status::Complete)c.status=c.state.begun && c.state.enabled ?
-			Display13FBIRQ::extendActivePipes(io,c.state,admitted) : Display13FBIRQ::enable(io,c.state,excluded,adlnSharedGT(controller),actual.active,callbackXE->adlnOutputWiring.selected(),callbackXE->adlnOutputWiring.typeC);
-	} else c.status=c.quiescing ? Display13FBIRQ::Status::Power : Display13FBIRQ::enable(io,c.state,excluded,adlnSharedGT(controller),1,callbackXE->adlnOutputWiring.selected(),callbackXE->adlnOutputWiring.typeC);
+			Display13FBIRQ::extendActivePipes(io,c.state,admitted) : Display13FBIRQ::enable(io,c.state,excluded,adlnSharedGT(controller),actual.active,callbackXE->adlnOutputWiring.hotplug(),callbackXE->adlnOutputWiring.typeC);
+	} else c.status=c.quiescing ? Display13FBIRQ::Status::Power : Display13FBIRQ::enable(io,c.state,excluded,adlnSharedGT(controller),1,callbackXE->adlnOutputWiring.hotplug(),callbackXE->adlnOutputWiring.typeC);
 	adlnIRQCache(controller,io);adlnIRQRecord(record,1);
 	check[23]=static_cast<uint32_t>(c.status);check[24]=c.state.begun;
 	check[25]=c.state.enabled;check[26]=c.state.faulted;check[27]=c.state.active;check[28]=c.state.configured;
@@ -5983,10 +5986,10 @@ void XE::wrapDisplay13FBConfigureVBL(IOService *controller,IOService *fb,OSObjec
 		// Native enablePipe enables PIPECONF before this VBL callback. Re-arm
 		// the full pipe bank only at that real activation boundary after idle HPD.
 		if(!Display13FBTopology::multiOutputWiring(callbackXE->adlnOutputWiring) && enabled && c.state.begun && c.state.enabled && !c.state.active && !c.state.faulted &&
-			Display13FBIRQ::powered(io.read(Display13FBIRQ::Driver),pipe) && (io.read(0x70008+0x1000*pipe)&Display13FBIRQ::Enable)) {
+			Display13FBIRQ::powered(io.read(Display13FBIRQ::Driver),pipe) && Display13Transcoder::running(io,pipe,c.state.transcoders)) {
 			const auto excluded=controller==callbackXE->adlnTopologyController ?
 				Display13FBTopology::excludedHotplug(callbackXE->adlnPlatform,sizeof(callbackXE->adlnPlatform),callbackXE->adlnOutputWiring) : 0;
-			c.status=Display13FBIRQ::enable(io,c.state,excluded,adlnSharedGT(controller),1,callbackXE->adlnOutputWiring.selected(),callbackXE->adlnOutputWiring.typeC);
+			c.status=Display13FBIRQ::enable(io,c.state,excluded,adlnSharedGT(controller),1,callbackXE->adlnOutputWiring.hotplug(),callbackXE->adlnOutputWiring.typeC);
 		}
 		if(!c.state.faulted)c.status=Display13FBIRQ::vblank(io,c.state,pipe,enabled);
 	}
@@ -6255,7 +6258,7 @@ void XE::adlnSysMemOperation(IOService *controller,uint32_t slot,bool release) {
 			bool consumersStopped(unsigned,const Display13FBMemory::Pool &) {
 				if(pipe>=3 || display13FBPower.pipe[pipe].wmProgramming || display13FBPower.pipe[pipe].wmCommitting)return false;
 				Display13FBIRQIO io {display13FBGTT.map->getVirtualAddress()};
-				return Display13FBIRQ::consumersStopped(io,1U<<pipe);
+				return Display13FBIRQ::consumersStopped(io,1U<<pipe,display13FBPower.transcoders);
 			}
 			uint64_t physical(uint64_t offset,uint64_t &span) {
 				IOByteCount length=0;const auto value=buffer->getPhysicalSegment(offset,&length,kIOMemoryMapperNone);span=length;return value;
@@ -8421,7 +8424,7 @@ void XE::wrapAlderLakeNScanoutSetup(IOService *fb) {
         swap[5]=transition.aperture;swap[6]=transition.replace;swap[7]=stolen;
         if(transition.replace && !stolen) {
             Display13FBIRQIO io {c.map->getVirtualAddress()};
-            const bool stopped=Display13FBIRQ::consumersStopped(io,1U<<pipe);swap[8]=stopped;
+            const bool stopped=Display13FBIRQ::consumersStopped(io,1U<<pipe,c.transcoders);swap[8]=stopped;
             {
                 stopPath=Display13FBMemory::singlePath<OSObject *>(fb);
                 const bool bound=c.workLoop && Display13FBMemory::field<IOWorkLoop *>(controller,0xE00)==c.workLoop;
@@ -8457,7 +8460,7 @@ void XE::wrapAlderLakeNScanoutSetup(IOService *fb) {
         IOLockLock(c.lock);
         const auto current=adlnInspectPathBinding(fb,Display13FBMemory::singlePath<OSObject *>(fb),callbackXE->adlnPlatform,callbackXE->adlnOutputWiring);
         swap[15]=static_cast<uint32_t>(current.status);
-        Display13FBIRQIO io {c.map->getVirtualAddress()};swap[16]=Display13FBIRQ::consumersStopped(io,1U<<pipe);
+        Display13FBIRQIO io {c.map->getVirtualAddress()};swap[16]=Display13FBIRQ::consumersStopped(io,1U<<pipe,c.transcoders);
         admitted=current.status==TGLFBBinding::Status::Complete && current.pipe==pipe && current.ddi==binding.ddi &&
             Display13FBMemory::singlePath<OSObject *>(fb)==stopPath && swap[16] && !c.bridge.state.faulted &&
             !c.clockFaulted && !c.memoryFaulted;
@@ -9275,7 +9278,7 @@ void XE::wrapAlderLakeNDisableDisplay(IOService *controller,IOService *fb,OSObje
 				void write(uint32_t r,uint32_t v) {if(r==0x70080+bank || r==0x70088+bank || r==0x70084+bank)*reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+r)=v;}
 				void delayUs(unsigned us) {IOSleep(us/1000);}
 			} io {c.map,pipe*0x1000};
-			result=Display13Cursor::stop(io,pipe);
+			result=Display13Cursor::stop(io,pipe,c.transcoders);
 			if(result.status==Display13Cursor::Status::Complete) {
 				// Keep the donor's visible/control cache consistent with the stopped cursor.
 				*reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(path)+0x170)=0;
@@ -9416,7 +9419,7 @@ Display13WM::Latch XE::adlnVerifyWMLatch(IOService *fb,uint64_t nativeHz,uint64_
 		result.status=Display13WM::Status::Conflict;return result;
 	}
 	const bool cursor=readout.read(0x70080+bank)&63;
-	const auto conf=readout.read(0x70008+bank);
+	const auto conf=Display13Transcoder::control(readout,pipe,c.transcoders);
 	if(conf==UINT32_MAX) {result.status=Display13WM::Status::Readback;return result;}
 	// Cursor setup may follow primary arm. Keep old slices and pending bits
 	// until every active consumer has actually been programmed.
@@ -9438,7 +9441,7 @@ Display13WM::Latch XE::adlnVerifyWMLatch(IOService *fb,uint64_t nativeHz,uint64_
 	const Display13WM::Snapshot expected {
 		&c.pipe[pipe].wm[0],&c.pipe[pipe].wm[1],primaryRaw,cursorRaw,
 		c.pipe[pipe].wmSurface[0],c.pipe[pipe].wmSurface[1],readout.read(0x45004),nativeHz,c.pipe[pipe].wm0Only[0],cursor,
-		Display13WM::pipeLineTime(c.pipe[pipe].wm[0].htotal,pipePixel),pipePixel,pipe
+		Display13WM::pipeLineTime(c.pipe[pipe].wm[0].htotal,pipePixel),pipePixel,pipe,c.transcoders
 	};
 	if(!Display13WM::clockFits(expected,targetHz)) {result.status=Display13WM::Status::Input;return result;}
 	return Display13WM::latch(io,expected);

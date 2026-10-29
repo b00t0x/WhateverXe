@@ -261,6 +261,21 @@ int main() {
         assert(latch(io,io.snapshot(variable)).status==Status::Readback);
         variable.height=0;assert(latch(io,io.snapshot(variable)).status==Status::Input);
     }
+    // DSI timing follows transcoder0 while the surface/frame/WM proof stays
+    // on the actual pipe. Remove ordinary timings so accidental fallback fails.
+    for(unsigned pipe=0;pipe<3;++pipe) {
+        LatchIO io(p);io.moveToPipe(pipe);const auto bank=0x1000*pipe;
+        io.regs[0x6B000]=io.regs[0x60000+bank];io.regs[0x6B00C]=io.regs[0x6000C+bank];
+        io.regs.erase(0x60000+bank);io.regs.erase(0x6000C+bank);
+        io.regs[0x70008+bank]=0;io.regs[0x7B008]=0xC0000000;
+        const uint32_t inputs[]={0,5,6};io.regs[0x6B400]=0x80000006|(inputs[pipe]<<12);
+        auto expected=io.snapshot(p);expected.transcoders.dsi0Pipe=pipe;
+        auto result=latch(io,expected);
+        assert(result.status==Status::Complete && result.waitUs==2000 && io.writes.empty());
+        io.regs[0x6B400]^=1U<<12;assert(latch(io,expected).status==Status::Conflict);
+        io.regs[0x6B400]^=1U<<12;io.regs[0x70008+bank]=0xC0000000;
+        assert(latch(io,expected).status==Status::Conflict);
+    }
     LatchIO committed(p);const auto proof=latch(committed,committed.snapshot(p));
     assert(proof.status==Status::Complete && proof.frameBefore==100 && proof.frameAfter==101 && proof.waitUs==2000);
     assert(proof.budgetUs==51001 && committed.writes.empty());

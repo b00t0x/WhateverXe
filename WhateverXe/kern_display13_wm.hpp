@@ -240,6 +240,7 @@ struct Snapshot {
     uint32_t pipeLineTime {};
     uint64_t pipePixelHz {};
     unsigned pipeIndex {}; // Display pipe, not physical HDMI DDI or framebuffer index.
+    Display13Transcoder::Bindings transcoders;
 };
 // FlushTriggerPackets writes these native packets in append order. A flip
 // queued after WM enable may supersede the surface sampled at enable time.
@@ -321,17 +322,18 @@ template<class IO> bool verifyWM(IO &io,Latch &r,const Plan &p,bool cursor,bool 
 // nor the workloop, so hardware can advance while delayUs sleeps.
 template<class IO> Latch latch(IO &io,const Snapshot &s) {
     Latch r;
-    if(s.pipeIndex>=3) {r.status=Status::Input;return r;}
+    if(s.pipeIndex>=3 || !s.transcoders.valid()) {r.status=Status::Input;return r;}
     const uint32_t bank=s.pipeIndex*0x1000;
+    const auto timing=s.transcoders.timing(s.pipeIndex);
     if(!s.primary || s.primary->status!=Status::Complete || !s.primary->normal[0].enable ||
        !s.primary->sagv.enable || !clockFits(s,s.nativeClockHz) || !s.pipeLineTime || s.pipeLineTime>511 ||
        (s.cursorActive && (!s.cursor || s.cursor->status!=Status::Complete || !s.cursor->sagv.enable)))return r;
-    const uint32_t required[] {0x45404,0x70008+bank,0x70180+bank,0x70080+bank,0x70190+bank,0x60000+bank,0x6000C+bank,0x70040+bank};
+    const uint32_t required[] {0x45404,0x70008+bank,0x70180+bank,0x70080+bank,0x70190+bank,timing,timing+0xC,0x70040+bank};
     for(auto reg:required)
         if(!io.readable(reg))return r;
     const auto wells=io.read(0x45404);
     if(!Display13FBIRQ::powered(wells,s.pipeIndex)) {r.status=Status::Power;return r;}
-    const auto ht=io.read(0x60000+bank),vt=io.read(0x6000C+bank);
+    const auto ht=io.read(timing),vt=io.read(timing+0xC);
     const auto htotal=((ht>>16)&0x3FFF)+1,vtotal=((vt>>16)&0x3FFF)+1;
     if(ht==UINT32_MAX || vt==UINT32_MAX || htotal!=s.primary->htotal || !s.primary->height || s.primary->height>8192 || vtotal<s.primary->height || !s.primary->pixelHz) {r.status=Status::Input;return r;}
     const auto period=ceilDiv(uint64_t(htotal)*vtotal*1000000,s.pipePixelHz);
@@ -343,7 +345,7 @@ template<class IO> Latch latch(IO &io,const Snapshot &s) {
     for(;;) {
         const auto power=io.read(0x45404);
         if(!Display13FBIRQ::powered(power,s.pipeIndex)) {r.status=Status::Power;return r;}
-        const auto pipe=io.read(0x70008+bank),plane=io.read(0x70180+bank),cursor=io.read(0x70080+bank);
+        const auto pipe=Display13Transcoder::control(io,s.pipeIndex,s.transcoders),plane=io.read(0x70180+bank),cursor=io.read(0x70080+bank);
         r.check=LatchCheck::Controls;r.pipeControl=pipe;r.planeControl=plane;r.cursorControl=cursor;
         // Native enablePlane/scaler can flush WM before enabling scanout.
         // Reconnect may retain a nonzero SURF from the previous path, so a
@@ -374,7 +376,7 @@ template<class IO> Latch latch(IO &io,const Snapshot &s) {
         if(r.clockHz!=s.nativeClockHz) {r.status=Status::Conflict;return r;}
         if(preparing) {r.check=LatchCheck::AwaitingScanout;return r;}
         r.check=LatchCheck::Registers;
-        if(!compare(io,r,0x60000+bank,ht) || !compare(io,r,0x6000C+bank,vt) || !compare(io,r,0x45270+4*s.pipeIndex,s.pipeLineTime) ||
+        if(!compare(io,r,timing,ht) || !compare(io,r,timing+0xC,vt) || !compare(io,r,0x45270+4*s.pipeIndex,s.pipeLineTime) ||
            !compare(io,r,0x70190+bank,((s.primary->height-1)<<16)|(s.primary->width-1)) ||
            !compare(io,r,0x7027C+bank,s.primaryDDB) || !compare(io,r,0x7017C+bank,s.cursorDDB) ||
            !compare(io,r,0x45004,s.ipc) || !compare(io,r,0x7019C+bank,s.primarySurface) ||
