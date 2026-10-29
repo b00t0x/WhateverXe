@@ -4,7 +4,7 @@ from pathlib import Path
 import hashlib,re,subprocess,sys,tempfile
 root=Path(__file__).resolve().parents[1];s=(root/'WhateverXe/kern_xe.cpp').read_text()
 functions='\n'.join(re.search(r'(?:static bool|bool|uint32_t|void|int) (?:XE::)?'+name+r'\(.*?\n\}',s,re.S)[0]
- for name in ['dsiCachePath','dsiLifecycleTarget','wrapDSISetDisplayMode','dsiNativeUpdateAllowed','wrapDisplay13WMArmUpdate','beginDSINativeWriter','endDSINativeWriter','wrapDSICursorImage','wrapDSICursorState'])
+ for name in ['dsiCachePath','dsiLifecycleTarget','wrapDSISetDisplayMode','dsiNativeUpdateAllowed','dsiSharedWriterStopped','wrapDisplay13WMArmUpdate','beginDSINativeWriter','endDSINativeWriter','wrapDSICursorImage','wrapDSICursorState'])
 functions=functions.replace('void XE::endDSINativeWriter(int token) {', 'void XE::endDSINativeWriter(int token) {\n struct EndScope {EndScope(){endingWriter=true;}~EndScope(){endingWriter=false;}} endScope;')
 scope=re.search(r'struct DSIModeScope \{.*?\n\};',s,re.S)[0]
 if len(sys.argv)==2:
@@ -52,6 +52,7 @@ struct XE {
  static uint32_t wrapDSICursorState(IOService*,IOService*,int32_t,int32_t,bool,bool);
  static uint32_t wrapDSISetDisplayMode(IOService*,int32_t,int32_t);
  static bool dsiNativeUpdateAllowed(IOService*);
+ static bool dsiSharedWriterStopped(IOService*,unsigned);
  static void wrapDisplay13WMArmUpdate(IOService*);
  static void display13WMArmUpdate(IOService*){assert(!owner);assert(bool(fbLock.depth)==expectDSI);++armCalls;}
 }xe,*callbackXE=&xe;
@@ -115,6 +116,15 @@ int main(){
  {Case c;xe.adlnOutputWiring.dsi=0;auto a=armCalls,m=modeCalls;expectDSI=false;
   XE::wrapDisplay13WMArmUpdate(nullptr);assert(armCalls==a+1);
   assert(XE::wrapDSISetDisplayMode(nullptr,0x10000,2)==7 && modeCalls==m+1);}
+ // Shared callback policy is read under the owner lock. A retired DSI
+ // cannot revive through pipe A, retained FB identity, or an unknown pipe.
+ {Case c;IORecursiveLockLock(&fbLock);IOLockLock(display13FBPower.lock);
+  assert(!XE::dsiSharedWriterStopped(&c.fb,0));xe.dsiStopAttempted=true;
+  assert(XE::dsiSharedWriterStopped(&c.fb,0) && XE::dsiSharedWriterStopped(&c.fb,1));
+  assert(XE::dsiSharedWriterStopped(&c.peer,UINT32_MAX));
+  assert(!XE::dsiSharedWriterStopped(&c.peer,1) && !XE::dsiSharedWriterStopped(&c.peer,2));
+  xe.adlnOutputWiring.dsi=0;assert(!XE::dsiSharedWriterStopped(&c.fb,0));
+  assert(!display13FBPower.memoryFaulted);IOLockUnlock(display13FBPower.lock);IORecursiveLockUnlock(&fbLock);}
  // Actual writer wrappers count nesting and release counts on native errors.
  {Case c;nestedCursor=true;auto i=imageCalls,s=stateCalls;
   assert(XE::wrapDSICursorImage(&c.ctl,&c.fb,&imageCalls)==0xe0000002U);

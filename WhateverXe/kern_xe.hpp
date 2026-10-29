@@ -222,6 +222,7 @@ private:
     static uint32_t wrapDSISetDetailedTimings(IOService *,OSArray *);
     static uint32_t wrapDSISetDisplayMode(IOService *,int32_t,int32_t);
     static bool dsiNativeUpdateAllowed(IOService *);
+    static bool dsiSharedWriterStopped(IOService *,unsigned);
     bool processDSINativeWriters(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     bool dsiNativeWriterHooksReady {};
     mach_vm_address_t orgDSICursor[2] {};

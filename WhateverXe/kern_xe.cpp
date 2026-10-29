@@ -6759,6 +6759,14 @@ bool XE::dsiNativeUpdateAllowed(IOService *fb) {
     IOLockUnlock(c.lock);return ready;
 }
 
+// Owner lock held. P2 reserves pipe A for DSI even after its mapping is
+// withdrawn. Late shared callbacks must not revive it or fault peer outputs.
+// An unbound/ambiguous callback cannot establish a different output owner.
+bool XE::dsiSharedWriterStopped(IOService *fb,unsigned pipe) {
+    return callbackXE->adlnOutputWiring.dsi && callbackXE->dsiStopAttempted &&
+        (pipe==0 || pipe>=3 || dsiModeTarget(fb));
+}
+
 // Cursor image/state bodies can wait for a frame, so do not extend their
 // native FB-lock intervals. Count admitted DSI calls instead. Stop takes the
 // same FB mutex before testing the count and cannot start until it is zero.
@@ -8846,6 +8854,7 @@ bool XE::wrapAlderLakeNScanoutAllocate(IOService *fb) {
 		binding=adlnInspectPathBinding(fb,Display13FBMemory::singlePath<OSObject *>(fb),callbackXE->adlnPlatform,callbackXE->adlnOutputWiring);
 		pipe=binding.pipe;
 	}
+	if(dsiSharedWriterStopped(fb,pipe)) {IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);return false;}
 	record[12]=pipe;record[13]=static_cast<uint32_t>(binding.status);record[14]=dual;
 	if(pipe<3 && !c.pipe[pipe].destroyingPath && (!dual || binding.status==TGLFBBinding::Status::Complete) &&
 		(c.bridge.bootAdopted || !pipe) && callbackXE->display13FBMemoryHooksReady && controller && c.bridge.begun &&
@@ -8913,6 +8922,7 @@ void XE::wrapAlderLakeNScanoutSetup(IOService *fb) {
 	IOWorkLoop *acquiredSwapGate=nullptr;OSObject *stopPath=nullptr;bool stopSwap=false;
 	IOLockLock(c.lock);
 	pipe=Display13FBMemory::boundPipe(c.pipe,fb);record[18]=pipe;
+	if(dsiSharedWriterStopped(fb,pipe)) {IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);return;}
 	const auto binding=adlnInspectPathBinding(fb,Display13FBMemory::singlePath<OSObject *>(fb),callbackXE->adlnPlatform,callbackXE->adlnOutputWiring);
 	record[19]=static_cast<uint32_t>(binding.status);
 	if(callbackXE->display13FBMemoryHooksReady && pipe<3 && !c.pipe[pipe].destroyingPath && !c.memoryFaulted &&
@@ -9769,6 +9779,7 @@ void XE::adlnWMSetup(OSObject *plane,OSObject *path,bool cursor) {
 	uint64_t bindingRecord[] {1,static_cast<uint32_t>(binding.status),binding.framebuffer,binding.pipe,binding.ddi,binding.plane,
 		binding.status==TGLFBBinding::Status::Complete ? Display13FBMemory::allocatedSlot(controller,fb) : UINT32_MAX};
 	const auto pipe=binding.status==TGLFBBinding::Status::Complete ? binding.pipe : UINT32_MAX;
+	if(dsiSharedWriterStopped(fb,pipe)) {IOLockUnlock(c.lock);return;}
 	const auto bank=pipe<3 ? 0x1000*pipe : 0U;
 	// Use the real path's pipe and a unique published memory owner. Neither
 	// framebuffer index, physical DDI nor aperture slot selects a WM bank.
@@ -9860,6 +9871,7 @@ void XE::wrapDisplay13CursorWMSetup(OSObject *plane,OSObject *path) {adlnWMSetup
 void XE::wrapAlderLakeNPipeWMSetup(IOService *controller,IOService *fb,OSObject *path,void *params) {
 	auto &c=display13FBPower;if(!c.lock)return;
 	uint64_t record[8] {};IOLockLock(c.lock);
+	if(dsiSharedWriterStopped(fb,Display13FBMemory::boundPipe(c.pipe,fb))) {IOLockUnlock(c.lock);return;}
 	const bool associated=callbackXE->display13FBWatermarkHooksReady && controller==c.controller && fb && path &&
 		controller->getMetaClass()->getClassSize()>=0x1C20 && fb->getMetaClass()->getClassSize()>=0x4B90 &&
 		path->getMetaClass()->getClassSize()>=0x3730 && Display13FBMemory::field<void *>(fb,0x1D0)==controller &&
@@ -10155,6 +10167,7 @@ void XE::adlnWMEnable(OSObject *plane,bool arm,bool cursor) {
 	uint64_t record[16] {},inputs[24] {};Display13WM::Program r;uint32_t surface=0,queueIndex=0;bool queued=false;
 	IOLockLock(c.lock);
 	const auto pipe=Display13FBMemory::boundPipe(c.pipe,fb);
+	if(dsiSharedWriterStopped(fb,pipe)) {IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);return;}
 	if(pipe>=3) {IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);return;}
 	const auto bank=0x1000*pipe;
 	const auto &p=c.pipe[pipe].wm[cursor ? 1 : 0];
@@ -10745,6 +10758,7 @@ void XE::wrapAlderLakeNPrimaryDBUF(OSObject *plane,uint32_t start,uint32_t end,b
 	IORecursiveLockLock(mutex);
 	uint64_t record[20] {};IOLockLock(c.lock);
 	const auto pipe=Display13FBMemory::boundPipe(c.pipe,fb);
+	if(dsiSharedWriterStopped(fb,pipe)) {IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);return;}
 	if(pipe>=3 || c.pipe[pipe].destroyingPath) {IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);return;}
 	Display13DBUF::Status status=Display13DBUF::Status::Unavailable;
 	auto path=fb ? Display13FBMemory::field<OSObject *>(plane,0x70) : nullptr;
@@ -10794,6 +10808,7 @@ void XE::wrapAlderLakeNPlanarDBUFWrite(void *access,uint64_t reg,uint32_t value)
 	if(fb->getMetaClass()->getClassSize()<0x4B90) {fb->release();return;}
 	auto mutex=Display13FBMemory::field<IORecursiveLock *>(fb,0x4220);if(!mutex) {fb->release();return;}
 	IORecursiveLockLock(mutex);IOLockLock(c.lock);
+	if(dsiSharedWriterStopped(fb,pipe)) {IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);fb->release();return;}
 	if(c.pipe[pipe].destroyingPath) {IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);fb->release();return;}
 	uint64_t record[14] {2,reg,value};auto status=Display13DBUF::Status::Unavailable;
 	auto path=Display13FBMemory::singlePath<OSObject *>(fb);
@@ -10832,6 +10847,7 @@ void XE::wrapDisplay13CursorDBUF(OSObject *plane) {
 	IORecursiveLockLock(mutex);IOLockLock(c.lock);
 	Display13DBUF::Status status=Display13DBUF::Status::Unavailable;uint64_t record[16] {};
 	const auto pipe=Display13FBMemory::boundPipe(c.pipe,fb);
+	if(dsiSharedWriterStopped(fb,pipe)) {IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);return;}
 	if(pipe>=3 || c.pipe[pipe].destroyingPath) {IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);return;}
 	auto path=Display13FBMemory::field<OSObject *>(plane,0x70);
 	const auto binding=adlnInspectPathBinding(fb,path,callbackXE->adlnPlatform,callbackXE->adlnOutputWiring);
@@ -10893,6 +10909,7 @@ void XE::adlnSetupDBUFPipe(IOService *controller,IOService *fb,unsigned pipe,boo
 	if(pipe>=3 || !fb || fb->getMetaClass()->getClassSize()<0x4B90)return;
 	auto mutex=Display13FBMemory::field<IORecursiveLock *>(fb,0x4220);if(!mutex)return;
 	IORecursiveLockLock(mutex);IOLockLock(c.lock);
+	if(dsiSharedWriterStopped(fb,pipe)) {IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);return;}
 	Display13DBUF::Layout layout;Display13DBUF::Range relativePrimary;OSObject *plane=nullptr;uint64_t record[20] {},resume[6] {};
 	auto path=Display13FBMemory::singlePath<OSObject *>(fb);
 	const auto binding=adlnInspectPathBinding(fb,path,callbackXE->adlnPlatform,callbackXE->adlnOutputWiring);

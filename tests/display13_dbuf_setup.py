@@ -4,8 +4,10 @@ from pathlib import Path
 import re, subprocess, tempfile
 r = Path(__file__).resolve().parents[1]
 s = (r / 'WhateverXe/kern_xe.cpp').read_text()
+guard = re.search(r'bool XE::dsiSharedWriterStopped\(.*?\n\}', s, re.S).group()
 body = re.search(r'void XE::adlnSetupDBUFPipe\(.*?\n\}', s, re.S).group()
-code = (r / 'tests/display13_dbuf_setup_fixture.cpp').read_text().replace('// PRODUCTION_SETUP', body)
+pipewm = re.search(r'void XE::wrapAlderLakeNPipeWMSetup\(.*?\n\}', s, re.S).group()
+code = (r / 'tests/display13_dbuf_setup_fixture.cpp').read_text().replace('// PRODUCTION_SETUP', guard+'\n'+body+'\n'+pipewm)
 with tempfile.TemporaryDirectory(prefix='dbuf-setup-') as d:
     p = Path(d)
     (p / 'test.cpp').write_text(code)
