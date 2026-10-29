@@ -6793,8 +6793,17 @@ void XE::wrapDisplay13DPPortWrite(void *port,uint32_t reg,uint32_t value) {
             IOLockLock(c.lock);const auto ddi=display13TCTarget(object);
             if(ddi>=3 && ddi<=6 && (s->adlnOutputWiring.dp&(1U<<ddi)) && reg==0x64000+0x100*ddi && (value&0x80000000)) {
                 Display13FBTCIO io{object,ddi-3};const auto rate=Display13FBMemory::field<uint32_t>(port,0x128);
-                if(io.owned(ddi) && io.linkHeld() && (rate==6 || rate==10 || rate==20 || rate==30))
-                    value=(value&~0xff00U)|(((rate*27+9)/10)<<8);
+                Display13TC::Port p;uint32_t before[2]{},after[2]{};
+                const bool ready=io.owned(ddi) && io.linkHeld() && (rate==6 || rate==10 || rate==20 || rate==30) &&
+                    Display13TC::Port::resolve(ddi,p) && Display13TC::DPSignal::prepareBuffer(io,p,before,after);
+                uint32_t pcs[]={1,ddi,before[0],before[1],after[0],after[1],ready};
+                char key[40];snprintf(key,sizeof(key),"WEXDisplay13TCPCS%u",ddi);
+                IORegistryEntry::getRegistryRoot()->setProperty(key,pcs,sizeof(pcs));
+                if((before[0]|before[1])&0x800) {
+                    snprintf(key,sizeof(key),"WEXDisplay13TCPCSRelease%u",ddi);
+                    IORegistryEntry::getRegistryRoot()->setProperty(key,pcs,sizeof(pcs));
+                }
+                if(ready)value=(value&~0xff00U)|(((rate*27+9)/10)<<8);
                 else {adlnFault(c.clockFaulted,__LINE__);IOLockUnlock(c.lock);return;}
             }
             IOLockUnlock(c.lock);

@@ -47,6 +47,27 @@ struct IO {
     void bankFault(){fault=true;}
 };
 int main() {
+    for(unsigned ddi=3;ddi<=6;++ddi)for(unsigned reset=0;reset<4;++reset) {
+        IO io(ddi);io.link=true;
+        io.bank[0x14]=0xa5a50001|((reset&1)?0x800:0);
+        io.bank[0x1014]=0x5a5a0002|((reset&2)?0x800:0);
+        const auto hip=io.regs[io.p.hip];uint32_t before[2]{},after[2]{};
+        assert(DPSignal::prepareBuffer(io,io.p,before,after));
+        assert(after[0]==0xa5a50001 && after[1]==0x5a5a0002);
+        assert(io.bank[0x14]==after[0] && io.bank[0x1014]==after[1] && io.regs[io.p.hip]==hip);
+        io.regs[io.p.buffer]|=0x80000000;
+        assert(DPSignal::prepareBuffer(io,io.p,before,after)); // retained, already released
+        io.bank[0x14]|=0x800;const auto prior=io.bank;
+        assert(!DPSignal::prepareBuffer(io,io.p,before,after) && io.bank==prior);
+    }
+    for(unsigned failure=0;failure<6;++failure) {
+        IO io(3);io.link=true;io.bank[0x14]=io.bank[0x1014]=0x800;
+        if(failure==0)io.power=false;if(failure==1)io.owner=false;if(failure==2)io.link=false;
+        if(failure==3)io.regs[io.p.buffer]=UINT32_MAX;if(failure==4)io.regs[io.p.buffer]&=~128U;
+        if(failure==5)io.reject=io.p.phyRegister(0x14);
+        uint32_t before[2]{},after[2]{};assert(!DPSignal::prepareBuffer(io,io.p,before,after));
+        assert(io.bank[0x14]==0x800 && io.bank[0x1014]==0x800);
+    }
     // Pin D, both physical orientations: do not change the USB pair's
     // signal coefficients or wake register. Logical main-link lanes stay0/1.
     for(unsigned ddi=3;ddi<=6;++ddi)for(unsigned physical:{3U,12U}) {

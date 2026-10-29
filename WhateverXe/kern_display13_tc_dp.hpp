@@ -51,6 +51,27 @@ struct DPRetainedLink {
     }
 };
 struct DPSignal {
+    // ADL-P/N, Linux adlp_tbt_to_dp_alt_switch_wa: release both PCS cores
+    // after selecting DP training and before enabling the DDI buffer.
+    // This is independent of the current USB-C orientation and pin mask.
+    template<class IO> static bool prepareBuffer(IO &io,const Port &p,uint32_t before[2],uint32_t after[2]) {
+        if(!io.powerHeld() || !io.linkHeld() || !io.owned(p.ddi) || !io.readable(p.buffer))return false;
+        const auto buffer=io.read(p.buffer);if(buffer==UINT32_MAX)return false;
+        for(unsigned group=0;group<2;++group) {
+            if(!PHY::access(io,p,group*0x1000+0x14,UINT32_MAX,before[group],false))return false;
+            after[group]=before[group];
+        }
+        if(!((before[0]|before[1])&0x800))return true;
+        // A retained live link must already have released reset. Do not
+        // alter PCS underneath an enabled or not-yet-idle transmitter.
+        if((buffer&0x80000080U)!=0x80)return false;
+        for(unsigned group=0;group<2;++group)if(before[group]&0x800) {
+            uint32_t value=0;
+            if(!PHY::access(io,p,group*0x1000+0x14,0x800,value,true))return false;
+            after[group]=value;
+        }
+        return true;
+    }
     static bool coefficients(uint32_t rate,uint32_t swing,uint32_t emphasis,uint32_t &value) {
         if((rate!=6 && rate!=10 && rate!=20 && rate!=30) || swing>3 || emphasis>3 || swing+emphasis>3)return false;
         constexpr uint8_t starts[]={0,4,7,9},voltage[]={7,5,2,0,5,2,0,2,0,0};
