@@ -5463,7 +5463,7 @@ bool XE::processDisplay13Framebuffer(KernelPatcher &patcher,size_t index,mach_vm
 	display13FBTopologyHooksReady=processDisplay13FramebufferTopology(patcher,index,address,size);
     display13DSIModeHooksReady=processDisplay13DSIModes(patcher,index,address,size);
     dsiNativeWriterHooksReady=!adlnOutputWiring.dsi || (processDSINativeWriters(patcher,index,address,size) &&
-        processDSINativeTransactions(patcher,index,address,size));
+        processDSINativeTransactions(patcher,index,address,size) && processDSINativeAttributes(patcher,index,address,size));
     dsiBootProbeReady=processDisplay13DSIBoot(patcher,index,address,size);
     dsiCacheHooksReady=processDisplay13DSICache(patcher,index,address,size);
 	IORegistryEntry::getRegistryRoot()->setProperty("N97FBTopologyHooksReady",display13FBTopologyHooksReady);
@@ -6831,6 +6831,97 @@ uint32_t XE::wrapDSISetGammaTable(IOService *fb,uint32_t channels,uint32_t count
     const auto result=FunctionCast(wrapDSISetGammaTable,callbackXE->orgDSITransaction[4])(fb,channels,count,bits,data,sync);
     endDSINativeWriter(token);return result;
 }
+// P2 preserves the firmware link. Unknown/native panel and power setters do
+// not inherit eDP behavior. The admitted CPU/color operations remain counted
+// through their native bodies; P5 will replace this policy with DSI controls.
+uint32_t XE::wrapDSISetAttribute(IOService *fb,uint32_t attribute,uintptr_t value) {
+    int token=0;
+    if(callbackXE->adlnOutputWiring.dsi) {
+        if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
+        DSIModeScope scope(fb);if(!scope.lock)return kIOReturnNotReady;
+        if(dsiLifecycleTarget(fb,Display13FBMemory::singlePath<OSObject *>(fb))) {
+            if(attribute==0x706F7772) { // powr: native entry passes an unsigned state.
+                if(value>UINT32_MAX)return kIOReturnUnsupported;
+                return wrapDSISetPowerState(fb,static_cast<uint32_t>(value));
+            }
+            // wsrv and capd: retain native server/capture bookkeeping and the
+            // routed plane/transaction work. Other selectors need admission.
+            if(attribute!=0x77737276 && attribute!=0x63617064)return kIOReturnUnsupported;
+            token=beginDSIFramebufferWriter(fb);if(token<0)return kIOReturnNotReady;
+        }
+    }
+    const auto result=FunctionCast(wrapDSISetAttribute,callbackXE->orgDSIAttributes[0])(fb,attribute,value);
+    endDSINativeWriter(token);return result;
+}
+uint32_t XE::wrapDSISetConnectionAttribute(IOService *fb,int32_t connection,uint32_t attribute,uintptr_t value) {
+    int token=0;
+    if(callbackXE->adlnOutputWiring.dsi) {
+        if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
+        DSIModeScope scope(fb);if(!scope.lock)return kIOReturnNotReady;
+        if(dsiLifecycleTarget(fb,Display13FBMemory::singlePath<OSObject *>(fb))) {
+            if(connection!=0)return kIOReturnUnsupported;
+            // Controller depth and gamma scales/flush have qualified native
+            // CPU/color paths. In particular ignore, bklt, pnlt, psr?, powr,
+            // probe and DP-link configuration must never reach native DSI.
+            switch(attribute) {
+                case 0x00647064: // controller depth
+                case 0x72677363: case 0x67677363: case 0x62677363: // RGB gamma scale
+                case 0x67736320: case 0x666C7573: break; // gamma scale / flush
+                default:return kIOReturnUnsupported;
+            }
+            token=beginDSIFramebufferWriter(fb);if(token<0)return kIOReturnNotReady;
+        }
+    }
+    const auto result=FunctionCast(wrapDSISetConnectionAttribute,callbackXE->orgDSIAttributes[1])(fb,connection,attribute,value);
+    endDSINativeWriter(token);return result;
+}
+uint32_t XE::wrapDSISetPowerState(IOService *fb,uint32_t state) {
+    if(callbackXE->adlnOutputWiring.dsi) {
+        if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
+        DSIModeScope scope(fb);if(!scope.lock)return kIOReturnNotReady;
+        if(dsiLifecycleTarget(fb,Display13FBMemory::singlePath<OSObject *>(fb))) {
+            // Match only the donor's already-Wake no-op. Do not publish a new
+            // native power state without executing a DSI power transaction.
+            if(state!=2 || Display13FBMemory::field<uint32_t>(fb,0x4284)!=2)return kIOReturnUnsupported;
+            return callbackXE->dsiNativeWriterHooksReady && dsiNativeUpdateAllowed(fb) ? kIOReturnSuccess : kIOReturnNotReady;
+        }
+    }
+    return FunctionCast(wrapDSISetPowerState,callbackXE->orgDSIAttributes[2])(fb,state);
+}
+uint32_t XE::wrapDSISetStream(IOService *controller,IOService *fb,OSObject *path,const void *timing) {
+    if(callbackXE->adlnOutputWiring.dsi) {
+        if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
+        DSIModeScope scope(fb);if(!scope.lock)return kIOReturnNotReady;
+        if(dsiLifecycleTarget(fb,path))return kIOReturnNotReady;
+    }
+    return FunctionCast(wrapDSISetStream,callbackXE->orgDSIAttributes[3])(controller,fb,path,timing);
+}
+bool XE::processDSINativeAttributes(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
+    const char *symbols[]={
+        "__ZN21AppleIntelFramebuffer12setAttributeEjm",
+        "__ZN21AppleIntelFramebuffer25setAttributeForConnectionEijm",
+        "__ZN21AppleIntelFramebuffer24setFramebufferPowerStateEj",
+        "__ZN31AppleIntelFramebufferController11hwSetStreamEP21AppleIntelFramebufferP21AppleIntelDisplayPathPK29IODetailedTimingInformationV2"};
+    const uint32_t offsets[]={0x3331E,0x352D4,0x24DE8,0x50DB0};
+    const uint8_t entries[][20]={
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x18,0x48,0xFF,0x05},
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x18,0x48,0xFF,0x05},
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x53,0x50,0x41,0x89,0xF6,0x49,0x89,0xFF,0x48,0xFF,0x05,0xF1},
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC,0x68,0x01,0x00,0x00}};
+    if(!display13FramebufferRequested || size<0x50DC4)return false;
+    for(unsigned i=0;i<4;++i) {
+        const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,symbols[i],address,size);patcher.clearError();
+        if(fn!=address+offsets[i] || memcmp(reinterpret_cast<void *>(fn),entries[i],20))return false;
+    }
+    // Standard routes copy 17/17/16/20-byte prologues, before RIP counters.
+    KernelPatcher::RouteRequest routes[]={
+        {symbols[0],wrapDSISetAttribute,orgDSIAttributes[0]},
+        {symbols[1],wrapDSISetConnectionAttribute,orgDSIAttributes[1]},
+        {symbols[2],wrapDSISetPowerState,orgDSIAttributes[2]},
+        {symbols[3],wrapDSISetStream,orgDSIAttributes[3]}};
+    const bool ready=patcher.routeMultiple(index,routes,arrsize(routes),address,size);patcher.clearError();return ready;
+}
+
 bool XE::processDSINativeTransactions(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
     const char *symbols[]={
         "__ZN21AppleIntelFramebuffer22PerformFlipTransactionEP30IOAccelDisplayPipeTransaction2yP21FlipTransactionParams",

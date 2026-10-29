@@ -4,13 +4,13 @@ from pathlib import Path
 import hashlib,re,subprocess,sys,tempfile
 root=Path(__file__).resolve().parents[1];s=(root/'WhateverXe/kern_xe.cpp').read_text()
 functions='\n'.join(re.search(r'(?:static bool|bool|uint32_t|void|int) (?:XE::)?'+name+r'\(.*?\n\}',s,re.S)[0]
- for name in ['dsiCachePath','dsiLifecycleTarget','wrapDSISetDisplayMode','dsiNativeUpdateAllowed','dsiSharedWriterStopped','wrapDisplay13WMArmUpdate','beginDSINativeWriter','endDSINativeWriter','wrapDSICursorImage','wrapDSICursorState','beginDSIFramebufferWriter','wrapDSIFlipTransaction','wrapDSIGammaTransaction','wrapDSICscTransaction','wrapDSIPlaneGammaTransaction','wrapDSISetGammaTable'])
+ for name in ['dsiCachePath','dsiLifecycleTarget','wrapDSISetDisplayMode','dsiNativeUpdateAllowed','dsiSharedWriterStopped','wrapDisplay13WMArmUpdate','beginDSINativeWriter','endDSINativeWriter','wrapDSICursorImage','wrapDSICursorState','beginDSIFramebufferWriter','wrapDSIFlipTransaction','wrapDSIGammaTransaction','wrapDSICscTransaction','wrapDSIPlaneGammaTransaction','wrapDSISetGammaTable','wrapDSISetAttribute','wrapDSISetConnectionAttribute','wrapDSISetPowerState','wrapDSISetStream'])
 functions=functions.replace('void XE::endDSINativeWriter(int token) {', 'void XE::endDSINativeWriter(int token) {\n struct EndScope {EndScope(){endingWriter=true;}~EndScope(){endingWriter=false;}} endScope;')
 scope=re.search(r'struct DSIModeScope \{.*?\n\};',s,re.S)[0]
 if len(sys.argv)==2:
  binary=Path(sys.argv[1]).read_bytes()
  assert hashlib.sha256(binary).hexdigest()=='c004fc1ac9ee4157e2e12736f40fa6639bde025a279326beeb9dd48c9b445731'
- for name,width,count in [('processDSINativeWriters',20,2),('processDSINativeTransactions',17,5)]:
+ for name,width,count in [('processDSINativeWriters',20,2),('processDSINativeTransactions',17,5),('processDSINativeAttributes',20,4)]:
   installer=re.search(r'bool XE::'+name+r'\(.*?\n\}',s,re.S)[0]
   offsets=[int(x,0) for x in re.search(r'offsets\[\]=\{([^}]+)',installer)[1].split(',')]
   entries=re.search(r'entries\[\]\['+str(width)+r'\]=\{(.*?)\};',installer,re.S)[1]
@@ -22,6 +22,7 @@ code=r'''
 #include "kern_display13_transcoder.hpp"
 #include <cassert>
 #include <cstdio>
+#include <initializer_list>
 struct OSObject {alignas(8) uint8_t bytes[0x4B90]{};unsigned size=sizeof(bytes);
  OSObject *getMetaClass(){return this;}unsigned getClassSize(){return size;}};
 using IOService=OSObject;using IOLock=int;
@@ -36,7 +37,7 @@ struct {IOLock *lock=nullptr;IOService *controller=nullptr;OSObject *dsiPort=nul
  struct {IOService *memoryFramebuffer=nullptr;bool destroyingPath=false;}pipe[3];
  Display13Transcoder::Bindings transcoders;}display13FBPower;
 IOService *panel=nullptr,*nativeFB=nullptr;bool dsiModeTarget(IOService *f){return f && f==panel;}
-constexpr uint32_t kIOReturnNotReady=0xe00002d8U;
+constexpr uint32_t kIOReturnNotReady=0xe00002d8U,kIOReturnUnsupported=0xe00002c7U,kIOReturnSuccess=0;
 #define FunctionCast(f,p) reinterpret_cast<decltype(&f)>(p)
 uint32_t nativeMode(IOService*,int32_t m,int32_t d){assert(!fbLock.depth && !owner);assert(m==0x10000 && d==2);++modeCalls;return 7;}
 void adlnFault(bool &f,unsigned){f=true;}
@@ -50,10 +51,22 @@ uint32_t nativeGamma(IOService*,void*,void*);
 uint32_t nativeCsc(IOService*,void*,void*,uint64_t,bool);
 uint32_t nativePlaneGamma(IOService*,void*,bool);
 uint32_t nativeGammaTable(IOService*,uint32_t,uint32_t,uint32_t,void*,bool);
+unsigned attrCalls[3]{},expectedAttribute=0,expectedPower=0;int32_t expectedConnection=0;
+uintptr_t expectedValue=0;bool nestedAttribute=false;
+uint32_t nativeAttribute(IOService*,uint32_t,uintptr_t);
+uint32_t nativeConnectionAttribute(IOService*,int32_t,uint32_t,uintptr_t);
+uint32_t nativePower(IOService*,uint32_t);
+unsigned streamCalls=0;OSObject *expectedPath=nullptr;
+uint32_t nativeStream(IOService*,IOService*,OSObject*,const void*);
 struct XE {
  struct {unsigned dsi=1;}adlnOutputWiring;bool dsiStopAttempted=false,dsiResourcesReady=true;
  bool dsiNativeWriterHooksReady=true;uintptr_t orgDSICursor[2]{};
  uintptr_t orgDSIMode[6]{};
+ uintptr_t orgDSIAttributes[4]{};
+ static uint32_t wrapDSISetStream(IOService*,IOService*,OSObject*,const void*);
+ static uint32_t wrapDSISetAttribute(IOService*,uint32_t,uintptr_t);
+ static uint32_t wrapDSISetConnectionAttribute(IOService*,int32_t,uint32_t,uintptr_t);
+ static uint32_t wrapDSISetPowerState(IOService*,uint32_t);
  uintptr_t orgDSITransaction[5]{};
  static int beginDSIFramebufferWriter(IOService*);
  static uint32_t wrapDSIFlipTransaction(IOService*,void*,uint64_t,void*);
@@ -111,10 +124,32 @@ uint32_t callTx(unsigned i,IOService *fb){
  case 4:return XE::wrapDSISetGammaTable(fb,3,1024,16,&paramAnchor,true);
  }assert(false);return 0;
 }
+uint32_t nativeAttribute(IOService *fb,uint32_t attribute,uintptr_t value){
+ assert(fb==nativeFB && attribute==expectedAttribute && value==expectedValue && !owner && !fbLock.depth);
+ assert(display13FBPower.dsiNativeWriters==expectedWriters);++attrCalls[0];
+ if(nestedAttribute){++expectedWriters;assert(callTx(0,fb)==txResult(0));--expectedWriters;
+  assert(display13FBPower.dsiNativeWriters==expectedWriters);}
+ return 0xe0000121U;
+}
+uint32_t nativeConnectionAttribute(IOService *fb,int32_t connection,uint32_t attribute,uintptr_t value){
+ assert(fb==nativeFB && connection==expectedConnection && attribute==expectedAttribute && value==expectedValue && !owner && !fbLock.depth);
+ assert(display13FBPower.dsiNativeWriters==expectedWriters);++attrCalls[1];return 0xe0000122U;
+}
+uint32_t nativePower(IOService *fb,uint32_t state){
+ assert(fb==nativeFB && state==expectedPower && !owner && !fbLock.depth);++attrCalls[2];return 0xe0000123U;
+}
+uint32_t nativeStream(IOService *ctl,IOService *fb,OSObject *path,const void *timing){
+ assert(fb==nativeFB && ctl==display13FBPower.controller && path==expectedPath && timing==&paramAnchor && !fbLock.depth && !owner);
+ ++streamCalls;return 0xe0000124U;
+}
 template<class T>void put(void *p,unsigned o,T v){memcpy(static_cast<uint8_t*>(p)+o,&v,sizeof(v));}
 struct Case {
  IOService fb,ctl,peer;OSObject path,port;IOLock lock;
- Case(){assert(!fbLock.depth && !owner);expectedWriters=1;nestedCursor=nestedTx=false;xe={};
+ Case(){assert(!fbLock.depth && !owner);expectedWriters=1;nestedCursor=nestedTx=nestedAttribute=false;xe={};
+  xe.orgDSIAttributes[0]=reinterpret_cast<uintptr_t>(nativeAttribute);
+  xe.orgDSIAttributes[1]=reinterpret_cast<uintptr_t>(nativeConnectionAttribute);
+  xe.orgDSIAttributes[2]=reinterpret_cast<uintptr_t>(nativePower);
+  xe.orgDSIAttributes[3]=reinterpret_cast<uintptr_t>(nativeStream);
   xe.orgDSITransaction[0]=reinterpret_cast<uintptr_t>(nativeFlip);
   xe.orgDSITransaction[1]=reinterpret_cast<uintptr_t>(nativeGamma);
   xe.orgDSITransaction[2]=reinterpret_cast<uintptr_t>(nativeCsc);
@@ -211,7 +246,50 @@ int main(){
  }
  {Case c;nestedTx=true;auto before=txCalls[2];assert(callTx(0,&c.fb)==txResult(0));
   assert(txCalls[2]==before+1 && !display13FBPower.dsiNativeWriters && !fbLock.depth && !owner);}
- puts("PASS DSI public mode preflight and native update dispatch: stopped/faulted rejection, held FB serialization, nested cursor/transaction counts, full-width arguments, native wait lock boundaries, peer and disabled-DSI forwarding");
+ // Only qualified P2 attributes reach native; lifetime accounting spans
+ // their nested flip/color work and preserves full pointer-sized values.
+ for(unsigned attr:{0x77737276U,0x63617064U}){Case c;expectedAttribute=attr;expectedValue=txOptions;nestedAttribute=true;
+  const auto before=attrCalls[0];assert(XE::wrapDSISetAttribute(&c.fb,attr,expectedValue)==0xe0000121U);
+  assert(attrCalls[0]==before+1 && !display13FBPower.dsiNativeWriters && !owner && !fbLock.depth);}
+ for(unsigned attr:{0x00647064U,0x72677363U,0x67677363U,0x62677363U,0x67736320U,0x666C7573U}){
+  Case c;expectedAttribute=attr;expectedValue=txOptions;expectedConnection=0;
+  assert(XE::wrapDSISetConnectionAttribute(&c.fb,0,attr,expectedValue)==0xe0000122U && !display13FBPower.dsiNativeWriters);
+  assert(XE::wrapDSISetConnectionAttribute(&c.fb,1,attr,expectedValue)==kIOReturnUnsupported);}
+ for(unsigned attr:{0x706F7772U,0x70777273U,0x73707772U,0x64706F77U,0x706E6C70U,0x626B6C74U,0x706E6C74U,
+                    0x00696772U,0x7073723FU,0x70726F62U,0x64706972U,0xDEADBEEFU}){
+  Case c;const auto before=attrCalls[0]+attrCalls[1]+attrCalls[2];const auto original=c.fb;
+  assert(XE::wrapDSISetAttribute(&c.fb,attr,0)==kIOReturnUnsupported);
+  assert(XE::wrapDSISetConnectionAttribute(&c.fb,0,attr,0)==kIOReturnUnsupported);
+  assert(attrCalls[0]+attrCalls[1]+attrCalls[2]==before && !memcmp(&c.fb,&original,sizeof(c.fb)) && !display13FBPower.memoryFaulted);}
+ for(unsigned old=0;old<3;++old)for(unsigned state=0;state<4;++state){Case c;put(&c.fb,0x4284,old);const auto before=attrCalls[2];
+  const auto expected=old==2 && state==2?kIOReturnSuccess:kIOReturnUnsupported;
+  assert(XE::wrapDSISetPowerState(&c.fb,state)==expected && attrCalls[2]==before);
+  assert(Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==old);
+  assert(XE::wrapDSISetAttribute(&c.fb,0x706F7772,state)==expected);}
+ {Case c;put(&c.fb,0x4284,2U);assert(XE::wrapDSISetAttribute(&c.fb,0x706F7772,0x100000002ULL)==kIOReturnUnsupported);}
+ for(unsigned bad=0;bad<4;++bad){Case c;put(&c.fb,0x4284,2U);const auto before=attrCalls[0]+attrCalls[1]+attrCalls[2];
+  if(bad==0)xe.dsiStopAttempted=true;if(bad==1)xe.dsiResourcesReady=false;
+  if(bad==2)xe.dsiNativeWriterHooksReady=false;if(bad==3)display13FBPower.memoryFaulted=true;
+  assert(XE::wrapDSISetAttribute(&c.fb,0x77737276,1)==kIOReturnNotReady);
+  assert(XE::wrapDSISetConnectionAttribute(&c.fb,0,0x72677363,1)==kIOReturnNotReady);
+  assert(XE::wrapDSISetPowerState(&c.fb,2)==kIOReturnNotReady);
+  assert(attrCalls[0]+attrCalls[1]+attrCalls[2]==before && !display13FBPower.dsiNativeWriters);}
+ for(bool disabled:{false,true}){Case c;expectedWriters=0;expectedValue=txOptions;expectedAttribute=0x706F7772;expectedConnection=4;expectedPower=0;
+  IOService *fb=&c.fb;
+  if(disabled){xe.adlnOutputWiring.dsi=0;fb=nativeFB=nullptr;}
+  else{panel=nullptr;put(&c.path,0x3640,1U);put(&c.port,0x120,3U);xe.dsiStopAttempted=true;}
+  assert(XE::wrapDSISetAttribute(fb,expectedAttribute,expectedValue)==0xe0000121U);
+  assert(XE::wrapDSISetConnectionAttribute(fb,expectedConnection,expectedAttribute,expectedValue)==0xe0000122U);
+  assert(XE::wrapDSISetPowerState(fb,expectedPower)==0xe0000123U);}
+ {Case c;auto before=streamCalls;assert(XE::wrapDSISetStream(&c.ctl,&c.fb,&c.path,&paramAnchor)==kIOReturnNotReady);
+  assert(streamCalls==before && !fbLock.depth && !owner);}
+ {Case c;panel=nullptr;put(&c.path,0x3640,1U);put(&c.port,0x120,3U);expectedPath=&c.path;
+  assert(XE::wrapDSISetStream(&c.ctl,&c.fb,&c.path,&paramAnchor)==0xe0000124U);
+  const auto before=streamCalls;assert(XE::wrapDSISetStream(&c.ctl,&c.fb,&c.port,&paramAnchor)==kIOReturnNotReady);
+  assert(streamCalls==before);}
+ {Case c;xe.adlnOutputWiring.dsi=0;nativeFB=nullptr;expectedPath=nullptr;
+  assert(XE::wrapDSISetStream(&c.ctl,nullptr,nullptr,&paramAnchor)==0xe0000124U);}
+ puts("PASS DSI public mode preflight and native update dispatch: stopped/faulted rejection, held FB serialization, nested cursor/transaction counts, P2 attribute/power admission, full-width arguments, native wait lock boundaries, peer and disabled-DSI forwarding");
 }
 '''.replace('SCOPE',scope).replace('FUNCTIONS',functions)
 with tempfile.TemporaryDirectory(prefix='dsi-update-') as d:

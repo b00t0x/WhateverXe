@@ -225,6 +225,12 @@ private:
     static bool dsiSharedWriterStopped(IOService *,unsigned);
     bool processDSINativeWriters(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     bool processDSINativeTransactions(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    bool processDSINativeAttributes(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    mach_vm_address_t orgDSIAttributes[4] {};
+    static uint32_t wrapDSISetStream(IOService *,IOService *,OSObject *,const void *);
+    static uint32_t wrapDSISetAttribute(IOService *,uint32_t,uintptr_t);
+    static uint32_t wrapDSISetConnectionAttribute(IOService *,int32_t,uint32_t,uintptr_t);
+    static uint32_t wrapDSISetPowerState(IOService *,uint32_t);
     mach_vm_address_t orgDSITransaction[5] {};
     static int beginDSIFramebufferWriter(IOService *);
     static uint32_t wrapDSIFlipTransaction(IOService *,void *,uint64_t,void *);
