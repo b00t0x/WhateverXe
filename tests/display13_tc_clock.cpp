@@ -47,6 +47,16 @@ struct IO {
     void bankFault(){fault=true;}
 };
 int main() {
+    // Independent Linux DP DDI rate encodings; retain ownership, lane width,
+    // reversal, enable and all unrelated bits, including stale rate bits.
+    for(const auto &pair:std::map<unsigned,unsigned>{{6,0},{10,1},{20,2},{30,3}}) {
+        uint32_t value=0xfff1abcd;
+        assert(DPSignal::bufferRate(pair.first,value));
+        assert(value==((0xfff1abcdU&~0x700000U)|(pair.second<<20)));
+    }
+    for(unsigned invalid:{0U,1U,12U,UINT32_MAX}) {
+        uint32_t value=0xa5a5a5a5;assert(!DPSignal::bufferRate(invalid,value) && value==0xa5a5a5a5);
+    }
     for(unsigned ddi=3;ddi<=6;++ddi)for(unsigned reset=0;reset<4;++reset) {
         IO io(ddi);io.link=true;
         io.bank[0x14]=0xa5a50001|((reset&1)?0x800:0);

@@ -51,6 +51,13 @@ struct DPRetainedLink {
     }
 };
 struct DPSignal {
+    // ADL-P/N DDI_BUF_PHY_LINK_RATE, Linux ddi_buf_phy_link_rate().
+    // The TGL donor's bits15:8 do not select this Display13 PHY rate.
+    static bool bufferRate(uint32_t rate,uint32_t &buffer) {
+        unsigned code;
+        switch(rate) {case 6:code=0;break;case 10:code=1;break;case 20:code=2;break;case 30:code=3;break;default:return false;}
+        buffer=(buffer&~0x700000U)|(code<<20);return true;
+    }
     // ADL-P/N, Linux adlp_tbt_to_dp_alt_switch_wa: release both PCS cores
     // after selecting DP training and before enabling the DDI buffer.
     // This is independent of the current USB-C orientation and pin mask.

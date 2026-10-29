@@ -6794,7 +6794,7 @@ void XE::wrapDisplay13DPPortWrite(void *port,uint32_t reg,uint32_t value) {
             if(ddi>=3 && ddi<=6 && (s->adlnOutputWiring.dp&(1U<<ddi)) && reg==0x64000+0x100*ddi && (value&0x80000000)) {
                 Display13FBTCIO io{object,ddi-3};const auto rate=Display13FBMemory::field<uint32_t>(port,0x128);
                 Display13TC::Port p;uint32_t before[2]{},after[2]{};
-                const bool ready=io.owned(ddi) && io.linkHeld() && (rate==6 || rate==10 || rate==20 || rate==30) &&
+                const bool ready=io.owned(ddi) && io.linkHeld() && Display13TC::DPSignal::bufferRate(rate,value) &&
                     Display13TC::Port::resolve(ddi,p) && Display13TC::DPSignal::prepareBuffer(io,p,before,after);
                 if(ready)value=(value&~0xff00U)|(((rate*27+9)/10)<<8);
                 else {adlnFault(c.clockFaulted,__LINE__);IOLockUnlock(c.lock);return;}
