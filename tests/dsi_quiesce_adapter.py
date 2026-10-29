@@ -47,11 +47,12 @@ struct Display13FBBootIO {
  IOMemoryMap *map;bool readable(uint32_t r){return map && r<0x1000000 && !(r&3);}
  uint32_t read(uint32_t r){assert(locks.back()==3);return map->reg(r);}
 };
+struct Display13FBDBUFIO:Display13FBBootIO {void write(uint32_t,uint32_t){assert(false);}void delayUs(unsigned){assert(false);}};
 struct Display13FBIRQIO {
  uintptr_t base;bool readable(uint32_t r){return base && r<0x1000000 && !(r&3);}
- uint32_t read(uint32_t r){assert(locks.back()==4);return *reinterpret_cast<uint32_t*>(base+r);}
+ uint32_t read(uint32_t r){assert(locks.back()==4);if(r==Display13FBIRQ::Master)assert((activeMap->reg(0x45404)&3)==3);return *reinterpret_cast<uint32_t*>(base+r);}
  void write(uint32_t r,uint32_t v){assert(locks.back()==4);
-  if(r==Display13FBIRQ::Master){++activeMap->masterWrites;
+  if(r==Display13FBIRQ::Master){assert((activeMap->reg(0x45404)&3)==3);++activeMap->masterWrites;
    if((activeMap->masterWrites==1 && activeMap->failMasterMask) || (activeMap->masterWrites==2 && activeMap->failMasterRestore))return;
   }
   auto &reg=*reinterpret_cast<uint32_t*>(base+r);
@@ -61,8 +62,8 @@ struct Display13FBIRQIO {
 struct {IORecursiveLock *lock=nullptr;uintptr_t thread=0;XELPComboClock::ClockAllocation allocation;}comboClockTransaction;
 struct {IOLock *lock=nullptr;IOService *controller=nullptr;void *power=nullptr;IOMemoryMap *map=nullptr;IOWorkLoop *workLoop=nullptr;OSObject *dsiPort=nullptr;
  Display13Transcoder::Bindings transcoders;Readout bootDSI;Display13Power::NativeBridge bridge;bool clockFaulted=false,memoryFaulted=false;
- struct {unsigned updating=0;Display13Transcoder::Bindings transcoders;}dbuf;
- struct {IOService *memoryFramebuffer=nullptr;bool destroyingPath=false,wmProgramming=false,wmCommitting=false;}pipe[3];
+ Display13DBUF::State dbuf;
+ struct {IOService *memoryFramebuffer=nullptr;uintptr_t publishedScanout=0;struct {uintptr_t record=0;}scanout;bool destroyingPath=false,wmProgramming=false,wmCommitting=false;}pipe[3];
 }display13FBPower;
 struct {uintptr_t base=0;IOSimpleLock *lock=nullptr;IOService *controller=nullptr;Display13FBIRQ::State state;
  unsigned handlers=0,softwareHandlers=0,admittedPipes=0,blockedPipes=0;bool quiescing=false;
@@ -70,7 +71,7 @@ struct {uintptr_t base=0;IOSimpleLock *lock=nullptr;IOService *controller=nullpt
 void adlnFault(bool &fault,unsigned){assert(locks==std::vector<unsigned>({1,2,3}));fault=true;}
 struct {bool ready=true;}dsiFixedMode;
 bool dsiModeTarget(IOService *fb){return fb==display13FBPower.pipe[0].memoryFramebuffer;}
-bool mappingBound=true,failDDIPut=false;
+bool mappingBound=true,failDDIPut=false,failMemoryFree=false,lieMemoryFree=false,loseDBUF=false,loseIRQRestore=false,losePowerFree=false;unsigned memoryFrees=0;
 bool adlnWriterMappingBound(){return mappingBound;}
 bool adlnIRQOwner(IOService *p){return p && p==display13FBIRQ.controller;}
 namespace TGLFBBinding {enum class Status{Complete,Unavailable};struct Binding{Status status=Status::Complete;unsigned pipe=0,ddi=0;};}
@@ -94,8 +95,20 @@ void IOSleep(unsigned ms){tick(ms*1000);}void IODelay(unsigned us){tick(us);}
 struct XE {
  uintptr_t adlnWorkLoopInGate=reinterpret_cast<uintptr_t>(inGate),adlnWorkLoopTryClose=reinterpret_cast<uintptr_t>(tryClose),adlnWorkLoopOpen=reinterpret_cast<uintptr_t>(open);
  struct {unsigned dsi=1;operator unsigned()const{return dsi;}}adlnOutputWiring;void *adlnPlatform=nullptr;
- bool dsiResourcesReady=true,dsiStopAttempted=false,dsiIRQParked=false,dsiDDIReleased=false;
+ bool dsiResourcesReady=true,dsiStopAttempted=false,dsiIRQParked=false,dsiDDIReleased=false,dsiMemoryReleased=false;
  IOService *adlnTopologyController=nullptr;Profile dsiProfile;Boot dsiBoot;Quiesce::Result dsiStop;Clock::Result dsiClockStop;
+ static bool adlnFreeStoppedPipe(IOService *fb){
+  assert(locks==std::vector<unsigned>{1} && display13FBPower.workLoop->gate);
+  assert(!display13FBPower.memoryFaulted && display13FBPower.bridge.pgRefs[0]==1);
+  assert(!comboClockTransaction.allocation.external[0] && !display13FBPower.bridge.ddiRefs[0]);
+  ++memoryFrees;if(losePowerFree)activeMap->reg(0x45404)=0;if(loseIRQRestore)activeMap->reg(Display13FBIRQ::Master)=0;if(loseDBUF)activeMap->reg(0x4438C)^=1;if(failMemoryFree)return false;if(lieMemoryFree)return true;
+  *reinterpret_cast<uint8_t*>(fb->bytes+0x4288)=0xFF;
+  *reinterpret_cast<uintptr_t*>(fb->bytes+0x4348)=0;
+  display13FBPower.pipe[0].publishedScanout=0;display13FBPower.pipe[0].scanout.record=0;
+  display13FBPower.dbuf.pipe[0].consumers=display13FBPower.dbuf.pipe[0].unretired=0;
+  Display13DBUF::syncMasks(display13FBPower.dbuf);
+  return true;
+ }
  static bool adlnPowerReference(void *power,unsigned operation,unsigned domain){
   assert(locks==std::vector<unsigned>({1,2}) && operation==4 && domain==0 && power==display13FBPower.power);
   if(failDDIPut)return false;
@@ -115,7 +128,7 @@ struct Case {
  IORecursiveLock fbLock{1},clockLock{2};IOLock ownerLock;IOSimpleLock irqLock;
  Case(){
   using Power=decltype(display13FBPower);display13FBPower.~Power();new (&display13FBPower) Power;
-  display13FBIRQ={};comboClockTransaction={};mappingBound=true;pathBinding={};activeMap=&map;dsiFixedMode.ready=true;failDDIPut=false;
+  display13FBIRQ={};comboClockTransaction={};mappingBound=true;pathBinding={};activeMap=&map;dsiFixedMode.ready=true;failDDIPut=failMemoryFree=lieMemoryFree=loseDBUF=loseIRQRestore=losePowerFree=false;memoryFrees=0;
   IO defaults;for(const auto &v:defaults.regs)map.reg(v.first)=v.second;
   map.reg(0x42084)=1U<<30;map.reg(0x6B0D0)=0x01001040;map.reg(0x6001C)=0x0437077F;map.reg(0x6B010)=map.reg(0x6B00C);
   map.reg(0x45454)=3;map.reg(0x42000)=0x8E380000;map.reg(0x70040)=100;
@@ -127,7 +140,10 @@ struct Case {
   map.reg(Display13FBIRQ::PipeIIR(1)+4)=Display13FBIRQ::PipeOwned;
   auto &c=display13FBPower;auto &irq=display13FBIRQ;auto &clock=comboClockTransaction;
   c.lock=&ownerLock;c.controller=&controller;c.power=&controller;c.map=&map;c.workLoop=&loop;c.dsiPort=&port;
-  c.pipe[0].memoryFramebuffer=&fb;c.transcoders.dsi0Pipe=0;c.dbuf.transcoders=c.transcoders;
+  c.pipe[0].memoryFramebuffer=&fb;c.pipe[0].scanout.record=0x1000;c.pipe[0].publishedScanout=0x1000;c.transcoders.dsi0Pipe=0;c.dbuf.transcoders=c.transcoders;
+  c.dbuf.begun=true;c.dbuf.selected=3;c.dbuf.initialRequests=c.dbuf.requested=c.dbuf.powered=5;
+  c.dbuf.pipe[0].consumers=c.dbuf.pipe[0].unretired=1;c.dbuf.pipe[1].consumers=4;Display13DBUF::syncMasks(c.dbuf);
+  map.reg(Display13DBUF::regs[0])=map.reg(Display13DBUF::regs[2])=0xC0000000;
   xe.adlnTopologyController=&controller;xe.dsiProfile=profile();
   c.bootDSI=decodeReadout([&](uint32_t r,uint32_t &v){v=map.reg(r);return true;},38400);assert(c.bootDSI.matches(xe.dsiProfile));xe.dsiBoot.source=c.bootDSI;
   clock.lock=&clockLock;clock.allocation.external[0]=reinterpret_cast<uintptr_t>(&controller);clock.allocation.binding[0]=2;
@@ -137,14 +153,14 @@ struct Case {
   const auto pg=Display13Power::dependencies(Display13Power::nativeScope(1)),ddi=Display13Power::dependencies(Display13Power::ddiDomain(0));s.borrowed=pg|ddi;
   for(unsigned i=0;i<Display13Power::Count;++i)if(s.borrowed&(1U<<i))s.refs[i]=unsigned(bool(pg&(1U<<i)))+unsigned(bool(ddi&(1U<<i)));
   b.pgRefs[0]=1;b.pgLease[0].owner=&s;b.pgLease[0].domains=pg;b.ddiRefs[0]=1;b.ddiLease[0].owner=&s;b.ddiLease[0].domains=ddi;
-  put(&fb,0x4220,&fbLock);put(&fb,0x4A00,1U);put(&fb,0x4A08,&path);put(&path,0x3644,2U);put(&path,0x3648,&port);put(&port,0x550,1U);
+  put(&fb,0x4348,uintptr_t(0x1000));put(&fb,0x4288,uint8_t(0xFF));put(&fb,0x4220,&fbLock);put(&fb,0x4A00,1U);put(&fb,0x4A08,&path);put(&path,0x3644,2U);put(&path,0x3648,&port);put(&port,0x550,1U);
   put(&controller,0xE00,&loop);put(&controller,0x90,&irqLock);
  }
  bool run(){bool r=xe.quiesceDSIPath(&controller,&fb,&path);assert(locks.empty() && loop.refs==1);return r;}
  void retained(bool clockGone=false){auto &b=display13FBPower.bridge;assert(b.pgRefs[0]==1 && b.ddiRefs[0]==unsigned(!xe.dsiDDIReleased));
   assert(comboClockTransaction.allocation.external[0]==(clockGone?0:reinterpret_cast<uintptr_t>(&controller)));
   assert(map.reg(0x46010)==0xCC000000 && map.reg(0x45404)==0xFC0F);
-  assert(Display13FBMemory::field<uint32_t>(&path,0x3644)==(xe.dsiIRQParked && xe.dsiClockStop.complete() && xe.dsiDDIReleased?1U:2U));
+  assert(Display13FBMemory::field<uint32_t>(&path,0x3644)==(xe.dsiIRQParked && xe.dsiClockStop.complete() && xe.dsiDDIReleased && xe.dsiMemoryReleased?1U:2U));
  }
 };
 int main(){
@@ -152,12 +168,13 @@ int main(){
   put(&c.controller,0xE08,2U);put(&c.controller,0xE10,1U<<6);
   assert(c.run() && c.xe.dsiStop.complete() && c.xe.dsiIRQParked);
   assert(display13FBPower.memoryFaulted);
+  assert(display13FBPower.dbuf.consumers==4 && !display13FBPower.dbuf.pipe[0].unretired);
   assert(c.xe.dsiStop.writes==8 && display13FBIRQ.state.active==2 && display13FBIRQ.state.enabled);
   assert(!display13FBIRQ.quiescing && !display13FBIRQ.blockedPipes && c.loop.gate==own);
   assert(c.loop.opens==unsigned(!own) && c.loop.closes==unsigned(!own));
   assert(c.map.reg(0x71180)==0x94001000 && c.map.reg(Display13FBIRQ::PipeIIR(1)+4)==Display13FBIRQ::PipeOwned);
   assert(Display13FBMemory::field<uint32_t>(&c.controller,0xE08)==2 && Display13FBMemory::field<uint32_t>(&c.controller,0xE10)==(1U<<6));
-  assert(!dsiFixedMode.ready && c.xe.dsiDDIReleased);
+  assert(!dsiFixedMode.ready && c.xe.dsiDDIReleased && c.xe.dsiMemoryReleased && memoryFrees==1);
   assert(c.xe.dsiClockStop.complete() && c.xe.dsiClockStop.writes==2 && !c.map.reg(0x46014));
   assert(display13FBPower.transcoders.dsi0Pipe==UINT32_MAX && display13FBIRQ.state.transcoders.dsi0Pipe==UINT32_MAX);
   assert(display13FBIRQ.admittedPipes==2 && display13FBPower.dbuf.transcoders.dsi0Pipe==UINT32_MAX && !c.xe.dsiResourcesReady);
@@ -188,6 +205,24 @@ int main(){
   assert(dsiFixedMode.ready && display13FBPower.bridge.pgRefs[0]==1 && display13FBPower.bridge.ddiRefs[0]==1);c.retained(true);}
  {Case c;display13FBPower.bridge.bootAdopted=false;assert(!c.run() && c.xe.dsiClockStop.complete() && !c.xe.dsiDDIReleased);
   assert(display13FBPower.bridge.ddiRefs[0]==1);c.retained(true);}
+ for(unsigned failure=0;failure<3;++failure){Case c;
+  if(!failure)display13FBPower.memoryFaulted=true;else if(failure==1)failMemoryFree=true;else lieMemoryFree=true;
+  assert(!c.run() && c.xe.dsiDDIReleased && !c.xe.dsiMemoryReleased);
+  assert(display13FBPower.memoryFaulted && memoryFrees==unsigned(failure!=0));
+  assert(display13FBPower.pipe[0].scanout.record==0x1000 && Display13FBMemory::field<uintptr_t>(&c.fb,0x4348)==0x1000);
+  c.retained(true);
+ }
+ {Case c;loseDBUF=true;assert(!c.run() && c.xe.dsiDDIReleased && !c.xe.dsiMemoryReleased);
+  assert(memoryFrees==1 && !Display13FBMemory::field<uintptr_t>(&c.fb,0x4348) && display13FBPower.dbuf.faulted);
+  assert(dsiFixedMode.ready && display13FBPower.bridge.pgRefs[0]==1);c.retained(true);
+ }
+ {Case c;loseIRQRestore=true;assert(!c.run() && !c.xe.dsiMemoryReleased && memoryFrees==1);
+  assert(display13FBIRQ.state.faulted && !display13FBIRQ.state.enabled && !Display13FBMemory::field<uintptr_t>(&c.fb,0x4348));
+  assert(dsiFixedMode.ready && display13FBPower.bridge.pgRefs[0]==1);c.retained(true);
+ }
+ {Case c;losePowerFree=true;assert(!c.run() && !c.xe.dsiMemoryReleased && memoryFrees==1);
+  assert(display13FBIRQ.state.faulted && !display13FBIRQ.state.enabled && display13FBPower.bridge.pgRefs[0]==1);
+ }
  for(unsigned failure=1;failure<=4;++failure){Case c;c.map.pllFail=failure;
   assert(!c.run() && c.xe.dsiStop.complete() && c.xe.dsiIRQParked==(failure!=3) && !c.xe.dsiClockStop.complete());
   assert(dsiFixedMode.ready);
@@ -202,7 +237,7 @@ int main(){
   assert(!c.run() && c.xe.dsiStop.complete() && c.xe.dsiClockStop.status==Clock::Status::Peer);
   assert(!c.xe.dsiClockStop.writes && c.map.reg(0x46014)==0xCC000000);c.retained();
  }
- puts("PASS production DSI quiesce: real host/IRQ cores, FB-gate-clock-owner ordering, no wait under IRQ lock, actual queues/scopes, PLL stop/owner withdrawal, GT/peer preservation, retained resources on failure and one-shot journal");
+ puts("PASS production DSI quiesce: real host/IRQ cores, FB-gate-clock-owner ordering, no wait under IRQ lock, actual queues/scopes, PLL/DDI/backing retirement, allocator lock boundary, actual empty-slot/DDB proof, GT/peer preservation and retained failures");
 }
 '''.replace('FIXTURE',fixture).replace('BODY',body)
 with tempfile.TemporaryDirectory(prefix='dsi-quiesce-adapter-') as directory:

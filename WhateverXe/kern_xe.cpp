@@ -9703,7 +9703,7 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     const bool acquired=boundLoop && !inGate && reinterpret_cast<bool (*)(IOWorkLoop *)>(adlnWorkLoopTryClose)(loop);
     if(!inGate && !acquired) {if(loop)loop->release();IORecursiveLockUnlock(mutex);return false;}
     IORecursiveLockLock(clock.lock);IOLockLock(c.lock);
-    uint64_t record[33] {3};bool masked=false,maskOK=false,parked=false,restored=false,enabled=false,modeWithdrawn=false;uint32_t master=0;
+    uint64_t record[38] {4};bool masked=false,maskOK=false,parked=false,restored=false,enabled=false,modeWithdrawn=false;uint32_t master=0;
     const auto qualified=[&]() {
         if(adlnOutputWiring.dsi!=1 || !dsiResourcesReady || !dsiProfile.valid() ||
            controller!=c.controller || controller!=adlnTopologyController || c.workLoop!=loop ||
@@ -9821,7 +9821,41 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         dsiDDIReleased=put && c.power==power && !c.bridge.ddiRefs[0] && !c.bridge.ddiLease[0].owner;
     }
     record[31]=c.bridge.ddiRefs[0];record[32]=dsiDDIReleased;
-    const bool complete=stopped && dsiDDIReleased;
+    const bool stoppedPath=stopped && dsiDDIReleased;
+    if(stoppedPath && !c.memoryFaulted && !c.dbuf.faulted) {
+        // Keep the real FB mutex and workloop gate while the shared native
+        // retirement path acquires its own allocator serializer. Neither the
+        // Combo mutex nor the owner lock may span native allocator callbacks.
+        // PG1 remains held for PTE/DDB validation; the stopped DSI PLL is free.
+        IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
+        const bool released=adlnFreeStoppedPipe(fb);
+        IORecursiveLockLock(clock.lock);IOLockLock(c.lock);
+        Display13FBDBUFIO dbufIO{c.map};
+        // A native no-resource return can precede path destruction. Retire
+        // that path's DDB consumers too, even if no allocator call was needed.
+        const auto dbufStatus=released && !c.memoryFaulted ? Display13DBUF::stopPipe(dbufIO,c.dbuf,0) : Display13DBUF::Status::Unavailable;
+        record[35]=released;record[36]=static_cast<uint32_t>(dbufStatus);
+        const bool dbufStopped=dbufStatus==Display13DBUF::Status::Complete;
+        bool irqRestored=false;
+        if(released && irq.controller==controller && irq.lock && irq.base) {
+            Display13FBIRQIO irqIO{irq.base};const auto saved=IOSimpleLockLockDisableInterrupt(irq.lock);
+            const auto wells=irqIO.read(Display13FBIRQ::Driver);
+            const bool powered=wells!=UINT32_MAX && (wells&3)==3;
+            const auto after=powered ? irqIO.read(Display13FBIRQ::Master) : UINT32_MAX;
+            irqRestored=!irq.state.faulted && !irq.quiescing && !irq.blockedPipes && !(irq.state.active&1) &&
+                after!=UINT32_MAX && bool(after&Display13FBIRQ::Enable)==irq.state.enabled;
+            if(!irqRestored){irq.state.faulted=true;irq.state.enabled=false;if(powered)irqIO.write(Display13FBIRQ::Master,0);}
+            adlnIRQCache(controller,irqIO);IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
+        }
+        record[37]=irqRestored;
+        dsiMemoryReleased=dbufStopped && irqRestored && c.controller==controller && c.pipe[0].memoryFramebuffer==fb &&
+            Display13FBMemory::singlePath<OSObject *>(fb)==path && !c.memoryFaulted &&
+            Display13FBMemory::field<uint8_t>(fb,0x4288)==0xFF && !Display13FBMemory::field<uintptr_t>(fb,0x4348) &&
+            !c.pipe[0].scanout.record && !__atomic_load_n(&c.pipe[0].publishedScanout,__ATOMIC_ACQUIRE) &&
+            !c.dbuf.pipe[0].consumers && !c.dbuf.pipe[0].unretired;
+    }
+    record[33]=dsiMemoryReleased;record[34]=c.memoryFaulted;
+    const bool complete=stoppedPath && dsiMemoryReleased;
     if(complete) {
         // Exact donor disableDisplay publishes path state 1 only after its
         // clock-disable call (4dbba -> 4dbc6). Mirror that CPU completion now,
@@ -9832,8 +9866,9 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         if(dsiModeTarget(fb)){dsiFixedMode.ready=false;modeWithdrawn=true;}
     }
     // Close the existing native writer/free gate before dropping the FB mutex,
-    // even after host success. Remove this conservative guard only with the
-    // separate Session/allocator/clock/power retirement transaction in place.
+    // even after backing release. Keep it until the remaining PG/path/object
+    // retirement and Session cleanup transaction is connected. Never clear an
+    // earlier resource fault to force the allocator through its own guard.
     if(masked)adlnFault(c.memoryFaulted,__LINE__);
     IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
     if(modeWithdrawn)fb->setProperty("WEXDSIFixedModeReady",false);

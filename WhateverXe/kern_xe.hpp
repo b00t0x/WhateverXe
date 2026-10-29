@@ -145,7 +145,7 @@ private:
     bool bindDSIResources(IOService *);
     XELP::DSI::Quiesce::Result dsiStop;
     XELP::DSI::Clock::Result dsiClockStop;
-    bool dsiStopAttempted {},dsiIRQParked {},dsiDDIReleased {};
+    bool dsiStopAttempted {},dsiIRQParked {},dsiDDIReleased {},dsiMemoryReleased {};
     bool quiesceDSIPath(IOService *,IOService *,OSObject *);
     static uint32_t wrapDisplay13ProbeMode(OSObject *);
     bool dsiCacheHooksReady {};
