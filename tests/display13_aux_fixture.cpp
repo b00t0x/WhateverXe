@@ -70,6 +70,19 @@ int main(int argc,char **argv){
   for(unsigned at:{0x1CEABU,0x1D19CU})redirect(image,at,0x300040,reinterpret_cast<uintptr_t>(stackFail));
  }
  unsigned cases=0;
+ // A selected DSI path must never reach native AUX get/put or HAL, even if
+ // its port object has the donor's AUX-A register coordinates initialized.
+ {Fixture f(0,0,0);Map map;auxSetup(f,map,0,false,1);
+  state.adlnOutputWiring.dp&=~1U;state.adlnOutputWiring.panel=0;state.adlnOutputWiring.dsi=1;
+  assert(Display13FBTopology::apply(f.platform,sizeof(f.platform),f.donor,state.adlnOutputWiring));
+  const auto reads=map.reads.size(),writes=map.writes.size();uint32_t data[5]{0xabcdef01};
+  assert(XE::wrapDisplay13ReadAUX(f.port,0x100,data,4)==kIOReturnNotReady);
+  assert(XE::wrapDisplay13WriteAUX(f.port,0x100,data,4)==kIOReturnNotReady);
+  assert(XE::wrapDisplay13I2CAUX(f.port,0,data,4,0)==kIOReturnNotReady);
+  assert(XE::wrapDisplay13RunAUX(f.port,0,data,4,false)==kIOReturnNotReady);
+  assert(!auxCalls && data[0]==0xabcdef01 && map.reads.size()==reads && map.writes.size()==writes);
+  assert(!display13FBPower.bridge.state.faulted && !display13FBPower.bridge.nativeAUXRefs(0));
+ }
  // Exact production completion checks: a disconnect during AUX is a failed
  // transaction, not a permanently faulted bridge. Lost ownership still is.
  for(unsigned ddi=3;ddi<=6;++ddi)for(bool lost:{false,true})for(unsigned nativeError:{0U,0xE00002BCU}) {

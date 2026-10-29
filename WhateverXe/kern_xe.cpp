@@ -8065,6 +8065,7 @@ bool XE::display13AUXReady(void *port,bool command,bool retained) {
     !Display13FBMemory::field<void *>(c.controller,0xC30))return false;
  auto p=static_cast<uint8_t *>(port);auto config=Display13FBMemory::field<uint32_t *>(p,0x548);
  if(!Display13FBTopology::selected(s->adlnPlatform,config,s->adlnOutputWiring) || config[0]>=7 || config[0]==2 ||
+    (s->adlnOutputWiring.dsi & (1U<<config[0])) ||
     Display13FBMemory::field<uint32_t>(p,0x120)!=config[0] ||
     (config[0]<3 && Display13FBMemory::field<uint32_t>(p,0x550)>1) ||
     Display13FBMemory::field<void *>(p,0x578)!=c.access ||
@@ -8075,6 +8076,8 @@ bool XE::display13AUXReady(void *port,bool command,bool retained) {
   if(!(s->adlnOutputWiring.dp&(1U<<config[0])) ||
      !(retained && !command ? tc.retainedOwned(config[0]) : tc.owned(config[0])))return false;
  }
+ // DSI is a selected display path but has no AUX transport. Reject it above
+ // before any native public operation can acquire an AUX power reference.
  // Exact c004 HAL uses CTL + five DATA offsets from the port object.
  const auto ctl=0x64010+0x100*config[0];
  for(unsigned n=0;n<6;++n)if(Display13FBMemory::field<uint32_t>(p,0x594+4*n)!=ctl+4*n)return false;
