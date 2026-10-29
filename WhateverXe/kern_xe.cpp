@@ -7066,7 +7066,7 @@ bool XE::processDisplay13FramebufferAUX(KernelPatcher &patcher,size_t index,mach
 
 // Caller holds the display owner lock. Probe may run before setPortMode,
 // hence mode0 is allowed; a DDI/main-link lease is deliberately not required.
-bool XE::display13AUXReady(void *port,bool command) {
+bool XE::display13AUXReady(void *port,bool command,bool retained) {
  auto s=callbackXE;auto &c=display13FBPower;auto object=static_cast<OSObject *>(port);
  if(!s->display13FramebufferRequested || s->xeProfile.display!=XELP::Display::XeLPD || !s->display13FBAUXHooksReady ||
     !object || object->getMetaClass()->getClassSize()<0x5AC || !c.controller ||
@@ -7087,7 +7087,8 @@ bool XE::display13AUXReady(void *port,bool command) {
     Display13FBMemory::field<void *>(c.power,0x78)!=c.access)return false;
  if(config[0]>=3) {
   Display13FBTCIO tc{object,config[0]-3};
-  if(!(s->adlnOutputWiring.dp&(1U<<config[0])) || !tc.owned(config[0]))return false;
+  if(!(s->adlnOutputWiring.dp&(1U<<config[0])) ||
+     !(retained && !command ? tc.retainedOwned(config[0]) : tc.owned(config[0])))return false;
  }
  // Exact c004 HAL uses CTL + five DATA offsets from the port object.
  const auto ctl=0x64010+0x100*config[0];
@@ -7127,8 +7128,11 @@ uint32_t XE::wrapDisplay13RunAUX(void *port,uint32_t command,uint32_t *packet,ui
  IOLockUnlock(c.lock);if(!ready)return kIOReturnNotReady;
  const auto r=FunctionCast(wrapDisplay13RunAUX,callbackXE->orgDisplay13RunAUX)(port,command,packet,length,flag);
  IOLockLock(c.lock);Display13FBPowerIO io {c.map};const bool held=c.bridge.endAUXCommand(io,ddi);
- const bool complete=display13AUXReady(port,false) && held;
- if(!complete)adlnFault(c.bridge.state.faulted,__LINE__);
+ // HPD/assignment can disappear while the donor waits for the AUX reply.
+ // Reject that reply, but only lost identity/power/leases poison the owner.
+ const bool protectedCompletion=held && display13AUXReady(port,false,true);
+ const bool complete=protectedCompletion && display13AUXReady(port,false);
+ if(!protectedCompletion)adlnFault(c.bridge.state.faulted,__LINE__);
  IOLockUnlock(c.lock);return r ? r : complete ? 0 : kIOReturnNotReady;
 }
 

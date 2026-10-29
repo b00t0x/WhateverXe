@@ -147,7 +147,7 @@ private:
  mach_vm_address_t display13AUXControllerSlot {};
  mach_vm_address_t orgDisplay13ReadAUX {},orgDisplay13WriteAUX {},orgDisplay13I2CAUX {},orgDisplay13RunAUX {};
  bool processDisplay13FramebufferAUX(KernelPatcher &,size_t,mach_vm_address_t,size_t);
- static bool display13AUXReady(void *port,bool command);
+ static bool display13AUXReady(void *port,bool command,bool retained=false);
  static uint32_t wrapDisplay13ReadAUX(void *port,uint32_t address,void *data,uint32_t length);
  static uint32_t wrapDisplay13WriteAUX(void *port,uint32_t address,void *data,uint32_t length);
  static uint32_t wrapDisplay13I2CAUX(void *port,uint32_t command,uint32_t *packet,uint32_t length,uint8_t flag);
