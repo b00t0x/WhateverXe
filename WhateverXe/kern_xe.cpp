@@ -5462,7 +5462,8 @@ bool XE::processDisplay13Framebuffer(KernelPatcher &patcher,size_t index,mach_vm
 	IORegistryEntry::getRegistryRoot()->setProperty("N97FBGTTHooksReady",display13FBGTTHooksReady);
 	display13FBTopologyHooksReady=processDisplay13FramebufferTopology(patcher,index,address,size);
     display13DSIModeHooksReady=processDisplay13DSIModes(patcher,index,address,size);
-    dsiNativeWriterHooksReady=!adlnOutputWiring.dsi || processDSINativeWriters(patcher,index,address,size);
+    dsiNativeWriterHooksReady=!adlnOutputWiring.dsi || (processDSINativeWriters(patcher,index,address,size) &&
+        processDSINativeTransactions(patcher,index,address,size));
     dsiBootProbeReady=processDisplay13DSIBoot(patcher,index,address,size);
     dsiCacheHooksReady=processDisplay13DSICache(patcher,index,address,size);
 	IORegistryEntry::getRegistryRoot()->setProperty("N97FBTopologyHooksReady",display13FBTopologyHooksReady);
@@ -6798,6 +6799,67 @@ uint32_t XE::wrapDSICursorState(IOService *controller,IOService *fb,int32_t x,in
     const auto result=FunctionCast(wrapDSICursorState,callbackXE->orgDSICursor[1])(controller,fb,x,y,visible,commit);
     endDSINativeWriter(token);return result;
 }
+// Transaction bodies may wait and may call armUpdate, cursor or color hooks.
+// Count the complete body without changing its native lock/wait intervals.
+int XE::beginDSIFramebufferWriter(IOService *fb) {
+    if(!callbackXE->adlnOutputWiring.dsi)return 0;
+    if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return -1;
+    return beginDSINativeWriter(Display13FBMemory::field<IOService *>(fb,0x1D0),fb);
+}
+uint32_t XE::wrapDSIFlipTransaction(IOService *fb,void *transaction,uint64_t options,void *params) {
+    const int token=beginDSIFramebufferWriter(fb);if(token<0)return kIOReturnNotReady;
+    const auto result=FunctionCast(wrapDSIFlipTransaction,callbackXE->orgDSITransaction[0])(fb,transaction,options,params);
+    endDSINativeWriter(token);return result;
+}
+uint32_t XE::wrapDSIGammaTransaction(IOService *fb,void *transaction,void *params) {
+    const int token=beginDSIFramebufferWriter(fb);if(token<0)return kIOReturnNotReady;
+    const auto result=FunctionCast(wrapDSIGammaTransaction,callbackXE->orgDSITransaction[1])(fb,transaction,params);
+    endDSINativeWriter(token);return result;
+}
+uint32_t XE::wrapDSICscTransaction(IOService *fb,void *transaction,void *matrix,uint64_t options,bool final) {
+    const int token=beginDSIFramebufferWriter(fb);if(token<0)return kIOReturnNotReady;
+    const auto result=FunctionCast(wrapDSICscTransaction,callbackXE->orgDSITransaction[2])(fb,transaction,matrix,options,final);
+    endDSINativeWriter(token);return result;
+}
+uint32_t XE::wrapDSIPlaneGammaTransaction(IOService *fb,void *transaction,bool post) {
+    const int token=beginDSIFramebufferWriter(fb);if(token<0)return kIOReturnNotReady;
+    const auto result=FunctionCast(wrapDSIPlaneGammaTransaction,callbackXE->orgDSITransaction[3])(fb,transaction,post);
+    endDSINativeWriter(token);return result;
+}
+uint32_t XE::wrapDSISetGammaTable(IOService *fb,uint32_t channels,uint32_t count,uint32_t bits,void *data,bool sync) {
+    const int token=beginDSIFramebufferWriter(fb);if(token<0)return kIOReturnNotReady;
+    const auto result=FunctionCast(wrapDSISetGammaTable,callbackXE->orgDSITransaction[4])(fb,channels,count,bits,data,sync);
+    endDSINativeWriter(token);return result;
+}
+bool XE::processDSINativeTransactions(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
+    const char *symbols[]={
+        "__ZN21AppleIntelFramebuffer22PerformFlipTransactionEP30IOAccelDisplayPipeTransaction2yP21FlipTransactionParams",
+        "__ZN21AppleIntelFramebuffer23PerformGammaTransactionEP30IOAccelDisplayPipeTransaction2P20GammaTransactionArgs",
+        "__ZN21AppleIntelFramebuffer21PerformCscTransactionEP30IOAccelDisplayPipeTransaction2P29IOAccelDisplayPipeColorMatrixyb",
+        "__ZN21AppleIntelFramebuffer28PerformPlaneGammaTransactionEP30IOAccelDisplayPipeTransaction2b",
+        "__ZN21AppleIntelFramebuffer13setGammaTableEjjjPvb"};
+    const uint32_t offsets[]={0x2B602,0x2C800,0x2D03C,0x2D838,0x36E72};
+    // Whole prologues; no relocated RIP-relative counter in these 17 bytes.
+    const uint8_t entries[][17]={
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x48},
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x38},
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x38},
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x68},
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x58}};
+    if(!display13FramebufferRequested || size<0x36E83)return false;
+    for(unsigned i=0;i<5;++i) {
+        const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,symbols[i],address,size);patcher.clearError();
+        if(fn!=address+offsets[i] || memcmp(reinterpret_cast<void *>(fn),entries[i],17))return false;
+    }
+    KernelPatcher::RouteRequest routes[]={
+        {symbols[0],wrapDSIFlipTransaction,orgDSITransaction[0]},
+        {symbols[1],wrapDSIGammaTransaction,orgDSITransaction[1]},
+        {symbols[2],wrapDSICscTransaction,orgDSITransaction[2]},
+        {symbols[3],wrapDSIPlaneGammaTransaction,orgDSITransaction[3]},
+        {symbols[4],wrapDSISetGammaTable,orgDSITransaction[4]}};
+    const bool ready=patcher.routeMultiple(index,routes,arrsize(routes),address,size);patcher.clearError();return ready;
+}
+
 bool XE::processDSINativeWriters(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
     const char *symbols[]={
         "__ZN31AppleIntelFramebufferController16hwSetCursorImageEP21AppleIntelFramebufferP20IOHardwareCursorInfo",

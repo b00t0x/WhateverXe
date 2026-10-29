@@ -224,6 +224,14 @@ private:
     static bool dsiNativeUpdateAllowed(IOService *);
     static bool dsiSharedWriterStopped(IOService *,unsigned);
     bool processDSINativeWriters(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    bool processDSINativeTransactions(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    mach_vm_address_t orgDSITransaction[5] {};
+    static int beginDSIFramebufferWriter(IOService *);
+    static uint32_t wrapDSIFlipTransaction(IOService *,void *,uint64_t,void *);
+    static uint32_t wrapDSIGammaTransaction(IOService *,void *,void *);
+    static uint32_t wrapDSICscTransaction(IOService *,void *,void *,uint64_t,bool);
+    static uint32_t wrapDSIPlaneGammaTransaction(IOService *,void *,bool);
+    static uint32_t wrapDSISetGammaTable(IOService *,uint32_t,uint32_t,uint32_t,void *,bool);
     bool dsiNativeWriterHooksReady {};
     mach_vm_address_t orgDSICursor[2] {};
     static int beginDSINativeWriter(IOService *,IOService *);

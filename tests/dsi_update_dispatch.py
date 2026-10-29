@@ -4,18 +4,19 @@ from pathlib import Path
 import hashlib,re,subprocess,sys,tempfile
 root=Path(__file__).resolve().parents[1];s=(root/'WhateverXe/kern_xe.cpp').read_text()
 functions='\n'.join(re.search(r'(?:static bool|bool|uint32_t|void|int) (?:XE::)?'+name+r'\(.*?\n\}',s,re.S)[0]
- for name in ['dsiCachePath','dsiLifecycleTarget','wrapDSISetDisplayMode','dsiNativeUpdateAllowed','dsiSharedWriterStopped','wrapDisplay13WMArmUpdate','beginDSINativeWriter','endDSINativeWriter','wrapDSICursorImage','wrapDSICursorState'])
+ for name in ['dsiCachePath','dsiLifecycleTarget','wrapDSISetDisplayMode','dsiNativeUpdateAllowed','dsiSharedWriterStopped','wrapDisplay13WMArmUpdate','beginDSINativeWriter','endDSINativeWriter','wrapDSICursorImage','wrapDSICursorState','beginDSIFramebufferWriter','wrapDSIFlipTransaction','wrapDSIGammaTransaction','wrapDSICscTransaction','wrapDSIPlaneGammaTransaction','wrapDSISetGammaTable'])
 functions=functions.replace('void XE::endDSINativeWriter(int token) {', 'void XE::endDSINativeWriter(int token) {\n struct EndScope {EndScope(){endingWriter=true;}~EndScope(){endingWriter=false;}} endScope;')
 scope=re.search(r'struct DSIModeScope \{.*?\n\};',s,re.S)[0]
 if len(sys.argv)==2:
  binary=Path(sys.argv[1]).read_bytes()
  assert hashlib.sha256(binary).hexdigest()=='c004fc1ac9ee4157e2e12736f40fa6639bde025a279326beeb9dd48c9b445731'
- installer=re.search(r'bool XE::processDSINativeWriters\(.*?\n\}',s,re.S)[0]
- offsets=[int(x,0) for x in re.search(r'offsets\[\]=\{([^}]+)',installer)[1].split(',')]
- entries=re.search(r'entries\[\]\[20\]=\{(.*?)\};',installer,re.S)[1]
- entries=[bytes(int(x,0) for x in row.split(',')) for row in re.findall(r'\{([^}]+)\}',entries)]
- assert len(offsets)==len(entries)==2
- for offset,entry in zip(offsets,entries):assert binary[offset:offset+20]==entry,hex(offset)
+ for name,width,count in [('processDSINativeWriters',20,2),('processDSINativeTransactions',17,5)]:
+  installer=re.search(r'bool XE::'+name+r'\(.*?\n\}',s,re.S)[0]
+  offsets=[int(x,0) for x in re.search(r'offsets\[\]=\{([^}]+)',installer)[1].split(',')]
+  entries=re.search(r'entries\[\]\['+str(width)+r'\]=\{(.*?)\};',installer,re.S)[1]
+  entries=[bytes(int(x,0) for x in row.split(',')) for row in re.findall(r'\{([^}]+)\}',entries)]
+  assert len(offsets)==len(entries)==count
+  for offset,entry in zip(offsets,entries):assert binary[offset:offset+width]==entry,hex(offset)
 code=r'''
 #include "kern_display13_fb_memory.hpp"
 #include "kern_display13_transcoder.hpp"
@@ -42,10 +43,24 @@ void adlnFault(bool &f,unsigned){f=true;}
 unsigned imageCalls=0,stateCalls=0,expectedWriters=1;bool nestedCursor=false;
 uint32_t nativeImage(IOService*,IOService*,void*);
 uint32_t nativeState(IOService*,IOService*,int32_t,int32_t,bool,bool);
+unsigned txCalls[5]{},txAnchor=0,paramAnchor=0;bool nestedTx=false;
+constexpr uint64_t txOptions=0xFEDCBA9876543210ULL;
+uint32_t nativeFlip(IOService*,void*,uint64_t,void*);
+uint32_t nativeGamma(IOService*,void*,void*);
+uint32_t nativeCsc(IOService*,void*,void*,uint64_t,bool);
+uint32_t nativePlaneGamma(IOService*,void*,bool);
+uint32_t nativeGammaTable(IOService*,uint32_t,uint32_t,uint32_t,void*,bool);
 struct XE {
  struct {unsigned dsi=1;}adlnOutputWiring;bool dsiStopAttempted=false,dsiResourcesReady=true;
  bool dsiNativeWriterHooksReady=true;uintptr_t orgDSICursor[2]{};
  uintptr_t orgDSIMode[6]{};
+ uintptr_t orgDSITransaction[5]{};
+ static int beginDSIFramebufferWriter(IOService*);
+ static uint32_t wrapDSIFlipTransaction(IOService*,void*,uint64_t,void*);
+ static uint32_t wrapDSIGammaTransaction(IOService*,void*,void*);
+ static uint32_t wrapDSICscTransaction(IOService*,void*,void*,uint64_t,bool);
+ static uint32_t wrapDSIPlaneGammaTransaction(IOService*,void*,bool);
+ static uint32_t wrapDSISetGammaTable(IOService*,uint32_t,uint32_t,uint32_t,void*,bool);
  static int beginDSINativeWriter(IOService*,IOService*);
  static void endDSINativeWriter(int);
  static uint32_t wrapDSICursorImage(IOService*,IOService*,void*);
@@ -70,10 +85,41 @@ uint32_t nativeImage(IOService *ctl,IOService *fb,void *info){
   --expectedWriters;assert(display13FBPower.dsiNativeWriters==expectedWriters);}
  return 0xe0000002U;
 }
+uint32_t txResult(unsigned i){return i==3?0:0xe0000110U+i;}
+uint32_t txLeaf(unsigned i,IOService *fb,void *tx){
+ assert(fb==nativeFB && tx==&txAnchor && !owner && !fbLock.depth);
+ assert(display13FBPower.dsiNativeWriters==expectedWriters);++txCalls[i];return txResult(i);
+}
+uint32_t nativeFlip(IOService *fb,void *tx,uint64_t options,void *params){
+ assert(options==txOptions && params==&paramAnchor);const auto result=txLeaf(0,fb,tx);
+ if(nestedTx){++expectedWriters;assert(XE::wrapDSICscTransaction(fb,tx,params,options,true)==txResult(2));--expectedWriters;
+  assert(display13FBPower.dsiNativeWriters==expectedWriters);}
+ return result;
+}
+uint32_t nativeGamma(IOService *fb,void *tx,void *params){assert(params==&paramAnchor);return txLeaf(1,fb,tx);}
+uint32_t nativeCsc(IOService *fb,void *tx,void *matrix,uint64_t options,bool final){
+ assert(matrix==&paramAnchor && options==txOptions && final);return txLeaf(2,fb,tx);}
+uint32_t nativePlaneGamma(IOService *fb,void *tx,bool post){assert(!post);return txLeaf(3,fb,tx);}
+uint32_t nativeGammaTable(IOService *fb,uint32_t channels,uint32_t count,uint32_t bits,void *data,bool sync){
+ assert(channels==3 && count==1024 && bits==16 && data==&paramAnchor && sync);return txLeaf(4,fb,&txAnchor);}
+uint32_t callTx(unsigned i,IOService *fb){
+ switch(i){
+ case 0:return XE::wrapDSIFlipTransaction(fb,&txAnchor,txOptions,&paramAnchor);
+ case 1:return XE::wrapDSIGammaTransaction(fb,&txAnchor,&paramAnchor);
+ case 2:return XE::wrapDSICscTransaction(fb,&txAnchor,&paramAnchor,txOptions,true);
+ case 3:return XE::wrapDSIPlaneGammaTransaction(fb,&txAnchor,false);
+ case 4:return XE::wrapDSISetGammaTable(fb,3,1024,16,&paramAnchor,true);
+ }assert(false);return 0;
+}
 template<class T>void put(void *p,unsigned o,T v){memcpy(static_cast<uint8_t*>(p)+o,&v,sizeof(v));}
 struct Case {
  IOService fb,ctl,peer;OSObject path,port;IOLock lock;
- Case(){assert(!fbLock.depth && !owner);expectedWriters=1;nestedCursor=false;xe={};
+ Case(){assert(!fbLock.depth && !owner);expectedWriters=1;nestedCursor=nestedTx=false;xe={};
+  xe.orgDSITransaction[0]=reinterpret_cast<uintptr_t>(nativeFlip);
+  xe.orgDSITransaction[1]=reinterpret_cast<uintptr_t>(nativeGamma);
+  xe.orgDSITransaction[2]=reinterpret_cast<uintptr_t>(nativeCsc);
+  xe.orgDSITransaction[3]=reinterpret_cast<uintptr_t>(nativePlaneGamma);
+  xe.orgDSITransaction[4]=reinterpret_cast<uintptr_t>(nativeGammaTable);
   xe.orgDSICursor[0]=reinterpret_cast<uintptr_t>(nativeImage);xe.orgDSICursor[1]=reinterpret_cast<uintptr_t>(nativeState);xe.orgDSIMode[5]=reinterpret_cast<uintptr_t>(nativeMode);display13FBPower={};auto &c=display13FBPower;
   c.lock=&lock;c.controller=&ctl;c.dsiPort=&port;c.pipe[0].memoryFramebuffer=&fb;c.transcoders.dsi0Pipe=0;panel=nativeFB=&fb;
   put(&fb,0x4220,&fbLock);put(&fb,0x1D0,&ctl);put(&fb,0x4A00,1U);put(&fb,0x4A08,&path);
@@ -148,7 +194,24 @@ int main(){
   panel=&c.fb; // Identity predicate is irrelevant for disabled DSI.
   xe.adlnOutputWiring.dsi=0;
   assert(XE::wrapDSICursorImage(&c.ctl,&c.fb,&imageCalls)==0xe0000002U);}
- puts("PASS DSI public mode preflight and native update dispatch: stopped/faulted rejection, held FB serialization, nested cursor counts, native wait lock boundaries, peer and disabled-DSI forwarding");
+ for(unsigned i=0;i<5;++i){
+  {Case c;auto before=txCalls[i];assert(callTx(i,&c.fb)==txResult(i));
+   assert(txCalls[i]==before+1 && !display13FBPower.dsiNativeWriters && !owner && !fbLock.depth);}
+  for(unsigned bad=0;bad<5;++bad){Case c;auto before=txCalls[i];
+   if(bad==0)xe.dsiStopAttempted=true;
+   if(bad==1)xe.dsiResourcesReady=false;
+   if(bad==2)xe.dsiNativeWriterHooksReady=false;
+   if(bad==3)display13FBPower.memoryFaulted=true;
+   if(bad==4)put(&c.fb,0x1D0,&c.peer);
+   assert(callTx(i,&c.fb)==kIOReturnNotReady && txCalls[i]==before && !display13FBPower.dsiNativeWriters);}
+  {Case c;panel=nullptr;put(&c.path,0x3640,1U);put(&c.port,0x120,3U);xe.dsiStopAttempted=true;
+   expectedWriters=0;assert(callTx(i,&c.fb)==txResult(i) && !display13FBPower.dsiNativeWriters);}
+  {Case c;xe.adlnOutputWiring.dsi=0;nativeFB=nullptr;expectedWriters=0;
+   assert(callTx(i,nullptr)==txResult(i) && !display13FBPower.dsiNativeWriters);}
+ }
+ {Case c;nestedTx=true;auto before=txCalls[2];assert(callTx(0,&c.fb)==txResult(0));
+  assert(txCalls[2]==before+1 && !display13FBPower.dsiNativeWriters && !fbLock.depth && !owner);}
+ puts("PASS DSI public mode preflight and native update dispatch: stopped/faulted rejection, held FB serialization, nested cursor/transaction counts, full-width arguments, native wait lock boundaries, peer and disabled-DSI forwarding");
 }
 '''.replace('SCOPE',scope).replace('FUNCTIONS',functions)
 with tempfile.TemporaryDirectory(prefix='dsi-update-') as d:
