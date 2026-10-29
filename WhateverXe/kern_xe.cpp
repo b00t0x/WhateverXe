@@ -8533,6 +8533,59 @@ bool XE::wrapDisplay13FramebufferStart(IOService *that,IOService *provider) {
 	return accepted;
 }
 
+// Called only after the real PCI/workloop IRQ source and native memory have
+// been qualified. Keep the FB mutex across mode publication; never call the
+// native timing setter or registry code with the display-owner lock held.
+bool XE::adoptDSIBootPath(IOService *fb,OSObject *path) {
+    auto &c=display13FBPower;auto &irq=display13FBIRQ;
+    if(!c.lock || !fb || !path || fb->getMetaClass()->getClassSize()<0x4B90 ||
+       path->getMetaClass()->getClassSize()<0x3730)return false;
+    DSIModeScope scope(fb);if(!scope.lock)return false;
+    const auto qualified=[&]() {
+        if(adlnOutputWiring.dsi!=1 || !dsiResourcesReady || !dsiCacheHooksReady || !dsiBootProbeReady ||
+           display13Offline || !c.map || !c.power || !c.controller || c.controller!=adlnTopologyController ||
+           c.pipe[0].memoryFramebuffer!=fb || c.memoryFaulted || c.clockFaulted ||
+           c.bridge.state.faulted || c.bridge.state.suspended || c.transcoders.dsi0Pipe!=0 || !irq.lock ||
+           !Display13Power::objectAssociations(c.power,0x80,c.controller,0x1C20))return false;
+        const auto binding=adlnInspectPathBinding(fb,path,adlnPlatform,adlnOutputWiring);
+        if(binding.status!=TGLFBBinding::Status::Complete || binding.pipe!=0 || binding.ddi!=0 ||
+           Display13FBMemory::field<OSObject *>(path,0x3648)!=c.dsiPort || !c.dsiPort ||
+           Display13FBMemory::field<uint32_t>(c.dsiPort,0x550)!=1 ||
+           Display13FBMemory::field<uint32_t>(path,0x3644)!=2 ||
+           Display13FBMemory::field<uintptr_t>(fb,0x4348) ||
+           !Display13FBMemory::field<uint8_t>(fb,0x44DE) || !Display13FBMemory::field<uint8_t>(fb,0x1E7))return false;
+        Display13FBBootIO io{c.map};
+        if(!c.bridge.outputHeld(io,0,0) || !dsiBoot.complete() ||
+           !c.bootDSI.sameSource(dsiBoot.source) || !XELP::DSI::bootUnchanged(io,dsiBoot,xelpMemory))return false;
+        const auto memory=display13FBInspectMemory(fb,true,0,false);
+        if(memory.status!=Display13FBMemory::Status::Complete || memory.control!=dsiBoot.control ||
+           memory.stride!=dsiBoot.stride || memory.size!=dsiBoot.size || memory.surface!=dsiBoot.surface)return false;
+        const auto saved=IOSimpleLockLockDisableInterrupt(irq.lock);
+        const bool enabled=irq.controller==c.controller && (irq.admittedPipes&1) && !irq.quiescing &&
+            irq.state.begun && irq.state.enabled && !irq.state.faulted && irq.state.transcoders.dsi0Pipe==0;
+        IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);return enabled;
+    };
+    IOLockLock(c.lock);const bool before=qualified();IOLockUnlock(c.lock);
+    bool ready=before && bindDSIFixedMode(fb,dsiProfile);
+    IOLockLock(c.lock);
+    ready=ready && qualified();
+    if(ready) {
+        const auto key=reinterpret_cast<uintptr_t>(path);
+        ready=c.bridge.bootAdopted ? c.bridge.bootPath==key :
+            c.bridge.adoptBootPath(key,0,0).status==Display13Power::Status::Complete;
+        ready=ready && Display13Power::publishObject(c.bridge,c.power,0x80,c.controller,0x1C20);
+    }
+    if(!ready) {
+        // The setter may already have published its raw array pointer. Retain
+        // all backing/objects until stop; only withdraw mode readiness here.
+        if(dsiModeTarget(fb))dsiFixedMode.ready=false;
+        adlnFault(c.memoryFaulted,__LINE__);
+    }
+    IOLockUnlock(c.lock);
+    if(!ready && dsiModeTarget(fb))fb->setProperty("WEXDSIFixedModeReady",false);
+    return ready;
+}
+
 void XE::wrapAlderLakeNSetupWorkLoop(IOService *controller,IOWorkLoop *workLoop) {
 	FunctionCast(wrapAlderLakeNSetupWorkLoop,callbackXE->orgAlderLakeNSetupWorkLoop)(controller,workLoop);
 	auto &c=display13FBPower;if(!c.lock)return;
@@ -8634,7 +8687,12 @@ void XE::wrapAlderLakeNSetupWorkLoop(IOService *controller,IOWorkLoop *workLoop)
 			valid=enabled && !c.bridge.state.faulted && !c.memoryFaulted && !c.clockFaulted;
 		}
 		check[37]=valid;
-		if(valid) {
+        if(valid && callbackXE->adlnOutputWiring.dsi) {
+            IOLockUnlock(c.lock);
+            const bool adopted=callbackXE->adoptDSIBootPath(fb,path);
+            IOLockLock(c.lock);
+            result.status=adopted ? Display13Power::Status::Complete : Display13Power::Status::NotReady;
+        } else if(valid) {
 			if(!c.bridge.bootAdopted) {
                 const auto ddi=c.bridge.bootPort;
                 const bool dp=ddi<7 && (callbackXE->adlnOutputWiring.links()&(1U<<ddi));

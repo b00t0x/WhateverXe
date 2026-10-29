@@ -118,6 +118,7 @@ int main(){
   assert(!xe.bindDSIFixedMode(fb,p) && !dsiModeTarget(fb) && alive==before && !calls[0]);}
  dataOK=arrayOK=true;display13FBPower.memoryFaulted=false;
  assert(xe.bindDSIFixedMode(fb,p) && fb->refs==2 && dsiFixedMode.array->refs==2 && dsiFixedMode.data->refs==2);
+ auto callsBeforeRepeat=calls[0];assert(xe.bindDSIFixedMode(fb,p) && calls[0]==callsBeforeRepeat && fb->refs==2 && dsiFixedMode.array->refs==2);
  auto other=p;++other.mode.clockKHz;assert(!xe.bindDSIFixedMode(fb,other));
  assert(XE::wrapDSIGetModeCount(fb)==1 && XE::wrapDSIGetModeCount(peer)==3);
  int32_t peerMode=0;assert(!XE::wrapDSIGetModes(peer,&peerMode) && peerMode==42);

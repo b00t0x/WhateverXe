@@ -143,6 +143,7 @@ private:
     mach_vm_address_t orgDSICache[2] {};
     bool processDisplay13DSICache(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     bool updateDSIBootCache(IOService *,IOService *,OSObject *);
+    bool adoptDSIBootPath(IOService *,OSObject *);
     static void wrapDSIUpdateCache(IOService *,IOService *,OSObject *);
     static void wrapDSIGetCRTC(IOService *,IOService *,OSObject *);
     bool dsiBootProbeReady {};
