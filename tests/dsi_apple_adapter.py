@@ -6,7 +6,7 @@ import hashlib, re, subprocess, sys, tempfile
 root = Path(__file__).resolve().parents[1]
 source = (root/'WhateverXe/kern_xe.cpp').read_text()
 owner = source[source.index('struct DSIFixedModeOwner {'):source.index('// AlderLakeN start bypasses')]
-names = ['bindDSIFixedMode', 'wrapDSISetDetailedTimings', 'wrapDSIValidateMode',
+names = ['releaseDSIFixedMode', 'bindDSIFixedMode', 'wrapDSISetDetailedTimings', 'wrapDSIValidateMode',
          'wrapDSIGetModes', 'wrapDSIGetModeCount', 'wrapDSIGetModeInformation']
 functions = '\n'.join(re.search(r'(?:bool|uint32_t) XE::'+name+r'\(.*?\n\}', source, re.S)[0] for name in names)
 if len(sys.argv) == 2:
@@ -32,7 +32,7 @@ code = r'''
 #include <cstdio>
 constexpr uint32_t kIOReturnSuccess=0,kIOReturnNotReady=0xe00002d8U,
  kIOReturnUnsupported=0xe00002c7U,kIOReturnBadArgument=0xe00002c2U;
-unsigned alive=0,calls[5]{};bool dataOK=true,arrayOK=true,publishOK=true,geometryOK=true;
+unsigned alive=0,calls[5]{};bool dataOK=true,arrayOK=true,publishOK=true,geometryOK=true,clearOK=true;
 struct Meta {unsigned getClassSize(){return 0x4b90;}} meta;
 struct OSObject {
  unsigned refs=1;OSObject(){++alive;}virtual ~OSObject(){--alive;}
@@ -79,6 +79,7 @@ struct {IOLock *lock;void *controller;Display13Transcoder::Bindings transcoders;
 struct XE {
  bool display13DSIModeHooksReady=true;Display13OutputWiring adlnOutputWiring;void *adlnTopologyController=nullptr;
  uint8_t adlnPlatform[0x1c0]{};uintptr_t orgDSIMode[5]{};
+ bool releaseDSIFixedMode(IOService *);
  bool bindDSIFixedMode(IOService *,const XELP::DSI::Profile &);
  static uint32_t wrapDSISetDetailedTimings(IOService *,OSArray *);
  static uint32_t wrapDSIValidateMode(IOService *,int32_t,const void **,const void **);
@@ -88,7 +89,7 @@ struct XE {
 } xe,*callbackXE=&xe;
 OWNER
 FUNCTIONS
-uint32_t publish(IOService *fb,OSArray *a){++calls[0];fb->setProperty("IOFBDetailedTimings",a);
+uint32_t publish(IOService *fb,OSArray *a){++calls[0];if(a)fb->setProperty("IOFBDetailedTimings",a);else {if(!clearOK)return 0;fb->removeProperty("IOFBDetailedTimings");}
  Display13FBMemory::field<OSArray*>(fb,0x4260)=a;return 0;}
 uint32_t validate(IOService *fb,int32_t mode,const void **desc,const void **timing){++calls[1];
  auto a=Display13FBMemory::field<OSArray*>(fb,0x4260);assert(a && (mode&1023)==0);
@@ -143,8 +144,15 @@ int main(){
  data->release();replacement->release();
  fb->removeProperty("IOFBDetailedTimings");assert(!XE::wrapDSIGetModeCount(fb) && dsiFixedMode.array->refs==1);
  assert(XE::wrapDSIValidateMode(fb,mode,nullptr,nullptr)==kIOReturnNotReady);
- const auto cleanup=[&]{Display13FBMemory::field<OSArray*>(fb,0x4260)=nullptr;
-  dsiFixedMode.array->release();dsiFixedMode.data->release();fb->release();dsiFixedMode={};};
+ const auto cleanup=[&]{
+  assert(!xe.releaseDSIFixedMode(peer));dsiFixedMode.ready=true;
+  assert(!xe.releaseDSIFixedMode(fb));dsiFixedMode.ready=false;
+  const auto refs=dsiFixedMode.array->refs;clearOK=false;
+  assert(!xe.releaseDSIFixedMode(fb) && dsiModeTarget(fb) && dsiFixedMode.array->refs==refs && fb->refs==2);
+  clearOK=true;
+  assert(xe.releaseDSIFixedMode(fb) && !dsiModeTarget(fb) && fb->refs==1);
+  assert(!Display13FBMemory::field<OSArray*>(fb,0x4260) && !fb->getProperty("IOFBDetailedTimings"));
+  assert(xe.releaseDSIFixedMode(fb));};
  cleanup();publishOK=false;assert(!xe.bindDSIFixedMode(fb,p));
  assert(dsiModeTarget(fb) && dsiFixedMode.array->refs==1 && Display13FBMemory::field<OSArray*>(fb,0x4260)==dsiFixedMode.array);
  assert(!XE::wrapDSIGetModeCount(fb));cleanup();

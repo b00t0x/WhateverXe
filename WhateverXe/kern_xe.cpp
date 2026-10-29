@@ -6788,6 +6788,25 @@ bool XE::bindDSIFixedMode(IOService *fb,const XELP::DSI::Profile &profile) {
     return o.ready;
 }
 
+// Called with the FB mutex and provider gate held, after stopped path/PG
+// disposal. The donor's qualified null setter removes only the timing property
+// and its raw +4260 pointer; it performs no display or allocator operation.
+bool XE::releaseDSIFixedMode(IOService *fb) {
+    auto &o=dsiFixedMode;
+    if(!o.framebuffer)return true;
+    if(!dsiModeTarget(fb) || o.ready || !orgDSIMode[0])return false;
+    auto raw=Display13FBMemory::field<OSArray *>(fb,0x4260);
+    auto property=fb->getProperty("IOFBDetailedTimings");
+    if((raw && raw!=o.array) || (property && property!=o.array))return false;
+    const auto result=FunctionCast(wrapDSISetDetailedTimings,orgDSIMode[0])(fb,nullptr);
+    if(result!=kIOReturnSuccess || Display13FBMemory::field<OSArray *>(fb,0x4260) ||
+       fb->getProperty("IOFBDetailedTimings"))return false;
+    auto array=o.array;auto data=o.data;
+    __atomic_store_n(&o.framebuffer,static_cast<IOService *>(nullptr),__ATOMIC_RELEASE);
+    o.array=nullptr;o.data=nullptr;o.mode={};o.timing={};
+    OSSafeReleaseNULL(array);OSSafeReleaseNULL(data);fb->release();return true;
+}
+
 uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
     if(!dsiModeTarget(fb))return FunctionCast(wrapDSISetDetailedTimings,callbackXE->orgDSIMode[0])(fb,array);
     DSIModeScope scope(fb);if(!scope.lock || !dsiModeCoherent(fb))return kIOReturnNotReady;
@@ -9671,6 +9690,17 @@ bool XE::disposeDSIPath(IOService *fb,OSObject *path) {
     record[8]=removed;record[9]=Display13FBMemory::field<uint32_t>(fb,0x49E8);
     record[10]=Display13FBMemory::field<uint32_t>(fb,0x4A00);record[11]=Display13FBMemory::field<uint32_t>(path,0x3644);
     IOLockUnlock(c.lock);
+    if(removed) {
+        removed=releaseDSIFixedMode(fb);
+        if(removed) {
+            IOLockLock(c.lock);
+            removed=c.dsiPort==port;
+            if(removed)c.dsiPort=nullptr;
+            IOLockUnlock(c.lock);
+            if(removed)port->release();
+        }
+    }
+    record[8]=removed;
     if(acquired)reinterpret_cast<void (*)(IOWorkLoop *)>(adlnWorkLoopOpen)(loop);
     loop->release();adlnPublishMemory("N97FBDSIPathDispose",0,record,sizeof(record));return removed;
 }
@@ -10445,11 +10475,10 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         *reinterpret_cast<uint8_t *>(reinterpret_cast<uint8_t *>(fb)+0x4270)=0;
         if(dsiModeTarget(fb)){dsiFixedMode.ready=false;modeWithdrawn=true;}
     }
-    // Close the existing native writer/free gate before dropping the FB mutex,
-    // even after backing release. Keep it until the remaining PG/path/object
-    // retirement and Session cleanup transaction is connected. Never clear an
-    // earlier resource fault to force the allocator through its own guard.
-    if(masked)adlnFault(c.memoryFaulted,__LINE__);
+    // This GOP-only path cannot have a pending/armed native backing. A full
+    // stop leaves PG/path disposal to releaseDisplay13Path; only partial stops
+    // need the global retention guard. Never clear a pre-existing real fault.
+    if(masked && !complete)adlnFault(c.memoryFaulted,__LINE__);
     IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
     if(modeWithdrawn)fb->setProperty("WEXDSIFixedModeReady",false);
     if(acquired)reinterpret_cast<void (*)(IOWorkLoop *)>(adlnWorkLoopOpen)(loop);
@@ -10460,12 +10489,11 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
 
 void XE::wrapAlderLakeNDisableDisplay(IOService *controller,IOService *fb,OSObject *path,uint8_t mode) {
 	if(callbackXE->adlnOutputWiring.dsi && dsiLifecycleTarget(fb,path)) {
-		callbackXE->quiesceDSIPath(controller,fb,path);
-		// Host/IRQ/PLL/DDI completion alone does not authorize allocator/PG
-		// release. Keep the retention guard until the full retirement adapter
-		// supplies a real Session StopProof; this void donor ABI has no error.
-		auto &c=display13FBPower;
-		if(c.lock){IOLockLock(c.lock);adlnFault(c.memoryFaulted,__LINE__);IOLockUnlock(c.lock);}
+        const bool stopped=callbackXE->quiesceDSIPath(controller,fb,path);
+        // Failed stops retain resources. Successful GOP-only stops can now
+        // reach the qualified PG/path/timing disposal at the native free entry.
+        auto &c=display13FBPower;
+        if(!stopped && c.lock){IOLockLock(c.lock);adlnFault(c.memoryFaulted,__LINE__);IOLockUnlock(c.lock);}
 		return;
 	}
 	auto &c=display13FBPower;Display13Cursor::Result result;bool selected=false;unsigned pipe=UINT32_MAX;

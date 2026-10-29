@@ -15,6 +15,7 @@ code=r'''
 struct OSObject {alignas(8) uint8_t bytes[0x4B90]{};unsigned size=sizeof(bytes);
  OSObject *getMetaClass(){return this;}unsigned getClassSize(){return size;}};
 using IOService=OSObject;using IOLock=int;
+bool hostStopOK=false;
 unsigned depth=0,bindingCalls=0,modeCalls=0,stopCalls=0,notifications=0,modeResult=0,hostStops=0;
 void IOLockLock(IOLock*){assert(!depth);++depth;}void IOLockUnlock(IOLock*){assert(depth==1);--depth;}
 void adlnFault(bool &v,unsigned){assert(depth==1);v=true;}
@@ -38,7 +39,7 @@ struct XE {
  struct Wiring{unsigned dsi=0;operator unsigned()const{return dsi;}}adlnOutputWiring;void *adlnPlatform=nullptr;
  uintptr_t orgDisplay13TCSetMode=reinterpret_cast<uintptr_t>(nativeMode),display13TCNotify=reinterpret_cast<uintptr_t>(notify);
  uintptr_t orgAlderLakeNDisableDisplay=reinterpret_cast<uintptr_t>(nativeStop);
- bool quiesceDSIPath(IOService*,IOService*,OSObject*){++hostStops;return false;}
+ bool quiesceDSIPath(IOService*,IOService*,OSObject*){++hostStops;return hostStopOK;}
  static uint32_t wrapDisplay13TCSetMode(void*,void*,const void*);
  static void wrapAlderLakeNDisableDisplay(IOService*,IOService*,OSObject*,uint8_t);
 }xe,*callbackXE=&xe;
@@ -56,6 +57,8 @@ int main(){
   assert(c.memoryFaulted && stopCalls==d && bindingCalls==b && hostStops==h+1 && !depth);
  };
  xe.adlnOutputWiring.dsi=1;reject(&fb,&path); // actual pipe A / port A
+ hostStopOK=true;c.memoryFaulted=false;XE::wrapAlderLakeNDisableDisplay(&controller,&fb,&path,0);
+ assert(!c.memoryFaulted && stopCalls==0);hostStopOK=false;
  put(&path,0x3640,1U);put(&port,0x120,3U);
  panel=&fb;reject(&fb,&path);panel=nullptr; // retained identity survives corrupted path
  put(&path,0x3640,3U);reject(&fb,&path);

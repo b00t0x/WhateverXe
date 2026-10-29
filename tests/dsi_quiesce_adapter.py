@@ -168,7 +168,7 @@ int main(){
  for(bool own:{false,true}){Case c;c.loop.gate=own;c.map.gtOnly=true;
   put(&c.controller,0xE08,2U);put(&c.controller,0xE10,1U<<6);
   assert(c.run() && c.xe.dsiStop.complete() && c.xe.dsiIRQParked);
-  assert(display13FBPower.memoryFaulted);
+  assert(!display13FBPower.memoryFaulted);
   assert(display13FBPower.dbuf.consumers==4 && !display13FBPower.dbuf.pipe[0].unretired);
   assert(c.xe.dsiStop.writes==8 && display13FBIRQ.state.active==2 && display13FBIRQ.state.enabled);
   assert(!display13FBIRQ.quiescing && !display13FBIRQ.blockedPipes && c.loop.gate==own);

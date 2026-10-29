@@ -22,7 +22,7 @@ struct OSObject {alignas(8) uint8_t bytes[0x4B90]{};unsigned size=sizeof(bytes),
  OSObject *getMetaClass(){return this;}unsigned getClassSize(){return size;}
  void retain(){++refs;}void release(){assert(refs>1);--refs;}};
 using IOService=OSObject;using IOLock=int;
-unsigned depth=0;bool gate=false,busy=false,queueOnPut=false;unsigned opens=0,closes=0,putCalls=0,leaves=0;bool failPut=false,liePut=false,failLeaf=false;
+unsigned depth=0;bool gate=false,busy=false,queueOnPut=false;unsigned opens=0,closes=0,putCalls=0,leaves=0;bool failPut=false,liePut=false,failLeaf=false,failTiming=false;
 void IOLockLock(IOLock*){assert(!depth);++depth;}void IOLockUnlock(IOLock*){assert(depth==1);--depth;}
 struct IOWorkLoop:OSObject{};
 bool inGate(const IOWorkLoop*){assert(!depth);return gate;}
@@ -62,6 +62,7 @@ struct XE {
    void write(uint32_t,uint32_t){assert(false);}void delayUs(unsigned){assert(false);}}io;
   return display13FBPower.bridge.putPG(io,1).status==Display13Power::Status::Complete;
  }
+ bool releaseDSIFixedMode(IOService*){assert(!depth && gate);return !failTiming;}
  bool disposeDSIPath(IOService*,OSObject*);
 };
 BODY
@@ -70,7 +71,7 @@ struct Case {
  XE xe;IOService controller,fb,peer;OSObject path,port,plane,scaler,planeScaler;IOWorkLoop loop;IOLock lock;
  Case(){
   using Power=decltype(display13FBPower);display13FBPower.~Power();new (&display13FBPower) Power;auto &c=display13FBPower;c.lock=&lock;c.controller=&controller;c.workLoop=&loop;c.dsiPort=&port;c.power=&controller;
-  c.pipe[0].memoryFramebuffer=&fb;c.pipe[0].destroyingPath=true;c.dbuf.selected=2;
+  port.retain();c.pipe[0].memoryFramebuffer=&fb;c.pipe[0].destroyingPath=true;c.dbuf.selected=2;
   c.bridge.begun=true;c.bridge.bootAdopted=true;c.bridge.bootPath=reinterpret_cast<uintptr_t>(&path);c.bridge.bootPort=0;
   c.bridge.pgRefs[0]=1;c.bridge.pgRefs[2]=1;
   auto &state=c.bridge.state;state.ready=true;state.allowed=Display13Power::All;
@@ -88,7 +89,7 @@ struct Case {
   for(auto s:{&scaler,&planeScaler}){put(s,0x10,&fb);put(s,0x20,uint8_t(1));}
   pipeMap=mapEntries;pipeMap[0]=&fb;pipeMap[1]=&peer;pipeMap[2]=nullptr;
   display13FBIRQ={};display13FBIRQ.lock=&lock;display13FBIRQ.state.active=2;
-  depth=0;queueOnPut=gate=busy=failPut=liePut=failLeaf=false;opens=closes=putCalls=leaves=0;
+  depth=0;queueOnPut=gate=busy=failPut=liePut=failLeaf=failTiming=false;opens=closes=putCalls=leaves=0;
   if(image){xe.dsiFreePlane=reinterpret_cast<uintptr_t>(image+0x5751C);xe.dsiFreeScaler=reinterpret_cast<uintptr_t>(image+0x5739A);
    xe.dsiDetachPath=reinterpret_cast<uintptr_t>(image+0x67FB4);xe.dsiRemovePath=reinterpret_cast<uintptr_t>(image+0x68EA4);
    put(image,0x138BB0,pipeMap);xe.dsiPipeMap=reinterpret_cast<uintptr_t>(image+0x138BB0);}
@@ -105,6 +106,9 @@ void run(){
  {Case c;gate=true;c.success();assert(!opens && !closes && gate);gate=false;}
  {Case c;busy=true;c.retained();}
  {Case c;c.xe.dsiMemoryReleased=false;c.retained();}
+ {Case c;failTiming=true;assert(!c.xe.disposeDSIPath(&c.fb,&c.path));
+  assert(display13FBPower.dsiPort==&c.port && c.port.refs==2 && c.xe.dsiPGReleased);}
+
  {Case c;display13FBPower.memoryFaulted=true;c.retained();}
  {Case c;display13FBPower.dsiNativeWriters=1;c.retained();}
  {Case c;display13FBIRQ.state.active|=1;c.retained();}
