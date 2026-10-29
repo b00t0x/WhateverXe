@@ -10011,7 +10011,7 @@ void XE::adlnSetupDBUFPipe(IOService *controller,IOService *fb,unsigned pipe,boo
 	if(pipe>=3 || !fb || fb->getMetaClass()->getClassSize()<0x4B90)return;
 	auto mutex=Display13FBMemory::field<IORecursiveLock *>(fb,0x4220);if(!mutex)return;
 	IORecursiveLockLock(mutex);IOLockLock(c.lock);
-	Display13DBUF::Layout layout;Display13DBUF::Range relativePrimary;OSObject *plane=nullptr;uint64_t record[18] {},resume[6] {};
+	Display13DBUF::Layout layout;Display13DBUF::Range relativePrimary;OSObject *plane=nullptr;uint64_t record[20] {},resume[6] {};
 	auto path=Display13FBMemory::singlePath<OSObject *>(fb);
 	const auto binding=adlnInspectPathBinding(fb,path,callbackXE->adlnPlatform,callbackXE->adlnOutputWiring);
 	const bool associated=Display13FBMemory::boundPipe(c.pipe,fb)==pipe &&
@@ -10066,7 +10066,18 @@ void XE::adlnSetupDBUFPipe(IOService *controller,IOService *fb,unsigned pipe,boo
 		// arm it after this allocation; keep its old slices pending until then.
 		IOLockLock(c.lock);
 		if(!allocated || c.watermarkFaulted)layout.status=Display13DBUF::Status::Faulted;
-		else if(layout.active && (c.pipe[pipe].wmPending || c.pipe[pipe].wmLatch.status!=Display13WM::Status::Complete))layout.status=Display13DBUF::Status::Conflict;
+		else if(layout.active && (c.pipe[pipe].wmPending || c.pipe[pipe].wmLatch.status!=Display13WM::Status::Complete)) {
+			// An enabled timing pipe can still be preparing its primary, or
+			// waiting for the live surface to catch up. The WM proof explicitly
+			// leaves those cases pending. Allocation success is not retirement:
+			// retain the old slices and clock guard until a later native arm
+			// proves the actual scanout. Other unavailable/failed proofs are not
+			// permission to continue an active allocation.
+			const auto &latch=c.pipe[pipe].wmLatch;
+			const bool awaiting=latch.status==Display13WM::Status::Unavailable &&
+				(latch.check==Display13WM::LatchCheck::AwaitingScanout || latch.check==Display13WM::LatchCheck::AwaitingFlip);
+			if(!awaiting)layout.status=Display13DBUF::Status::Conflict;
+		}
 		if(layout.status==Display13DBUF::Status::Complete && !optimized)
 			reinterpret_cast<uint8_t *>(controller)[0x1AFA]=0;
 	}
@@ -10075,8 +10086,10 @@ void XE::adlnSetupDBUFPipe(IOService *controller,IOService *fb,unsigned pipe,boo
 	record[5]=c.dbuf.pipe[pipe].primary.start;record[6]=c.dbuf.pipe[pipe].primary.end;record[7]=c.dbuf.pipe[pipe].cursor.start;record[8]=c.dbuf.pipe[pipe].cursor.end;
 	record[9]=c.dbuf.consumers;record[10]=c.dbuf.unretired;record[11]=c.dbuf.requested;record[12]=c.dbuf.powered;
 	record[13]=c.pipe[pipe].wmPending;record[14]=c.pipe[pipe].watermarkClockHz;record[15]=static_cast<uint32_t>(c.pipe[pipe].wmLatch.status);record[16]=pipe;record[17]=binding.ddi;
+	record[18]=static_cast<uint32_t>(c.pipe[pipe].wmLatch.check);record[19]=c.dbuf.faulted;
 	IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);
 	adlnPublishMemory("N97FBDBUFLayout",pipe,record,sizeof(record));
+	if(layout.status!=Display13DBUF::Status::Complete)adlnPublishMemory("N97FBDBUFLayoutFailure",pipe,record,sizeof(record),true);
 	if(resume[0])adlnPublishMemory("N97FBDBUFColdResume",pipe,resume,sizeof(resume));
 }
 void XE::wrapAlderLakeNDefaultDBUF(IOService *controller) {adlnSetupDBUF(controller,false);}
