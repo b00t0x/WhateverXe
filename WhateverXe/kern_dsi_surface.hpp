@@ -49,12 +49,13 @@ template<class IO> bool matches(IO &io,const Plane &p,bool live) {
     for(unsigned i=0;i<7;++i)if(!word(io,Registers[i],UINT32_MAX,v[i]))return false;
     return !live || word(io,0x701AC,UINT32_MAX,p.surface);
 }
-template<class IO> bool source(IO &io,const Readout &link) {
+template<class IO> bool source(IO &io,const Readout &link,bool stoppingCursor=false) {
     if(link.identity.pipe!=0 || !sourceUnchanged(io,link) || !word(io,0x42084,1U<<30,1U<<30) ||
        !word(io,0x6001C,UINT32_MAX,((link.htotal&65535)<<16)|(link.vtotal&65535)) ||
        !word(io,0x6B010,UINT32_MAX,link.vtotal) || !word(io,0x6B028,UINT32_MAX,0) ||
        !word(io,0x60400,1U<<31,0) || !word(io,0x7B808,0xC0000000U,0) ||
-       !word(io,0x70080,63,0) || !word(io,0x78000,0xF0300000U,0) || !word(io,0x78004,0x80008000U,0))return false;
+       (!stoppingCursor && !word(io,0x70080,63,0)) ||
+       !word(io,0x78000,0xF0300000U,0) || !word(io,0x78004,0x80008000U,0))return false;
     for(unsigned p=1;p<7;++p)if(!word(io,0x70180+0x100*p,1U<<31,0))return false;
     for(unsigned s=0;s<2;++s)if(!word(io,0x68180+0x100*s,1U<<31,0))return false;
     for(unsigned d=0;d<3;++d)if(!word(io,0x70B08+0x100*d,0x80000001U,0))return false;
