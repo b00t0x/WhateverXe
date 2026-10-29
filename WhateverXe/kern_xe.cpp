@@ -3874,6 +3874,28 @@ bool XE::prepareDSIFirmware(IOService *provider) {
     dsiProfile=parsed;dsiFirmware=copy;return true;
 }
 
+// Keep profile parsing temporaries out of the already large bootstrap frame.
+__attribute__((noinline)) void XE::auditDSIBoot(IOPCIDevice *pci,volatile const uint8_t *base,uint64_t length,
+        const AlderLakeN::DisplayReadout &normal,bool admitted) {
+    if(!checkKernelArgument("-wex-dsi-audit"))return;
+    struct Scratch {XELP::DSI::Profile profile;XELP::DSI::Boot boot;XELP::DSI::BootAudit audit;};
+    auto scratch=static_cast<Scratch *>(IOMalloc(sizeof(Scratch)));if(!scratch)return;
+    // Pre-native, before the optional external-output handoff. Read only;
+    // the scratch certificate must never become the live dsiBoot owner.
+    auto vbt=OSDynamicCast(OSData,pci->getProperty("TGLVBT"));scratch->profile={};
+    if(vbt && vbt->getLength() && vbt->getLength()<=65536)
+        scratch->profile=XELP::DSI::parseProfile({static_cast<const uint8_t *>(vbt->getBytesNoCopy()),vbt->getLength()},true);
+    struct ReadIO {
+        volatile const uint8_t *base;uint64_t length;
+        bool readable(uint32_t reg) const {return base && length>=4 && reg<=length-4;}
+        uint32_t read(uint32_t reg) {return *reinterpret_cast<volatile const uint32_t *>(base+reg);}
+        uint64_t readPTE(uint32_t reg) {return *reinterpret_cast<volatile const uint64_t *>(base+reg);}
+    } io {base,length};
+    XELP::DSI::auditBoot(io,normal,scratch->profile,xelpMemory,admitted,scratch->boot,scratch->audit);
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIBootAudit",&scratch->audit,sizeof(scratch->audit));
+    IOFree(scratch,sizeof(Scratch));
+}
+
 void XE::adlnBootstrap(IOPCIDevice *pci) {
 	pci->setProperty("N97BringupVersion", 1ULL, 32);
 	pci->setProperty("N97NativeStartAllowed", false);
@@ -3984,6 +4006,7 @@ void XE::adlnBootstrap(IOPCIDevice *pci) {
             IOFree(words,sizeof(regs)*2);
         }
     }
+    auditDSIBoot(pci,io.base,io.length,result,barReady && reservationReady);
     if(checkKernelArgument("-wex-dsi-hdmi-test")) {
         auto handoff=Display13DSITrial::transfer(io,barReady && xelpMemoryMatches(pci),result,xelpMemory,board.hdmi);
         pci->setProperty("WEXDisplay13DSIHandoff",&handoff,sizeof(handoff));
@@ -6897,8 +6920,8 @@ static bool dsiLifecycleTarget(IOService *fb,OSObject *path) {
     return attached!=path || dsiCachePath(attached);
 }
 
-// The native public mode entry disables/reallocates before hwSetMode. Refuse
-// here until the GOP-preserving mode transaction can own all those steps.
+// Native timing/resource setup can disable or reallocate before hwSetMode.
+// Refuse DSI here until its mode transaction owns those conditional steps.
 uint32_t XE::wrapDSISetDisplayMode(IOService *fb,int32_t mode,int32_t depth) {
     if(callbackXE->adlnOutputWiring.dsi) {
         if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;

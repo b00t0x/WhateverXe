@@ -32,6 +32,36 @@ struct IO {
 Profile profile(){Profile p;p.status=ProfileStatus::Valid;p.lanes=4;p.mode={135255,1080,46,22,2,1920,82,40,2,86,154};return p;}
 Boot capture(IO &io){return captureBoot(io,AlderLakeN::readDisplay(io,true),profile(),io.memory,true);}
 int main(int argc,char **argv){
+ // The pre-handoff audit reports real qualification failures without writes
+ // or promoting its scratch certificate into an active owner.
+ {
+  IO observed;auto normal=AlderLakeN::readDisplay(observed,true);Boot scratch;BootAudit audit;
+  observed.reads.clear();auditBoot(observed,normal,profile(),observed.memory,false,scratch,audit);
+  assert(audit.words[0]==1 && audit.words[1]==uint32_t(BootStatus::Unavailable));
+  assert(observed.reads.empty() && !observed.ptes && observed.writes.empty());
+  Profile invalid;
+  auditBoot(observed,normal,invalid,observed.memory,true,scratch,audit);
+  assert(observed.reads.empty() && !observed.ptes);
+  auditBoot(observed,normal,profile(),observed.memory,true,scratch,audit);
+  assert(scratch.complete() && audit.words[12]==observed.memory.bytes/4096);
+  assert(audit.words[22]==1080 && audit.words[23]==1920 && audit.words[24]==4352);
+  assert(audit.words[29]==1 && audit.words[30]==811500 && observed.writes.empty());
+ }
+ for(bool dsb:{false,true}) {
+  IO observed;auto normal=AlderLakeN::readDisplay(observed,true);Boot scratch;BootAudit audit;
+  if(dsb)observed.regs[0x70B08]=1;else observed.badPTE=17;
+  auditBoot(observed,normal,profile(),observed.memory,true,scratch,audit);
+  if(dsb)assert(audit.words[1]==uint32_t(BootStatus::Peers) && audit.words[7]==0x70B08 && audit.words[8]==1 && !observed.ptes);
+  else assert(audit.words[1]==uint32_t(BootStatus::PTE) && audit.words[9]==0x800000+8*17 &&
+      audit.words[12]==17 && audit.words[10]!=audit.words[11] && audit.words[11]==observed.memory.pte(17*4096));
+  assert(observed.writes.empty());
+ }
+ {
+  IO observed;auto normal=AlderLakeN::readDisplay(observed,true);Boot scratch;BootAudit audit;
+  observed.changeAt=4;observed.changeReg=0x45404;
+  auditBoot(observed,normal,profile(),observed.memory,true,scratch,audit);
+  assert(audit.words[1]==uint32_t(BootStatus::Changed) && observed.reads.back()==0x45404 && observed.writes.empty());
+ }
  IO io;auto boot=capture(io);assert(boot.status==BootStatus::Candidate && !boot.complete());
  assert(boot.geometry.width==1080 && boot.geometry.height==1920 && boot.geometry.pitch==4352 && boot.dpt==0);
  assert(verifyBootPrefix(io,boot,io.memory) && boot.complete() && boot.verifiedPages==io.memory.bytes/4096);

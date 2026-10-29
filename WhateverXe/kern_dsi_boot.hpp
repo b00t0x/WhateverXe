@@ -98,5 +98,35 @@ template<class IO> bool verifyBootPrefix(IO &io,Boot &boot,const XELPMemory::Lay
     if(!bootUnchanged(io,boot,memory)){boot.status=BootStatus::Changed;return false;}
     boot.status=BootStatus::Complete;return true;
 }
+// Fixed-width diagnostic receipt. Deliberately separate from the live Boot
+// owner: success here does not publish capabilities or adopt any resource.
+struct BootAudit { uint64_t words[32] {}; };
+template<class IO> void auditBoot(IO &io,const AlderLakeN::DisplayReadout &normal,
+                                 const Profile &profile,const XELPMemory::Layout &memory,
+                                 bool admitted,Boot &scratch,BootAudit &audit) {
+    audit={};auto q=audit.words;q[0]=1;q[2]=admitted;q[3]=uint32_t(profile.status);
+    q[4]=uint32_t(normal.status);q[5]=normal.activePipes;q[6]=normal.poweredPipes;
+    q[7]=q[9]=UINT32_MAX;q[13]=memory.bytes/4096;q[14]=memory.base;
+    q[15]=memory.bytes;q[16]=memory.allocationEnd;
+    // Only read operations are exposed, including when the caller's IO can
+    // write. Preserve the last attempted access for a bounded failure report.
+    struct ReadOnly {
+        IO &io;uint64_t *q;
+        bool readable(uint32_t reg) {
+            if(io.readable(reg))return true;q[7]=reg;q[8]=UINT32_MAX;return false;
+        }
+        uint32_t read(uint32_t reg) {q[7]=reg;q[8]=io.read(reg);return uint32_t(q[8]);}
+        uint64_t readPTE(uint32_t reg) {q[9]=reg;q[10]=io.readPTE(reg);return q[10];}
+    } ro {io,q};
+    captureBoot(ro,normal,profile,memory,admitted,scratch);
+    if(scratch.usable())verifyBootPrefix(ro,scratch,memory);
+    q[1]=uint32_t(scratch.status);q[12]=scratch.verifiedPages;
+    if(scratch.status==BootStatus::PTE)q[11]=memory.pte(uint64_t(scratch.verifiedPages)*4096);
+    q[17]=scratch.control;q[18]=scratch.stride;q[19]=scratch.size;q[20]=scratch.surface;q[21]=scratch.dpt;
+    q[22]=scratch.geometry.width;q[23]=scratch.geometry.height;q[24]=scratch.geometry.pitch;q[25]=scratch.geometry.bytes;
+    q[26]=scratch.source.identity.pipe;q[27]=scratch.source.identity.transcoder;
+    q[28]=scratch.source.identity.phy;q[29]=scratch.source.identity.pll;
+    q[30]=scratch.source.afeKHz;q[31]=uint32_t(scratch.source.status);
+}
 }}
 #endif

@@ -146,7 +146,7 @@ No device-ID override or machine-specific AGDP kext is required.
 
 The experimental `-wex-dsi-hdmi-test` argument transfers a qualified Display13 DSI-A GOP to Combo B at 1080p60 for development. It stops the internal display and retires the temporary HDMI resources when policy switches to another connected output. It is disabled by default and does not provide DSI support or general cold startup.
 
-The optional `-wex-dsi-audit` argument checks the supported MIPI DSI firmware layout and available cached boot state, then publishes diagnostic summaries. It is disabled by default; the audit does not program the display or enable DSI output.
+The optional `-wex-dsi-audit` argument checks the supported MIPI DSI firmware layout and pre-native GOP state, including peer engines and the stolen-memory GGTT prefix, then publishes diagnostic summaries. It is disabled by default; the audit does not program the display or enable DSI output.
 
 ### Internal-panel brightness
 

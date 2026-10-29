@@ -418,6 +418,7 @@ private:
 	static void wrapDisplay13FBProcessDE(IOService *controller,uint32_t *pipe,uint32_t *aux,uint32_t *hotplug);
 	static bool wrapDisplay13FBProcessIRQ(IOService *controller);
 	static void wrapDisplay13FBSWIRQ(IOService *controller,IOInterruptEventSource *source,int count);
+    void auditDSIBoot(IOPCIDevice *,volatile const uint8_t *,uint64_t,const AlderLakeN::DisplayReadout &,bool);
 	void adlnBootstrap(IOPCIDevice *pci);
 	uint16_t tglDeviceId {0}; // Physical PCI ID, not a DeviceProperties override.
 	mach_vm_address_t orgTGLEnableCombo {}, orgTGLEngineEnable {}, orgTGLEngineDisable {};

@@ -4,7 +4,17 @@ from pathlib import Path
 import re, subprocess, tempfile
 root=Path(__file__).resolve().parents[1]
 source=(root/'WhateverXe/kern_xe.cpp').read_text()
-functions='\n'.join(re.search(r'bool XE::'+name+r'\(.*?\n\}',source,re.S)[0]
+# Observation must precede the destructive external-output trial and must
+# use scratch storage, not publish the certificate to the live DSI owner.
+audit_start=source.index('void XE::auditDSIBoot(')
+audit_end=source.index('void XE::adlnBootstrap(',audit_start)
+audit_source=source[audit_start:audit_end]
+assert 'if(!checkKernelArgument("-wex-dsi-audit"))return;' in audit_source
+assert 'scratch->boot,scratch->audit' in audit_source and '"WEXDSIBootAudit"' in audit_source
+assert 'dsiBoot=' not in audit_source and 'write(' not in audit_source
+bootstrap=source[audit_end:]
+assert bootstrap.index('auditDSIBoot(pci,') < bootstrap.index('Display13DSITrial::transfer(')
+functions=audit_source+'\n'+'\n'.join(re.search(r'bool XE::'+name+r'\(.*?\n\}',source,re.S)[0]
                     for name in ['prepareDSIFirmware','prepareDisplay13BootScanout'])
 fixture=(root/'tests/dsi_profile.cpp').read_text()
 fixture=fixture[fixture.index('using Bytes='):fixture.index('Profile parse(')]
@@ -16,7 +26,11 @@ code=r'''
 #include <vector>
 using namespace XELP::DSI;
 FIXTURE
-bool copyOK=true,deviceOK=true,memoryOK=true;unsigned alive=0,releases=0;
+bool copyOK=true,deviceOK=true,memoryOK=true,auditEnabled=false;unsigned alive=0,releases=0,audits=0,allocations=0;
+BootAudit lastAudit;
+bool checkKernelArgument(const char *key){assert(!strcmp(key,"-wex-dsi-audit"));return auditEnabled;}
+void *IOMalloc(size_t bytes){++allocations;return calloc(1,bytes);}
+void IOFree(void *p,size_t){--allocations;free(p);}
 struct OSObject {OSObject(){++alive;}virtual ~OSObject(){--alive;}void release(){delete this;}};
 struct OSData:OSObject {
  std::vector<uint8_t> bytes;
@@ -25,7 +39,9 @@ struct OSData:OSObject {
   d->bytes.assign(static_cast<const uint8_t*>(p),static_cast<const uint8_t*>(p)+n);return d;}
 };
 struct IOService {OSObject *property=nullptr;OSObject *getProperty(const char *){return property;}
- void setProperty(const char *,const void *,unsigned){};};
+ void setProperty(const char *key,const void *p,unsigned bytes){
+  if(!strcmp(key,"WEXDSIBootAudit")){assert(bytes==sizeof(lastAudit));memcpy(&lastAudit,p,bytes);++audits;}
+ };};
 struct IOMemoryMap {
  std::vector<uint8_t> bytes=std::vector<uint8_t>(0x1000000);
  uintptr_t getVirtualAddress(){return reinterpret_cast<uintptr_t>(bytes.data());}
@@ -45,6 +61,7 @@ struct XE {
  XELPMemory::Layout xelpMemory;Display13OutputWiring adlnOutputWiring;
  bool xelpDisplay13Device(IOPCIDevice *){return deviceOK;}
  bool xelpMemoryMatches(IOPCIDevice *){return memoryOK;}
+ void auditDSIBoot(IOPCIDevice *,volatile const uint8_t *,uint64_t,const AlderLakeN::DisplayReadout &,bool);
  bool prepareDSIFirmware(IOService *);
  bool prepareDisplay13BootScanout(IOPCIDevice *);
 };
@@ -79,6 +96,19 @@ int main(){
  for(auto &r:regs)io.word(r[0],r[1]);
  for(unsigned i=0;i<xe.xelpMemory.bytes/4096;++i){const auto pte=xe.xelpMemory.pte(uint64_t(i)*4096);memcpy(map.bytes.data()+0x800000+8*i,&pte,8);}
  auto normal=AlderLakeN::readDisplay(io,true);
+ pci.property=OSData::withBytes(bytes.data(),bytes.size());auto auditBefore=map.bytes;
+ xe.auditDSIBoot(&pci,map.bytes.data(),map.bytes.size(),normal,true);
+ assert(!audits && !allocations);auditEnabled=true;
+ xe.auditDSIBoot(&pci,map.bytes.data(),map.bytes.size(),normal,true);
+ assert(audits==1 && !allocations && lastAudit.words[1]==uint32_t(BootStatus::Complete));
+ assert(map.bytes==auditBefore && xe.dsiBoot.status==BootStatus::Unavailable);
+ io.word(0x70B08,1);auditBefore=map.bytes;
+ xe.auditDSIBoot(&pci,map.bytes.data(),map.bytes.size(),normal,true);
+ assert(audits==2 && !allocations && lastAudit.words[1]==uint32_t(BootStatus::Peers));
+ assert(lastAudit.words[7]==0x70B08 && map.bytes==auditBefore);io.word(0x70B08,0);
+ pci.property->release();pci.property=nullptr;
+ xe.auditDSIBoot(&pci,map.bytes.data(),map.bytes.size(),normal,true);
+ assert(audits==3 && !allocations && lastAudit.words[1]==uint32_t(BootStatus::Unavailable));
  xe.dsiBoot=captureBoot(io,normal,xe.dsiProfile,xe.xelpMemory,true);
  xe.adlnOutputWiring.valid=true;xe.adlnOutputWiring.dsi=1;
  auto before=map.bytes;
