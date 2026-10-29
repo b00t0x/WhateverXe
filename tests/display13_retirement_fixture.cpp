@@ -42,6 +42,10 @@ struct XE {
  uintptr_t orgAlderLakeNFreePath{},orgDisplay13FreeResources{},orgDisplay13AllocateResources{};
  static bool adlnFreeStoppedPipe(IOService*);
  static void wrapAlderLakeNFreePath(IOService*,OSObject*);
+ static void drainDisplay13TCMode(unsigned ddi) {
+  assert(ddi==3 && ctlDepth && !ownerDepth);
+  assert(!display13FBPower.pipe[0].memoryFramebuffer && !display13FBPower.pipe[0].publishedScanout);
+ }
  static uint32_t releaseDisplay13Path(IOService*,OSObject*),retireDisplay13Paths(void*),wrapDisplay13FreeResources(void*);
  static bool display13RetirementHealthy(),wrapDisplay13AllocateResources(void*),retireDisplay13Controller(void*);
 }state,*callbackXE=&state;

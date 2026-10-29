@@ -46,6 +46,7 @@ struct Display13FBTCIO:Display13FBPowerIO {
  bool tcAuxSupported(){return true;}bool prepareTCAux(unsigned t){return t==tc && accessHeld() && (read(0x64300+256*t)&64);}
  bool tcAuxHealthy(unsigned){return true;}
  bool quiescent(unsigned d){return !(read(0x64000+256*d)&0x80000000);}
+ // MODE_QUIESCENCE
 };
 struct XE {
  bool display13FramebufferRequested=true,display13FBTCHooksReady=true;XELP::Profile xeProfile;
