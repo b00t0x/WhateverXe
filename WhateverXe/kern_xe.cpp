@@ -6534,14 +6534,16 @@ bool XE::processDisplay13DSIModes(KernelPatcher &patcher,size_t index,mach_vm_ad
         "__ZN21AppleIntelFramebuffer19validateDisplayModeEiPPKNS_15ModeDescriptionEPPK29IODetailedTimingInformationV2",
         "__ZN21AppleIntelFramebuffer15getDisplayModesEPi",
         "__ZN21AppleIntelFramebuffer19getDisplayModeCountEv",
-        "__ZN21AppleIntelFramebuffer28getInformationForDisplayModeEiP24IODisplayModeInformation"};
-    const uint32_t offsets[]={0x30D0E,0x30DE2,0x31FE6,0x32D04,0x32010};
+        "__ZN21AppleIntelFramebuffer28getInformationForDisplayModeEiP24IODisplayModeInformation",
+        "__ZN21AppleIntelFramebuffer14setDisplayModeEii"};
+    const uint32_t offsets[]={0x30D0E,0x30DE2,0x31FE6,0x32D04,0x32010,0x30F10};
     const uint8_t entries[][16]={
         {0x55,0x48,0x89,0xE5,0x41,0x56,0x53,0x49,0x89,0xF6,0x48,0x89,0xFB,0x48,0xFF,0x05},
         {0x55,0x48,0x89,0xE5,0x41,0x56,0x53,0x48,0xFF,0x05,0x98,0x93,0x0A,0x00,0x83,0xFE},
         {0x55,0x48,0x89,0xE5,0x48,0xFF,0x05,0x8F,0x84,0x0A,0x00,0x80,0xBF,0xE0,0x01,0x00},
         {0x55,0x48,0x89,0xE5,0x48,0xFF,0x05,0xE1,0x79,0x0A,0x00,0x80,0xBF,0xE0,0x01,0x00},
-        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x53,0x48,0x83,0xEC,0x18,0x49,0x89,0xD6}};
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x53,0x48,0x83,0xEC,0x18,0x49,0x89,0xD6},
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC}};
     if(!display13FramebufferRequested || size<=0x32D14)return false;
     for(unsigned i=0;i<arrsize(offsets);++i) {
         const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,symbols[i],address,size);patcher.clearError();
@@ -6552,7 +6554,8 @@ bool XE::processDisplay13DSIModes(KernelPatcher &patcher,size_t index,mach_vm_ad
         {symbols[1],wrapDSIValidateMode,orgDSIMode[1]},
         {symbols[2],wrapDSIGetModes,orgDSIMode[2]},
         {symbols[3],wrapDSIGetModeCount,orgDSIMode[3]},
-        {symbols[4],wrapDSIGetModeInformation,orgDSIMode[4]}};
+        {symbols[4],wrapDSIGetModeInformation,orgDSIMode[4]},
+        {symbols[5],wrapDSISetDisplayMode,orgDSIMode[5]}};
     const bool ready=patcher.routeMultiple(index,routes,arrsize(routes),address,size);
     patcher.clearError();return ready;
 }
@@ -6720,6 +6723,38 @@ static bool dsiLifecycleTarget(IOService *fb,OSObject *path) {
     if(dsiModeTarget(fb) || !fb || fb->getMetaClass()->getClassSize()<0x4B90)return true;
     const auto attached=Display13FBMemory::singlePath<OSObject *>(fb);
     return attached!=path || dsiCachePath(attached);
+}
+
+// The native public mode entry disables/reallocates before hwSetMode. Refuse
+// here until the GOP-preserving mode transaction can own all those steps.
+uint32_t XE::wrapDSISetDisplayMode(IOService *fb,int32_t mode,int32_t depth) {
+    if(callbackXE->adlnOutputWiring.dsi) {
+        if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
+        DSIModeScope scope(fb);if(!scope.lock)return kIOReturnNotReady;
+        if(dsiLifecycleTarget(fb,Display13FBMemory::singlePath<OSObject *>(fb)))return kIOReturnNotReady;
+    }
+    return FunctionCast(wrapDSISetDisplayMode,callbackXE->orgDSIMode[5])(fb,mode,depth);
+}
+
+// Caller holds the native FB mutex through the admitted writer. quiesce uses
+// the same mutex, so a stop cannot interleave after this check. This is one
+// update boundary, not a certificate for other native writers or Session Stop.
+bool XE::dsiNativeUpdateAllowed(IOService *fb) {
+    if(!callbackXE->adlnOutputWiring.dsi)return true;
+    if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return false;
+    const auto path=Display13FBMemory::singlePath<OSObject *>(fb);
+    if(!dsiLifecycleTarget(fb,path))return true;
+    auto &c=display13FBPower;if(!c.lock)return false;
+    IOLockLock(c.lock);
+    const bool ready=!callbackXE->dsiStopAttempted && callbackXE->dsiResourcesReady &&
+        !c.memoryFaulted && !c.clockFaulted && !c.bridge.state.faulted && !c.bridge.state.suspended &&
+        !c.dbuf.faulted && c.pipe[0].memoryFramebuffer==fb && !c.pipe[0].destroyingPath &&
+        c.transcoders.dsi0Pipe==0 && path && path->getMetaClass()->getClassSize()>=0x3730 &&
+        Display13FBMemory::field<IOService *>(fb,0x1D0)==c.controller &&
+        Display13FBMemory::field<IOService *>(path,0x32B0)==fb && Display13FBMemory::field<uint32_t>(path,0x3640)==0 &&
+        Display13FBMemory::field<uint32_t>(path,0x3644)==2 && c.dsiPort && c.dsiPort->getMetaClass()->getClassSize()>=0x580 &&
+        Display13FBMemory::field<OSObject *>(path,0x3648)==c.dsiPort && Display13FBMemory::field<uint32_t>(c.dsiPort,0x550)==1;
+    IOLockUnlock(c.lock);return ready;
 }
 
 bool XE::updateDSIBootCache(IOService *controller,IOService *fb,OSObject *path) {
@@ -10258,6 +10293,22 @@ static bool adlnObserveScanoutPixels(unsigned pipe,uint64_t (&q)[88]) {
 }
 
 void XE::wrapDisplay13WMArmUpdate(IOService *fb) {
+    if(!callbackXE->adlnOutputWiring.dsi){display13WMArmUpdate(fb);return;}
+    if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return;
+    {
+        DSIModeScope scope(fb);if(!scope.lock)return;
+        if(dsiLifecycleTarget(fb,Display13FBMemory::singlePath<OSObject *>(fb))) {
+            // armUpdate flushes native packets even without pending WM work.
+            // Keep FB serialization from admission through flush/sendPush.
+            if(dsiNativeUpdateAllowed(fb))display13WMArmUpdate(fb);
+            return;
+        }
+    }
+    // Preserve the original external body's locking and callback boundaries.
+    display13WMArmUpdate(fb);
+}
+
+void XE::display13WMArmUpdate(IOService *fb) {
 	auto &c=display13FBPower;bool owner=false;
 	const auto pipe=Display13FBMemory::boundPipe(c.pipe,fb);
 	Display13WM::TriggerSurfaces intent;OSObject *path=nullptr;uint32_t packetCount=0;

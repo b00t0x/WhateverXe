@@ -215,11 +215,13 @@ private:
     bool xelpBindProbe(void *controller);
 	bool display13FBTopologyHooksReady {false};
     bool display13DSIModeHooksReady {};
-    mach_vm_address_t orgDSIMode[5] {};
+    mach_vm_address_t orgDSIMode[6] {};
     bool processDisplay13DSIModes(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     bool bindDSIFixedMode(IOService *,const XELP::DSI::Profile &);
     static uint32_t setDSIPortMode(OSObject *,uint32_t);
     static uint32_t wrapDSISetDetailedTimings(IOService *,OSArray *);
+    static uint32_t wrapDSISetDisplayMode(IOService *,int32_t,int32_t);
+    static bool dsiNativeUpdateAllowed(IOService *);
     static uint32_t wrapDSIValidateMode(IOService *,int32_t,const void **,const void **);
     static uint32_t wrapDSIGetModes(IOService *,int32_t *);
     static uint32_t wrapDSIGetModeCount(IOService *);
@@ -332,6 +334,7 @@ private:
 	static void wrapAlderLakeNPlaneWMEnable(OSObject *plane,bool arm);
 	static void wrapDisplay13CursorWMEnable(OSObject *plane,bool arm);
 	static void wrapDisplay13WMArmUpdate(IOService *framebuffer);
+    static void display13WMArmUpdate(IOService *framebuffer);
 	static Display13WM::Latch adlnVerifyWMLatch(IOService *framebuffer,uint64_t nativeHz,uint64_t targetHz);
 	mach_vm_address_t orgDisplay13WMArmUpdate {};
 	static void wrapAlderLakeNPrimaryDBUF(OSObject *plane,uint32_t start,uint32_t end,bool wait);

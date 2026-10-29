@@ -16,7 +16,7 @@ if len(sys.argv) == 2:
     offsets = [int(x, 0) for x in re.search(r'offsets\[\]=\{([^}]+)', installer)[1].split(',')]
     entries = re.search(r'entries\[\]\[16\]=\{(.*?)\};', installer, re.S)[1]
     entries = [bytes(int(x, 0) for x in row.split(',')) for row in re.findall(r'\{([^}]+)\}', entries)]
-    assert len(entries) == len(offsets) == 5
+    assert len(entries) == len(offsets) == 6
     for offset, entry in zip(offsets, entries):
         assert binary[offset:offset+16] == entry, hex(offset)
 
