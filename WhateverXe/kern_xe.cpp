@@ -11864,7 +11864,27 @@ void XE::wrapAlderLakeNPowerGetPG(void *p,uint32_t d) { adlnPowerReference(p,1,d
 void XE::wrapAlderLakeNPowerPutPG(void *p,uint32_t d) { adlnPowerReference(p,2,d); }
 void XE::wrapAlderLakeNPowerGetDDI(void *p,uint32_t d) { adlnPowerReference(p,3,d); }
 void XE::wrapAlderLakeNPowerPutDDI(void *p,uint32_t d) { adlnPowerReference(p,4,d); }
-void XE::wrapAlderLakeNPowerGetAUX(void *p,uint32_t d) { adlnPowerReference(p,5,d); }
+void XE::wrapAlderLakeNPowerGetAUX(void *p,uint32_t d) {
+    // Capture only the first DSI AUX-A caller. Port's forwarding entry tail
+    // calls this method, so frame zero also identifies its native caller.
+    static bool captured=false;
+    const bool capture=callbackXE && callbackXE->adlnOutputWiring.dsi==1 && d==0 &&
+        __sync_bool_compare_and_swap(&captured,false,true);
+    uint64_t record[6] {1,d,0,UINT64_MAX,0,0};
+    if(capture) {
+        const auto caller=reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+        const auto base=callbackXE->display13DPImage;
+        record[2]=base && caller>=base && caller-base<0xC8000;
+        if(record[2])record[3]=caller-base;
+        record[4]=p==display13FBPower.power;
+        IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIFirstAUXCaller",record,sizeof(record));
+    }
+    const bool complete=adlnPowerReference(p,5,d);
+    if(capture) {
+        record[5]=complete ? 1 : 2;
+        IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIFirstAUXCaller",record,sizeof(record));
+    }
+}
 void XE::wrapAlderLakeNPowerPutAUX(void *p,uint32_t d) { adlnPowerReference(p,6,d); }
 
 IOService *XE::wrapAlderLakeNRejectedAcceleratorProbe(IOService *,IOService *,SInt32 *) {
