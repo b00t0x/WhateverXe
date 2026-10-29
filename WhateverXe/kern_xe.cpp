@@ -4539,6 +4539,7 @@ struct Display13FBPowerContext {
     // No DSI binding is installed until the complete adoption backend exists.
     Display13Transcoder::Bindings transcoders;
     XELP::DSI::Readout bootDSI; // Captured before handoff; not an implicit admission flag.
+    OSObject *dsiPort {}; // Retained after source-qualified native mode binding.
     IOSimpleLock *tcBankLock {};
     bool tcSupported {},tcBankFaulted {};
     Display13TC::Mode tcMode[4];
@@ -6670,6 +6671,12 @@ uint32_t XE::wrapAlderLakeNPortState(OSObject *port) {
             IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13OfflineProbe",true);
             return 0;
         }
+        if(s->adlnOutputWiring.dsi && config[0]==0) {
+            // DSI has neither HPD nor a DPCD sink. Only an adopted live source
+            // may report connected; never enter the donor's eDP probe branch.
+            const auto state=setDSIPortMode(port,1)==kIOReturnSuccess ? 2U : 0U;
+            *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(port)+0x554)=state;return state;
+        }
         // CPU binding only. TC bits are added when mode/AUX/PLL/GOP become
         // qualified together; a board description alone is insufficient.
         if(!s->xelpBindProbe(s->adlnTopologyController)) {
@@ -6707,9 +6714,45 @@ unsigned XE::display13TCTarget(OSObject *port,bool cleanup) {
     return config[0];
 }
 
+// The Display13 native Mode hook has one owner for TC, Combo and DSI.
+// Caller must have installed the source/mapping and native power references at
+// the adoption boundary. A board record or firmware-on bits alone never admit.
+uint32_t XE::setDSIPortMode(OSObject *port,uint32_t wanted) {
+    auto self=callbackXE;auto &c=display13FBPower;
+    if(!self->display13FBTCHooksReady || !self->display13TCBaseMode || !c.lock ||
+       !port || port->getMetaClass()->getClassSize()<0x6B0)return kIOReturnNotReady;
+    // Mode zero must be connected to an actual DSI stop/cleanup transaction.
+    // Reject it for now, including when the native caller asks only for reset.
+    if(wanted!=1)return kIOReturnUnsupported;
+    IOLockLock(c.lock);
+    auto config=Display13FBMemory::field<uint32_t *>(port,0x548);
+    const auto previous=Display13FBMemory::field<uint32_t>(port,0x550);
+    const bool bound=self->adlnOutputWiring.dsi==1 && self->adlnOutputWiring.matches(config) &&
+        config[0]==0 && Display13FBTopology::bound(self->adlnPlatform,config,0) &&
+        c.controller && c.controller==self->adlnTopologyController && c.access &&
+        Display13FBMemory::field<void *>(port,0x578)==c.access &&
+        Display13FBMemory::field<uint32_t>(port,0x120)==0 &&
+        c.transcoders.dsi(0) && c.bootDSI.complete() && c.bootDSI.identity.pipe==0 &&
+        c.bootDSI.identity.phy==0 && c.bootDSI.identity.transcoder==0 &&
+        (!c.dsiPort || c.dsiPort==port) && previous<=1 &&
+        !c.memoryFaulted && !c.clockFaulted && !c.bridge.state.faulted;
+    Display13FBBootIO io{c.map};
+    const bool ready=bound && c.bridge.outputHeld(io,0,0) && XELP::DSI::sourceUnchanged(io,c.bootDSI);
+    uint32_t result=kIOReturnNotReady;
+    if(ready) {
+        // Exact donor base setPortMode(1) only records port+0x550. The HAL
+        // setter and mode0's reset callback must never run on this path.
+        result=reinterpret_cast<uint32_t (*)(OSObject *,uint32_t)>(self->display13TCBaseMode)(port,1);
+        if(result==kIOReturnSuccess && Display13FBMemory::field<uint32_t>(port,0x550)!=1)result=kIOReturnNotReady;
+        if(result==kIOReturnSuccess && !c.dsiPort){port->retain();c.dsiPort=port;}
+    }
+    IOLockUnlock(c.lock);return result;
+}
+
 uint32_t XE::wrapDisplay13TCMode(OSObject *port,uint32_t wanted) {
     auto self=callbackXE;auto &c=display13FBPower;
     auto config=port && port->getMetaClass()->getClassSize()>=0x580 ? Display13FBMemory::field<uint32_t *>(port,0x548) : nullptr;
+    if(self->adlnOutputWiring.dsi && config && config[0]==0)return setDSIPortMode(port,wanted);
     if(config && config[0]<3)return FunctionCast(wrapDisplay13TCMode,self->orgDisplay13TCMode)(port,wanted);
     if(!c.lock)return kIOReturnNotReady;
     IOLockLock(c.lock);const auto ddi=display13TCTarget(port,wanted==0);
@@ -7032,6 +7075,8 @@ bool XE::processDisplay13FramebufferTC(KernelPatcher &patcher,size_t index,mach_
     }
     struct Span {uint32_t offset;const uint8_t *bytes;size_t size;};
     const Span spans[]={
+        {baseModeBranchOffset,baseModeBranch,sizeof(baseModeBranch)},
+        {baseModeStoreOffset,baseModeStore,sizeof(baseModeStore)},
         {bootPortInitOffset,bootPortInit,sizeof(bootPortInit)},
         {bootPowerCallOffset,bootPowerCall,sizeof(bootPowerCall)},
         {bootSetupCallOffset,bootSetupCall,sizeof(bootSetupCall)},

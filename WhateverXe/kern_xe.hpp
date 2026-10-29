@@ -186,6 +186,7 @@ private:
     mach_vm_address_t orgDSIMode[5] {};
     bool processDisplay13DSIModes(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     bool bindDSIFixedMode(IOService *,const XELP::DSI::Profile &);
+    static uint32_t setDSIPortMode(OSObject *,uint32_t);
     static uint32_t wrapDSISetDetailedTimings(IOService *,OSArray *);
     static uint32_t wrapDSIValidateMode(IOService *,int32_t,const void **,const void **);
     static uint32_t wrapDSIGetModes(IOService *,int32_t *);
