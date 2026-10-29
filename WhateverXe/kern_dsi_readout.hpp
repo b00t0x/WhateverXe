@@ -19,6 +19,15 @@ struct Readout {
     bool complete() const {return status==ReadoutStatus::Complete;}
     uint32_t activePipes() const {return complete()?1U<<identity.pipe:0;}
     bool ddiClockGated() const {return mux&(1U<<10);}
+    bool sameSource(const Readout &b) const {
+        // Peer PHY muxes and power requests may change independently. Only
+        // compare this DSI link's routing/PLL/timing; both decodes prove power.
+        return complete() && b.complete() && identity.same(b.identity) &&
+            conf==b.conf && function==b.function && transport==b.transport && link==b.link &&
+            ((mux^b.mux)&0x403U)==0 && cfg0==b.cfg0 && cfg1==b.cfg1 &&
+            referenceKHz==b.referenceKHz && buffer==b.buffer &&
+            htotal==b.htotal && hsync==b.hsync && vtotal==b.vtotal && vsync==b.vsync;
+    }
     bool matches(const Profile &profile,uint32_t tolerancePpm=100) const {
         const auto p=linkPlan(profile);
         if(!complete() || !p.valid || htotal!=p.htotal || hsync!=p.hsync || vtotal!=p.vtotal || vsync!=p.vsync)return false;
@@ -74,6 +83,25 @@ template<class Get> Readout decodeReadout(Get get,uint32_t referenceKHz) {
     };
     if(!ordered(r.htotal,r.hsync) || !ordered(r.vtotal,r.vsync))return r;
     r.status=ReadoutStatus::Complete;return r;
+}
+// Revalidate an already owned source before/after a slow backing proof. The
+// caller holds the DSI/pipe power leases and serializes mode changes. Checking
+// the wells first avoids a DSI read after a visible power loss; this does not
+// itself acquire leases or make unsynchronized firmware MMIO atomic.
+template<class IO> bool sourceUnchanged(IO &io,const Readout &expected) {
+    if(!expected.complete() || !expected.identity.valid() || !io.readable(0x45404) || !io.readable(0x51004))return false;
+    const auto powered=[&]() {
+        const auto wells=io.read(0x45404);const auto pipe=expected.identity.pipe;
+        return wells!=UINT32_MAX && (wells&1) && (wells&(1U<<(10+2*pipe))) && (!pipe || (wells&4));
+    };
+    if(!powered())return false;
+    const auto dssm=io.read(0x51004);const auto index=(dssm>>29)&7;
+    const uint32_t reference[]={24000,19200,38400};
+    if(index>=3 || reference[index]!=expected.referenceKHz)return false;
+    const auto current=decodeReadout([&](uint32_t reg,uint32_t &v) {
+        if(!io.readable(reg))return false;v=io.read(reg);return true;
+    },reference[index]);
+    return expected.sameSource(current) && powered();
 }
 }}
 #endif

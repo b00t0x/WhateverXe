@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <map>
 #include <fstream>
+#include <vector>
 using namespace XELP::DSI;
 using Registers=std::map<uint32_t,uint32_t>;
 Readout decode(const Registers &regs,uint32_t ref=38400) {
@@ -19,6 +20,18 @@ int main(int argc,char **argv) {
     auto regs=firmware();auto r=decode(regs);
     assert(r.complete()&&r.identity.valid()&&r.identity.pipe==0&&r.identity.transcoder==0&&r.identity.phy==0&&r.identity.pll==1);
     assert(r.normalConf==0&&r.activePipes()==1&&r.afeKHz==811500);
+    struct IO {
+        Registers regs;std::vector<uint32_t> reads;
+        bool readable(uint32_t reg){return regs.count(reg);}
+        uint32_t read(uint32_t reg){reads.push_back(reg);return regs.at(reg);}
+    } io{regs,{}};
+    io.regs[0x51004]=0x40000000;
+    assert(sourceUnchanged(io,r));
+    io.regs[0x164280]^=0x808;assert(sourceUnchanged(io,r)); // peer B's PLL/gate only
+    io.regs[0x164280]^=1;assert(!sourceUnchanged(io,r));
+    io.regs[0x164280]=r.mux;io.regs[0x51004]=0;assert(!sourceUnchanged(io,r));
+    io.regs[0x51004]=0x40000000;io.regs[0x45404]=0;io.reads.clear();
+    assert(!sourceUnchanged(io,r) && io.reads==std::vector<uint32_t>{0x45404});
     Profile profile;profile.status=ProfileStatus::Valid;profile.lanes=4;
     profile.mode={135255,1080,46,22,2,1920,82,40,2,86,154};
     assert(r.matches(profile)&&!r.matches(profile,1));

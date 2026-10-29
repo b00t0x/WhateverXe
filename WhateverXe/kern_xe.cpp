@@ -4537,6 +4537,7 @@ struct Display13FBPowerContext {
     // Publish with IRQ state only under a quiesced adoption/retirement boundary.
     // No DSI binding is installed until the complete adoption backend exists.
     Display13Transcoder::Bindings transcoders;
+    XELP::DSI::Readout bootDSI; // Captured before handoff; not an implicit admission flag.
     IOSimpleLock *tcBankLock {};
     bool tcSupported {},tcBankFaulted {};
     Display13TC::Mode tcMode[4];
@@ -5192,7 +5193,7 @@ static Display13FBMemory::Readout display13FBInspectMemory(IOService *fb,bool bo
 	return Display13FBMemory::inspect(io,controller,controller->getMetaClass()->getClassSize(),
 		fb,fb->getMetaClass()->getClassSize(),aperture->getLength(),xelpMemory,bootScanout,display13FBExpectedOwner(controller),c.bridge.bootPort,
         c.bridge.bootPort>=3 ? &tc : nullptr,dp?&source:nullptr,
-        c.bootPanel);
+        c.bootPanel,bootScanout && c.transcoders.dsi(0) ? &c.bootDSI : nullptr);
 }
 }
 
@@ -11680,8 +11681,13 @@ bool XE::wrapFramebufferStart(IOService *that,IOService *provider) {
  IORecursiveLockUnlock(s->tglPathPoolLock);
  if(comboClockTransaction.lock) {
   IORecursiveLockLock(comboClockTransaction.lock);
-  comboClockTransaction.allocation={};
+  const bool reset=comboClockTransaction.allocation.reset();
   IORecursiveLockUnlock(comboClockTransaction.lock);
+  if(!reset) {
+   IORecursiveLockLock(s->tglPathPoolLock);s->framebufferStartInProgress=false;IORecursiveLockUnlock(s->tglPathPoolLock);
+   if(that)that->setProperty("WEXFramebufferRetainedClockOwner",true);
+   return false;
+  }
  }
  const bool native=s->display13FramebufferRequested ? wrapDisplay13FramebufferStart(that,provider) : wrapTGLFramebufferStart(that,provider);
  IORecursiveLockLock(s->tglPathPoolLock);
@@ -18207,10 +18213,26 @@ bool XE::comboBeginClock(void *controller,void *port,bool enable,bool &keepPLL,v
     snapshot.mux[0]=comboClockRead(access,0x164280);
     if(s->adlsDisplaySelected)snapshot.mux[1]=comboClockRead(access,0x1642BC);
     for(unsigned i=0;i<snapshot.pllCount();++i){XELPComboClock::PLL pll;XELPComboClock::PLL::resolve(i,pll);snapshot.enable[i]=comboClockRead(access,pll.enable);}
+    if(s->display13FramebufferRequested && display13FBPower.transcoders.dsi0Pipe<3) {
+        // The adoption boundary installs the qualified source/power binding
+        // before any native clock client. Revalidate here under the shared
+        // clock mutex, then pin its PLL even when DDI_CLK_OFF_A is set.
+        const auto &source=display13FBPower.bootDSI;
+        struct IO {
+            void *access;
+            bool readable(uint32_t r) {return r<Display13FBMemory::field<uint32_t>(access,0x60);}
+            uint32_t read(uint32_t r) {return XE::comboClockRead(access,r);}
+        } io {access};
+        if(source.identity.pipe!=display13FBPower.transcoders.dsi0Pipe ||
+           !XELP::DSI::sourceUnchanged(io,source) ||
+           !t.allocation.retain(source.identity.phy,source.identity.pll,reinterpret_cast<uintptr_t>(controller),snapshot)) {
+            comboClockPower(power,false);IORecursiveLockUnlock(t.lock);return false;
+        }
+    }
     const auto otherConfig=other && other!=port ? *reinterpret_cast<uint32_t **>(static_cast<uint8_t *>(other)+0x548):nullptr;
     const auto choice=enable && otherConfig ? t.allocation.share(XELPComboClock::Port(otherConfig[0]),snapshot):
         t.allocation.choose(route,snapshot,enable);
-    if(!choice.valid) {
+    if(!choice.valid || route.phy>=snapshot.slots() || t.allocation.external[route.phy]) {
         comboClockPower(power,false);IORecursiveLockUnlock(t.lock);return false;
     }
     if(enable)t.allocation.binding[route.phy]=choice.pll+1;

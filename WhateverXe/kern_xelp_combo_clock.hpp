@@ -53,16 +53,39 @@ struct ClockChoice {
 };
 struct ClockAllocation {
     template<class P> ClockChoice share(const P &source,const ClockSnapshot &s) const {
-        if(source.phy>=s.slots() || !s.valid() || !s.active(source))return {};
+        if(source.phy>=s.slots() || external[source.phy] || !s.valid() || !s.active(source))return {};
         const auto pll=s.selected(source);
         return pll<s.pllCount() && (s.enable[pll]&0xCC000000U)==0xCC000000U ?
             ClockChoice{pll,true,true}:ClockChoice{};
     }
     // PLL+1, including an incomplete enable whose output is still gated.
-    // The runtime owns serialization and clears this state at controller start.
+    // The runtime serializes this state; startup clears only unowned bindings.
     uint8_t binding[3] {};
+    // Explicit owner of a firmware link outside the donor clock transaction
+    // (DSI may keep using its PLL with the DDI mux gated). Native enable/off
+    // and sharing must not reprogram this owner or treat it as a DP clock.
+    uintptr_t external[3] {};
+    bool reset() {
+        for(auto owner:external)if(owner)return false;
+        for(auto &slot:binding)slot=0;
+        return true;
+    }
+    bool retain(unsigned phy,unsigned pll,uintptr_t owner,const ClockSnapshot &s) {
+        if(!owner || phy>=s.slots() || pll>=s.pllCount() || !s.valid() ||
+           s.selected(Port(phy))!=pll || (s.enable[pll]&0xCC000000U)!=0xCC000000U)return false;
+        if(external[phy])return external[phy]==owner && binding[phy]==pll+1;
+        if(binding[phy] || (s.peers(Port(phy))&(1U<<pll)))return false;
+        for(unsigned p=0;p<3;++p)if(p!=phy && binding[p]==pll+1)return false;
+        external[phy]=owner;binding[phy]=static_cast<uint8_t>(pll+1);return true;
+    }
+    // Caller must first stop/detach this link and drain its consumers under
+    // the same serialized ownership scope. A closed DDI gate is insufficient.
+    bool release(unsigned phy,uintptr_t owner) {
+        if(phy>=3 || !owner || external[phy]!=owner)return false;
+        external[phy]=0;binding[phy]=0;return true;
+    }
     template<class P> ClockChoice choose(const P &p,const ClockSnapshot &s,bool on) const {
-        if(p.phy>=s.slots() || !s.valid())return {};
+        if(p.phy>=s.slots() || external[p.phy] || !s.valid())return {};
         auto peers=s.peers(p);
         for(unsigned phy=0;phy<3;++phy)
             if(phy!=p.phy && binding[phy])peers|=1U<<(binding[phy]-1);

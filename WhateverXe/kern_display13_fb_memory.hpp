@@ -3,6 +3,7 @@
 // GGTT entries and is not an accelerator memory manager.
 #ifndef KERN_DISPLAY13_FB_MEMORY_HPP
 #define KERN_DISPLAY13_FB_MEMORY_HPP
+#include "kern_dsi_readout.hpp"
 
 #include <stdint.h>
 #include "kern_xelp_memory_layout.hpp"
@@ -329,11 +330,17 @@ template<class IO> Readout inspect(IO &io,const void *controller,size_t controll
                                   const void *framebuffer,size_t framebufferBytes,
                                   uint64_t apertureBytes,const XELPMemory::Layout &memory,bool bootScanout=true,uintptr_t expectedOwner=0,
                                   unsigned expectedDDI=1,const Display13TC::Boot *tc=nullptr,
-                                  const AlderLakeN::DisplayReadout *dp=nullptr,bool panel=false) {
+                                  const AlderLakeN::DisplayReadout *dp=nullptr,bool panel=false,
+                                  const XELP::DSI::Readout *dsi=nullptr) {
     Readout r;
     if (!associations(controller,controllerBytes,framebuffer,framebufferBytes,expectedOwner)) {
         r.status=Status::Association;return r;
     }
+    // The first DSI GOP handoff is pipe A/PHY A. A validated description is
+    // not backing ownership: revalidate the leased source on both sides of
+    // the PTE walk below. Never combine it with DP/AUX/TC source semantics.
+    if(dsi && (!bootScanout || expectedDDI || dp || tc || panel || dsi->identity.pipe!=0 ||
+       !XELP::DSI::sourceUnchanged(io,*dsi))) {r.status=Status::DisplayState;return r;}
     if(bootScanout && (expectedDDI>=7 || (expectedDDI>=3 &&
        (!tc || !tc->valid() || tc->port.ddi!=expectedDDI || tc->pipe!=0 ||
         !(tc->buffer&64) || (!dp && tc->ownershipOptional) || !tc->unchanged(io))))) {
@@ -358,8 +365,10 @@ template<class IO> Readout inspect(IO &io,const void *controller,size_t controll
         !io.readable(0x800000+8*(p.firstPage+p.pages)-1)) {
         r.status=Status::PoolRange;return r;
     }
-    // Read only the powered boot pipe. Linear XRGB8888 FHD uses byte GGTT
-    // offsets, with Display 13's DPT disabled. No fence register is required.
+    // Read only the powered boot pipe. Linear RGB uses byte GGTT offsets.
+    // Linux intel_fb_modifier_uses_dpt excludes LINEAR even when the global
+    // DPT-disable bit is clear, as in the DSI GOP. Keep the established ordinary
+    // output contract; do not toggle the global bit to inspect DSI backing.
     constexpr uint32_t regs[]={0x45404,0x42084,0x60400,0x70008,0x70180,0x70188,
         0x7018C,0x70190,0x701A4,0x7019C,0x701AC};
     if(bootScanout)for(auto reg:regs)if(!io.readable(reg))return r;
@@ -367,13 +376,16 @@ template<class IO> Readout inspect(IO &io,const void *controller,size_t controll
     const auto wells=io.read(0x45404);
     if(wells==UINT32_MAX || (wells&(bootScanout ? 0x403U : 3U))!=(bootScanout ? 0x403U : 3U)) {r.status=Status::DisplayState;return r;}
     uint32_t dpt=0,trans=0,conf=0,position=0,offset=0;
+    const uint32_t transReg=dsi?0x6B400U:0x60400U,confReg=dsi?0x7B008U:0x70008U;
     if(bootScanout) {
-        dpt=io.read(0x42084);trans=io.read(0x60400);conf=io.read(0x70008);
+        dpt=io.read(0x42084);trans=io.read(transReg);conf=io.read(confReg);
         position=io.read(0x7018C);offset=io.read(0x701A4);
         r.surface=io.read(0x7019C);r.control=io.read(0x70180);r.stride=io.read(0x70188);r.size=io.read(0x70190);
         const auto geometry=XELPGeometry::linear(r.control,r.stride,r.size,position,offset);
-        if (!(dpt&(1U<<30)) || !(trans&(1U<<31)) || ((trans>>27)&15)!=expectedDDI+1 ||
-            (dp ? ((trans>>24)&7)!=2 : ((trans>>24)&7)>1) || ((trans>>20)&7) || (conf&0xC0000000)!=0xC0000000 ||
+        const bool source=dsi ? !(io.read(0x60400)&(1U<<31)) && XELPGeometry::timing(geometry,dsi->htotal,dsi->vtotal) :
+            (dpt&(1U<<30)) && ((trans>>27)&15)==expectedDDI+1 &&
+            (dp ? ((trans>>24)&7)==2 : ((trans>>24)&7)<=1) && !((trans>>20)&7);
+        if (dpt==UINT32_MAX || !source || !(trans&(1U<<31)) || (conf&0xC0000000)!=0xC0000000 ||
             !geometry.valid ||
             position || offset || (r.surface&4095) ||
             r.surface!=io.read(0x701AC) || r.surface<p.base ||
@@ -396,12 +408,13 @@ template<class IO> Readout inspect(IO &io,const void *controller,size_t controll
     if(finalWells==UINT32_MAX || (finalWells&(bootScanout ? 0x403U : 3U))!=(bootScanout ? 0x403U : 3U) || !same(p,pool(controller)) ||
         !associations(controller,controllerBytes,framebuffer,framebufferBytes,expectedOwner) ||
         field<uint8_t>(framebuffer,0x4288)!=0 || !(field<uint32_t>(controller,0xDF0)&1) ||
-        (bootScanout && (io.read(0x42084)!=dpt || io.read(0x60400)!=trans || io.read(0x70008)!=conf ||
+        (bootScanout && (io.read(0x42084)!=dpt || io.read(transReg)!=trans || io.read(confReg)!=conf ||
         io.read(0x7018C)!=position || io.read(0x701A4)!=offset ||
         io.read(0x7019C)!=r.surface || io.read(0x701AC)!=r.surface ||
         io.read(0x70180)!=r.control || io.read(0x70188)!=r.stride || io.read(0x70190)!=r.size ||
         (expectedDDI>=3 && !tc->unchanged(io)) ||
-        (dp && !AlderLakeN::dpSourceUnchanged(io,*dp,0,expectedDDI,0,tc,panel))))) {
+        (dp && !AlderLakeN::dpSourceUnchanged(io,*dp,0,expectedDDI,0,tc,panel)) ||
+        (dsi && (!XELP::DSI::sourceUnchanged(io,*dsi) || (io.read(0x60400)&(1U<<31))))))) {
         r.status=Status::StateChanged;return r;
     }
     r.status=Status::Complete;return r;
