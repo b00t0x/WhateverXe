@@ -250,6 +250,11 @@ private:
     bool prepareDSINativeBacking(IOService *);
     bool validateDSINativeBacking();
     bool paintDSINativeBacking(unsigned);
+    bool switchDSINativeSurface();
+    bool dsiArmedBackingOwned(IOService *,OSObject *);
+    bool retireDSINativeBacking(IOService *,OSObject *);
+    XELP::DSI::Session dsiSession;
+    XELP::DSI::Session::Cleanup dsiCleanup;
     bool discardDSINativeBacking(IOService *);
     void probeDSINativeBacking(IOService *);
     bool dsiBackingAttempted {};

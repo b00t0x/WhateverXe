@@ -33,7 +33,7 @@ struct OSObject {alignas(8) uint8_t bytes[0x4B90]{};unsigned refs=1,size=sizeof(
  void setProperty(const char*,bool value){assert(locks==std::vector<unsigned>{1} && !value);}
  void retain(){++refs;}void release(){assert(refs>1);--refs;}};
 using IOService=OSObject;
-IOService *pendingFB=nullptr;bool dsiPendingTarget(IOService *fb){return fb && pendingFB==fb;}
+bool armedOwner=false,failNativeRetire=false;unsigned nativeRetires=0;IOService *pendingFB=nullptr;bool dsiPendingTarget(IOService *fb){return fb && pendingFB==fb;}
 struct IOWorkLoop:OSObject {bool gate=false,busy=false;unsigned closes=0,opens=0;};
 bool inGate(const IOWorkLoop *p){assert(locks==std::vector<unsigned>{1});return p->gate;}
 bool tryClose(IOWorkLoop *p){assert(locks==std::vector<unsigned>{1});++p->closes;if(p->busy)return false;return p->gate=true;}
@@ -98,7 +98,15 @@ struct XE {
  struct {unsigned dsi=1;operator unsigned()const{return dsi;}}adlnOutputWiring;void *adlnPlatform=nullptr;
  bool dsiNativeWriterHooksReady=true,dsiResourcesReady=true,dsiStopAttempted=false,dsiIRQParked=false,dsiDDIReleased=false,dsiMemoryReleased=false;
  IOService *adlnTopologyController=nullptr;Profile dsiProfile;Boot dsiBoot;Quiesce::Result dsiStop;Clock::Result dsiClockStop;
+ bool dsiArmedBackingOwned(IOService *fb,OSObject*){return armedOwner && pendingFB==fb;}
+ bool retireDSINativeBacking(IOService *fb,OSObject*){
+  if(!dsiPendingTarget(fb))return true;
+  assert(armedOwner && dsiStop.complete() && dsiIRQParked && dsiClockStop.complete() && dsiDDIReleased);
+  assert(locks==std::vector<unsigned>{1} && display13FBPower.workLoop->gate);++nativeRetires;
+  if(failNativeRetire)return false;pendingFB=nullptr;return true;
+ }
  static bool adlnFreeStoppedPipe(IOService *fb){
+  assert(!pendingFB);
   assert(locks==std::vector<unsigned>{1} && display13FBPower.workLoop->gate);
   assert(!display13FBPower.memoryFaulted && display13FBPower.bridge.pgRefs[0]==1);
   assert(!comboClockTransaction.allocation.external[0] && !display13FBPower.bridge.ddiRefs[0]);
@@ -165,6 +173,12 @@ struct Case {
  }
 };
 int main(){
+ {Case c;pendingFB=&c.fb;armedOwner=true;nativeRetires=0;
+  assert(c.run() && nativeRetires==1 && !pendingFB && memoryFrees==1);armedOwner=false;}
+ {Case c;pendingFB=&c.fb;armedOwner=true;failNativeRetire=true;nativeRetires=0;
+  assert(!c.run() && nativeRetires==1 && pendingFB==&c.fb && !memoryFrees);
+  pendingFB=nullptr;armedOwner=failNativeRetire=false;}
+
  for(bool own:{false,true}){Case c;c.loop.gate=own;c.map.gtOnly=true;
   put(&c.controller,0xE08,2U);put(&c.controller,0xE10,1U<<6);
   assert(c.run() && c.xe.dsiStop.complete() && c.xe.dsiIRQParked);

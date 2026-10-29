@@ -18,6 +18,8 @@ if len(sys.argv)>1:
 code=r'''
 #include "kern_dsi_native_backing.hpp"
 #include "kern_dsi_test_image.hpp"
+#include "kern_dsi_quiesce.hpp"
+#include "kern_dsi_clock.hpp"
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -99,7 +101,8 @@ struct XE {
  static bool dsiNativeUpdateAllowed(IOService *fb){assert(fbDepth);return available && !dsiPendingTarget(fb);}
  static uint32_t wrapDSIBackingAllocate(OSObject*,void*,uint32_t);
  static uint32_t wrapDSIBackingFree(OSObject*,void*,uint32_t);
- bool paintDSINativeBacking(unsigned);
+ bool paintDSINativeBacking(unsigned);Session dsiSession;
+ bool switchDSINativeSurface(){assert(gpuDepth==1 && fbDepth && !ownerDepth);return true;}
  bool prepareDSINativeBacking(IOService*);bool validateDSINativeBacking();bool discardDSINativeBacking(IOService*);
  void probeDSINativeBacking(IOService*);bool dsiBackingAttempted=false;uint32_t dsiBackingStage=0;
 }*callbackXE;
