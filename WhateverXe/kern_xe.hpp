@@ -249,6 +249,9 @@ private:
     bool processDSIBackingHooks(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     bool prepareDSINativeBacking(IOService *);
     bool discardDSINativeBacking(IOService *);
+    void probeDSINativeBacking(IOService *);
+    bool dsiBackingAttempted {};
+    uint32_t dsiBackingStage {};
     static uint32_t wrapDSIBackingAllocate(OSObject *,void *,uint32_t);
     static uint32_t wrapDSIBackingFree(OSObject *,void *,uint32_t);
 

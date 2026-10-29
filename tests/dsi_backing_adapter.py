@@ -4,8 +4,8 @@ from pathlib import Path
 import hashlib,re,subprocess,sys,tempfile
 root=Path(__file__).resolve().parents[1]
 s=(root/'WhateverXe/kern_xe.cpp').read_text()
-functions='\n'.join(re.search(r'(?:bool|uint32_t) XE::'+name+r'\(.*?\n\}',s,re.S)[0] for name in
- ['wrapDSIBackingAllocate','wrapDSIBackingFree','prepareDSINativeBacking','discardDSINativeBacking'])
+functions='\n'.join(re.search(r'(?:bool|uint32_t|void) XE::'+name+r'\(.*?\n\}',s,re.S)[0] for name in
+ ['wrapDSIBackingAllocate','wrapDSIBackingFree','prepareDSINativeBacking','discardDSINativeBacking','probeDSINativeBacking'])
 state=re.search(r'struct DSIPendingBackingOwner \{.*?\n\};',s,re.S)[0]
 if len(sys.argv)>1:
  b=Path(sys.argv[1]).read_bytes();assert hashlib.sha256(b).hexdigest()=='bd1a21f5e622aadabdab6441f6b5c38ed73fa3053c783fdf0fb7e4b309f273d0'
@@ -31,7 +31,7 @@ struct IOLock{};struct IORecursiveLock{};
 void IOLockLock(IOLock*){assert(fbDepth && !ownerDepth && !gpuDepth);++ownerDepth;}
 void IOLockUnlock(IOLock*){assert(ownerDepth==1);--ownerDepth;}
 void *IOMalloc(size_t n){assert(!ownerDepth && !gpuDepth);++buffers;return calloc(1,n);}
-void IOFree(void *p,size_t n){assert(!fbDepth && !ownerDepth && !gpuDepth && n==64 && buffers);--buffers;free(p);}
+void IOFree(void *p,size_t n){assert(!ownerDepth && !gpuDepth && n==64 && buffers);--buffers;free(p);}
 struct OSObject {
  alignas(8) uint8_t bytes[0x4B90]{};unsigned size=sizeof(bytes),refs=1;const char *kind="object";
  OSObject *getMetaClass(){return this;}unsigned getClassSize(){return size;}
@@ -39,6 +39,9 @@ struct OSObject {
  uint32_t callPlatformFunction(const char*,bool,void*,void*,void*,void*);
 };
 using IOService=OSObject;
+uint64_t receipt[16]{};
+struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry root;return &root;}
+ void setProperty(const char *name,const void *p,unsigned n){assert(!strcmp(name,"WEXDSIBackingTrial") && n==sizeof(receipt));memcpy(receipt,p,n);}};
 OSObject nativeMapping,nativeMemory;
 IOService *modeFB=nullptr;bool dsiModeTarget(IOService *fb){return fb && modeFB==fb;}
 struct DSIModeScope {IORecursiveLock *lock;explicit DSIModeScope(IOService *fb):lock(field<IORecursiveLock*>(fb,0x4220)){if(lock)++fbDepth;}
@@ -82,6 +85,7 @@ struct XE {
  static uint32_t wrapDSIBackingAllocate(OSObject*,void*,uint32_t);
  static uint32_t wrapDSIBackingFree(OSObject*,void*,uint32_t);
  bool prepareDSINativeBacking(IOService*);bool discardDSINativeBacking(IOService*);
+ void probeDSINativeBacking(IOService*);bool dsiBackingAttempted=false;uint32_t dsiBackingStage=0;
 }*callbackXE;
 uint32_t OSObject::callPlatformFunction(const char *name,bool wait,void *record,void *index,void *flags,void *extra){
  assert(fbDepth && !ownerDepth && !gpuDepth && !wait && !extra && *static_cast<uint32_t*>(index)==0);
@@ -109,6 +113,18 @@ struct Case {
  void discard(){assert(xe.discardDSINativeBacking(&fb));}
 };
 int main(){
+ {Case c;const auto a=allocCalls,f=freeCalls;DSIModeScope scope(&c.fb);
+  available=false;c.xe.probeDSINativeBacking(&c.fb);assert(!c.xe.dsiBackingAttempted && allocCalls==a && receipt[2]==1);
+  available=true;c.xe.probeDSINativeBacking(&c.fb);
+  assert(c.xe.dsiBackingAttempted && allocCalls==a+1 && freeCalls==f+1 && !dsiPendingTarget(&c.fb));
+  assert(receipt[1]==3 && receipt[2]==6 && receipt[3] && receipt[11]==2040 && receipt[13] && !receipt[14]);
+  c.xe.probeDSINativeBacking(&c.fb);assert(allocCalls==a+1 && freeCalls==f+1);
+  assert(!field<uintptr_t>(&c.fb,0x4348));}
+ {Case c;failFree=true;const auto a=allocCalls;{DSIModeScope scope(&c.fb);c.xe.probeDSINativeBacking(&c.fb);
+  assert(c.xe.dsiBackingAttempted && receipt[14] && receipt[15] && !receipt[13]);
+  c.xe.probeDSINativeBacking(&c.fb);assert(allocCalls==a+1);}
+  failFree=false;c.discard();}
+
  {Case c;NativeBacking::Record r;assert(NativeBacking::request(c.xe.dsiProfile,3,r));
   gpuDepth=1;expectedFlags=4;assert(!XE::wrapDSIBackingAllocate(&c.pipe,&r,4));
   expectedFlags=2;assert(!XE::wrapDSIBackingFree(&c.pipe,&r,2));

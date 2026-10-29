@@ -5375,11 +5375,14 @@ uint32_t XE::wrapDSIBackingFree(OSObject *pipe,void *record,uint32_t flags) {
 }
 
 bool XE::prepareDSINativeBacking(IOService *fb) {
+    dsiBackingStage=0;
     if(adlnOutputWiring.dsi!=1 || !fb || fb->getMetaClass()->getClassSize()<0x4B90 ||
        !dsiModeTarget(fb) || !dsiBackingHooksReady || !dsiProfile.valid())return false;
+    dsiBackingStage=1;
     DSIModeScope scope(fb);if(!scope.lock || !dsiNativeUpdateAllowed(fb))return false;
     auto &o=dsiPendingBacking;auto &c=display13FBPower;
     if(__atomic_load_n(&o.framebuffer,__ATOMIC_ACQUIRE))return false;
+    dsiBackingStage=2;
     IOLockLock(c.lock);
     auto controller=static_cast<IOService *>(c.controller);
     auto owner=reinterpret_cast<IOService *>(display13FBExpectedOwner(controller));
@@ -5396,15 +5399,18 @@ bool XE::prepareDSINativeBacking(IOService *fb) {
         display13FBInspectMemory(fb,true,0,false).status==Display13FBMemory::Status::Complete;
     if(ready){fb->retain();owner->retain();}
     IOLockUnlock(c.lock);if(!ready)return false;
+    dsiBackingStage=3;
     auto record=static_cast<XELP::DSI::NativeBacking::Record *>(IOMalloc(sizeof(request)));
     if(!record){owner->release();fb->release();return false;}
     memcpy(record,&request,sizeof(request));o.accelerator=owner;o.record=record;
     __atomic_store_n(&o.thread,reinterpret_cast<uintptr_t>(current_thread()),__ATOMIC_RELEASE);o.allocating=true;
     __atomic_store_n(&o.framebuffer,fb,__ATOMIC_RELEASE);
+    dsiBackingStage=4;
     uint32_t index=Display13FBMemory::field<uint32_t>(fb,0x1DC),flags=0;
     // Native callPlatformFunction takes the GPU lock. Never hold c.lock here.
     const auto result=owner->callPlatformFunction("allocscanmem",false,record,&index,&flags,nullptr);
     o.allocating=false;
+    dsiBackingStage=5;
     if(result || !o.allocated)return false; // Retain partial state for discard.
     IOLockLock(c.lock);
     bool verified=false;
@@ -5424,7 +5430,32 @@ bool XE::prepareDSINativeBacking(IOService *fb) {
             (c.map->getLength()-0x800000)/8*4096,xelpMemory,record);
         verified=pipeBound() && XELP::DSI::NativeBacking::allocated(*record,dsiProfile,o.proof);
     }
-    IOLockUnlock(c.lock);return verified;
+    IOLockUnlock(c.lock);if(verified)dsiBackingStage=6;return verified;
+}
+
+// P2's first real fixed-mode request exercises allocation and unarmed cleanup
+// while the native FB mutex is held. Do this once after allocation starts;
+// an unavailable accelerator may be retried by a later mode request. Never
+// publish FB backing or arm SURF here, nor report the mode as established.
+void XE::probeDSINativeBacking(IOService *fb) {
+    if(dsiBackingAttempted)return;
+    dsiBackingAttempted=true;
+    uint64_t receipt[16] {1,1};
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIBackingTrial",receipt,sizeof(receipt));
+    const bool verified=prepareDSINativeBacking(fb);
+    auto &o=dsiPendingBacking;
+    const bool pending=dsiPendingTarget(fb);
+    receipt[1]=2;receipt[2]=dsiBackingStage;receipt[3]=verified;receipt[4]=pending;
+    if(pending) {
+        receipt[5]=o.allocated;receipt[6]=o.nativeResult;receipt[7]=static_cast<uint64_t>(o.proof.status);
+        receipt[8]=o.proof.bytes;receipt[9]=o.proof.pitch;receipt[10]=o.proof.gpu;receipt[11]=o.proof.verifiedPages;
+        receipt[12]=o.pinnedMap && o.pinnedMemory;
+    }
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIBackingTrial",receipt,sizeof(receipt));
+    if(pending)receipt[13]=discardDSINativeBacking(fb);
+    receipt[14]=dsiPendingTarget(fb);receipt[15]=pending && !receipt[13];receipt[1]=3;
+    if(!pending)dsiBackingAttempted=false;
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIBackingTrial",receipt,sizeof(receipt));
 }
 
 // Only a never-armed pending surface may take this path. After SURF is armed,
@@ -7073,6 +7104,8 @@ uint32_t XE::wrapDSISetDisplayMode(IOService *fb,int32_t mode,int32_t depth) {
                     static_cast<uint32_t>(depth),dsiModeTarget(fb),callbackXE->dsiResourcesReady,
                     Display13FBMemory::field<uint32_t>(fb,0x420C)};
                 IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIModeRequest",record,sizeof(record));
+                if(mode==XELP::DSI::AppleAdapter::FixedModeID && depth==0 && dsiModeTarget(fb) &&
+                   dsiNativeUpdateAllowed(fb))callbackXE->probeDSINativeBacking(fb);
                 return kIOReturnNotReady;
             }
         }

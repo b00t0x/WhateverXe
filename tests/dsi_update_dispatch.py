@@ -19,6 +19,7 @@ if len(sys.argv)==2:
   for offset,entry in zip(offsets,entries):assert binary[offset:offset+width]==entry,hex(offset)
 code=r'''
 #include "kern_display13_fb_memory.hpp"
+#include "kern_dsi_apple_timing.hpp"
 #include "kern_display13_transcoder.hpp"
 #include <cassert>
 #include <cstdio>
@@ -33,7 +34,7 @@ struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegis
  }};
 IOService *pendingFB=nullptr;bool dsiPendingTarget(IOService *fb){return fb && pendingFB==fb;}using IOLock=int;
 struct IORecursiveLock {unsigned depth=0;};
-unsigned owner=0,modeCalls=0,armCalls=0;IORecursiveLock fbLock;bool expectDSI=false,endingWriter=false;
+unsigned owner=0,modeCalls=0,armCalls=0,backingCalls=0;IORecursiveLock fbLock;bool expectDSI=false,endingWriter=false;
 void IOLockLock(IOLock*){assert((fbLock.depth || endingWriter) && !owner);++owner;}void IOLockUnlock(IOLock*){assert(owner==1);--owner;}
 void IORecursiveLockLock(IORecursiveLock *p){assert(!owner);++p->depth;}
 void IORecursiveLockUnlock(IORecursiveLock *p){assert(!owner && p->depth);--p->depth;}
@@ -86,6 +87,7 @@ struct XE {
  static uint32_t wrapDSICursorImage(IOService*,IOService*,void*);
  static uint32_t wrapDSICursorState(IOService*,IOService*,int32_t,int32_t,bool,bool);
  static uint32_t wrapDSISetDisplayMode(IOService*,int32_t,int32_t);
+ void probeDSINativeBacking(IOService*){assert(fbLock.depth && !owner);++backingCalls;}
  static bool dsiNativeUpdateAllowed(IOService*);
  static bool dsiSharedWriterStopped(IOService*,unsigned);
  static void wrapDisplay13WMArmUpdate(IOService*);
@@ -176,6 +178,13 @@ struct Case {
  void refuse(){const auto calls=armCalls;XE::wrapDisplay13WMArmUpdate(&fb);assert(calls==armCalls && !fbLock.depth && !owner);}
 };
 int main(){
+ {Case c;auto before=backingCalls;
+  assert(XE::wrapDSISetDisplayMode(&c.fb,0x10000,0)==kIOReturnNotReady && backingCalls==before+1);
+  assert(XE::wrapDSISetDisplayMode(&c.fb,0x10000,2)==kIOReturnNotReady && backingCalls==before+1);
+  assert(XE::wrapDSISetDisplayMode(&c.fb,0x10001,0)==kIOReturnNotReady && backingCalls==before+1);
+  xe.dsiStopAttempted=true;
+  assert(XE::wrapDSISetDisplayMode(&c.fb,0x10000,0)==kIOReturnNotReady && backingCalls==before+1);}
+
  // Public mode rejection precedes SaveNVRAMMode, disable, timing/backing and
  // native notifications; even the selected fixed mode is not yet admitted.
  {Case c;auto before=modeCalls;assert(XE::wrapDSISetDisplayMode(&c.fb,0x10000,2)==kIOReturnNotReady);
