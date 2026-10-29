@@ -35,6 +35,7 @@ class IOPCIDevice;
 class IOInterruptEventSource;
 namespace Display13Clock { struct Readout; }
 namespace Display13WM { struct Latch; }
+namespace XELP { namespace DSI { struct Profile; } }
 
 class XE {
 public:
@@ -181,6 +182,15 @@ private:
  bool prepareDisplay13BootScanout(IOPCIDevice *);
     bool xelpBindProbe(void *controller);
 	bool display13FBTopologyHooksReady {false};
+    bool display13DSIModeHooksReady {};
+    mach_vm_address_t orgDSIMode[5] {};
+    bool processDisplay13DSIModes(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    bool bindDSIFixedMode(IOService *,const XELP::DSI::Profile &);
+    static uint32_t wrapDSISetDetailedTimings(IOService *,OSArray *);
+    static uint32_t wrapDSIValidateMode(IOService *,int32_t,const void **,const void **);
+    static uint32_t wrapDSIGetModes(IOService *,int32_t *);
+    static uint32_t wrapDSIGetModeCount(IOService *);
+    static uint32_t wrapDSIGetModeInformation(IOService *,int32_t,void *);
 	Display13OutputWiring adlnOutputWiring;
  mach_vm_address_t adlnComboPLLFractionCaller {};
 	uint64_t adlnPlatform[0x1C0/8] {};

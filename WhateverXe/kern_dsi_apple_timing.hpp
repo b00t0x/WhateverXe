@@ -17,6 +17,22 @@ struct Timing {
 static_assert(sizeof(Timing)==160 && offsetof(Timing,pixelClock)==0x28 &&
               offsetof(Timing,horizontalActive)==0x40 && offsetof(Timing,pixelEncoding)==0x88,"Apple timing ABI");
 constexpr uint32_t FixedModeID=0x10000;
+struct ModeInformation {
+    uint32_t width {},height {},refresh {},depth {},flags {};
+    uint16_t widthMM {},heightMM {};
+    uint32_t reserved[3] {};
+};
+static_assert(sizeof(ModeInformation)==36,"IODisplayModeInformation ABI");
+inline bool annotateMode(const Mode &m,ModeInformation &info) {
+    if(!m.valid() || info.width!=m.width || info.height!=m.height)return false;
+    info.refresh=static_cast<uint32_t>((uint64_t(m.clockKHz)*1000*65536+m.htotal()*uint64_t(m.vtotal())/2)/
+        (m.htotal()*uint64_t(m.vtotal())));
+    info.widthMM=static_cast<uint16_t>(m.widthMM);info.heightMM=static_cast<uint16_t>(m.heightMM);
+    // IOGraphics: valid/safe/default + built-in + native. Acceleration is a
+    // separate runtime qualification, never inferred from a fixed mode.
+    info.flags|=0x02000407;
+    return true;
+}
 inline bool makeTiming(const Profile &p,Timing &result) {
     result={};const auto &m=p.mode;
     if(!p.valid() || !m.valid())return false;

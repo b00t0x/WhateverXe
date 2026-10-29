@@ -17,6 +17,7 @@
 #include "kern_display13_boot.hpp"
 #include "kern_display13_dsi_trial.hpp"
 #include "kern_dsi_readout.hpp"
+#include "kern_dsi_apple_timing.hpp"
 #include "kern_display13_firmware.hpp"
 #include "kern_display13_tc_aux.hpp"
 #include "kern_display13_tc_mode.hpp"
@@ -4574,6 +4575,34 @@ struct Display13FBPowerContext {
     uint64_t powerContext[24] {1}; // Bounded CPU-only execution-context evidence.
 };
 static Display13FBPowerContext display13FBPower;
+// One DSI0 panel. Publish only after native path/pipe association; the FB and
+// immutable timing array remain retained until a quiesced DSI stop can detach
+// them. A donor property failure must never leave its raw array pointer dangling.
+struct DSIFixedModeOwner {
+    IOService *framebuffer {};
+    OSArray *array {};
+    OSData *data {};
+    XELP::DSI::Mode mode;
+    XELP::DSI::AppleAdapter::Timing timing;
+    bool ready {};
+};
+static DSIFixedModeOwner dsiFixedMode;
+static bool dsiModeTarget(IOService *fb) {
+    return fb && __atomic_load_n(&dsiFixedMode.framebuffer,__ATOMIC_ACQUIRE)==fb;
+}
+struct DSIModeScope {
+    IORecursiveLock *lock;
+    explicit DSIModeScope(IOService *fb):lock(Display13FBMemory::field<IORecursiveLock *>(fb,0x4220)) {
+        if(lock)IORecursiveLockLock(lock);
+    }
+    ~DSIModeScope(){if(lock)IORecursiveLockUnlock(lock);}
+};
+static bool dsiModeCoherent(IOService *fb) {
+    const auto &o=dsiFixedMode;
+    return o.ready && o.array && o.data && o.array->getCount()==1 && o.array->getObject(0)==o.data &&
+        o.data->getLength()==sizeof(o.timing) && !memcmp(o.data->getBytesNoCopy(),&o.timing,sizeof(o.timing)) &&
+        Display13FBMemory::field<OSArray *>(fb,0x4260)==o.array && fb->getProperty("IOFBDetailedTimings")==o.array;
+}
 // AlderLakeN start bypasses the generic TGL framebuffer path and its power sampler.
 // Use the retained, uncached BAR owner. These GT mirrors require no forcewake,
 // mailbox transaction, MMIO write or native policy intervention.
@@ -5407,6 +5436,7 @@ bool XE::processDisplay13Framebuffer(KernelPatcher &patcher,size_t index,mach_vm
 	display13FBGTTHooksReady=processDisplay13FramebufferGTT(patcher,index,address,size);
 	IORegistryEntry::getRegistryRoot()->setProperty("N97FBGTTHooksReady",display13FBGTTHooksReady);
 	display13FBTopologyHooksReady=processDisplay13FramebufferTopology(patcher,index,address,size);
+    display13DSIModeHooksReady=processDisplay13DSIModes(patcher,index,address,size);
 	IORegistryEntry::getRegistryRoot()->setProperty("N97FBTopologyHooksReady",display13FBTopologyHooksReady);
  using C=XELP::DisplayContract;const auto installed=display13Available();
  display13FBPowerBackendReady=C{C::Power13,installed}.ready();
@@ -6470,6 +6500,106 @@ IOReturn XE::adlnSetupAuxiliaryMemory(IOService *controller,bool dsb) {
 }
 IOReturn XE::wrapDisplay13CursorSetup(IOService *controller) {return adlnSetupAuxiliaryMemory(controller,false);}
 IOReturn XE::wrapAlderLakeNDSBSetup(IOService *controller) {return adlnSetupAuxiliaryMemory(controller,true);}
+
+bool XE::processDisplay13DSIModes(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
+    const char *symbols[]={
+        "__ZN21AppleIntelFramebuffer18setDetailedTimingsEP7OSArray",
+        "__ZN21AppleIntelFramebuffer19validateDisplayModeEiPPKNS_15ModeDescriptionEPPK29IODetailedTimingInformationV2",
+        "__ZN21AppleIntelFramebuffer15getDisplayModesEPi",
+        "__ZN21AppleIntelFramebuffer19getDisplayModeCountEv",
+        "__ZN21AppleIntelFramebuffer28getInformationForDisplayModeEiP24IODisplayModeInformation"};
+    const uint32_t offsets[]={0x30D0E,0x30DE2,0x31FE6,0x32D04,0x32010};
+    const uint8_t entries[][16]={
+        {0x55,0x48,0x89,0xE5,0x41,0x56,0x53,0x49,0x89,0xF6,0x48,0x89,0xFB,0x48,0xFF,0x05},
+        {0x55,0x48,0x89,0xE5,0x41,0x56,0x53,0x48,0xFF,0x05,0x98,0x93,0x0A,0x00,0x83,0xFE},
+        {0x55,0x48,0x89,0xE5,0x48,0xFF,0x05,0x8F,0x84,0x0A,0x00,0x80,0xBF,0xE0,0x01,0x00},
+        {0x55,0x48,0x89,0xE5,0x48,0xFF,0x05,0xE1,0x79,0x0A,0x00,0x80,0xBF,0xE0,0x01,0x00},
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x53,0x48,0x83,0xEC,0x18,0x49,0x89,0xD6}};
+    if(!display13FramebufferRequested || size<=0x32D14)return false;
+    for(unsigned i=0;i<arrsize(offsets);++i) {
+        const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,symbols[i],address,size);patcher.clearError();
+        if(fn!=address+offsets[i] || memcmp(reinterpret_cast<void *>(fn),entries[i],16))return false;
+    }
+    KernelPatcher::RouteRequest routes[]={
+        {symbols[0],wrapDSISetDetailedTimings,orgDSIMode[0]},
+        {symbols[1],wrapDSIValidateMode,orgDSIMode[1]},
+        {symbols[2],wrapDSIGetModes,orgDSIMode[2]},
+        {symbols[3],wrapDSIGetModeCount,orgDSIMode[3]},
+        {symbols[4],wrapDSIGetModeInformation,orgDSIMode[4]}};
+    const bool ready=patcher.routeMultiple(index,routes,arrsize(routes),address,size);
+    patcher.clearError();return ready;
+}
+
+bool XE::bindDSIFixedMode(IOService *fb,const XELP::DSI::Profile &profile) {
+    auto &c=display13FBPower;auto &o=dsiFixedMode;
+    if(!display13DSIModeHooksReady || adlnOutputWiring.dsi!=1 || !c.lock || !fb ||
+       fb->getMetaClass()->getClassSize()<0x4B90 || !profile.valid())return false;
+    DSIModeScope scope(fb);if(!scope.lock)return false;
+    XELP::DSI::AppleAdapter::Timing timing;
+    if(!XELP::DSI::AppleAdapter::makeTiming(profile,timing))return false;
+    if(__atomic_load_n(&o.framebuffer,__ATOMIC_ACQUIRE))return dsiModeTarget(fb) && dsiModeCoherent(fb) &&
+        !memcmp(&timing,&o.timing,sizeof(timing));
+    auto data=OSData::withBytes(&timing,sizeof(timing));auto array=OSArray::withCapacity(1);
+    if(!data || !array || !array->setObject(data)) {OSSafeReleaseNULL(data);OSSafeReleaseNULL(array);return false;}
+    IOLockLock(c.lock);
+    const auto path=Display13FBMemory::singlePath<OSObject *>(fb);
+    const auto binding=adlnInspectPathBinding(fb,path,adlnPlatform,adlnOutputWiring);
+    const bool bound=!__atomic_load_n(&o.framebuffer,__ATOMIC_ACQUIRE) &&
+        c.controller==adlnTopologyController && binding.status==TGLFBBinding::Status::Complete &&
+        binding.ddi==0 && c.transcoders.dsi(binding.pipe) && c.bootDSI.matches(profile) &&
+        c.bootDSI.identity.pipe==binding.pipe && !c.memoryFaulted && !c.bridge.state.faulted;
+    if(bound) {
+        o.array=array;o.data=data;o.timing=timing;o.mode=profile.mode;o.ready=false;
+        fb->retain();__atomic_store_n(&o.framebuffer,fb,__ATOMIC_RELEASE);
+    }
+    IOLockUnlock(c.lock);
+    if(!bound) {data->release();array->release();return false;}
+    // The donor ignores setProperty's bool result. Retain our own array/data
+    // before calling it, then verify both the raw pointer and registry owner.
+    const auto result=FunctionCast(wrapDSISetDetailedTimings,orgDSIMode[0])(fb,array);
+    o.ready=result==kIOReturnSuccess;
+    o.ready=dsiModeCoherent(fb);
+    fb->setProperty("WEXDSIFixedModeReady",o.ready);
+    return o.ready;
+}
+
+uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
+    if(!dsiModeTarget(fb))return FunctionCast(wrapDSISetDetailedTimings,callbackXE->orgDSIMode[0])(fb,array);
+    DSIModeScope scope(fb);if(!scope.lock || !dsiModeCoherent(fb))return kIOReturnNotReady;
+    auto data=array && array->getCount()==1 ? OSDynamicCast(OSData,array->getObject(0)) : nullptr;
+    if(!data || data->getLength()!=sizeof(dsiFixedMode.timing) ||
+       memcmp(data->getBytesNoCopy(),&dsiFixedMode.timing,sizeof(dsiFixedMode.timing)))return kIOReturnUnsupported;
+    const auto result=FunctionCast(wrapDSISetDetailedTimings,callbackXE->orgDSIMode[0])(fb,dsiFixedMode.array);
+    return result==kIOReturnSuccess && !dsiModeCoherent(fb) ? kIOReturnNotReady : result;
+}
+uint32_t XE::wrapDSIValidateMode(IOService *fb,int32_t mode,const void **description,const void **timing) {
+    if(!dsiModeTarget(fb))return FunctionCast(wrapDSIValidateMode,callbackXE->orgDSIMode[1])(fb,mode,description,timing);
+    if(description)*description=nullptr;if(timing)*timing=nullptr;
+    DSIModeScope scope(fb);if(!scope.lock || !dsiModeCoherent(fb))return kIOReturnNotReady;
+    if(mode!=XELP::DSI::AppleAdapter::FixedModeID)return kIOReturnBadArgument;
+    const auto result=FunctionCast(wrapDSIValidateMode,callbackXE->orgDSIMode[1])(fb,mode,description,timing);
+    if(!result && timing && *timing!=dsiFixedMode.data->getBytesNoCopy())return kIOReturnNotReady;
+    return result;
+}
+uint32_t XE::wrapDSIGetModes(IOService *fb,int32_t *modes) {
+    if(!dsiModeTarget(fb))return FunctionCast(wrapDSIGetModes,callbackXE->orgDSIMode[2])(fb,modes);
+    DSIModeScope scope(fb);if(!scope.lock || !dsiModeCoherent(fb))return kIOReturnNotReady;
+    if(!modes)return kIOReturnBadArgument;
+    *modes=XELP::DSI::AppleAdapter::FixedModeID;return kIOReturnSuccess;
+}
+uint32_t XE::wrapDSIGetModeCount(IOService *fb) {
+    if(!dsiModeTarget(fb))return FunctionCast(wrapDSIGetModeCount,callbackXE->orgDSIMode[3])(fb);
+    DSIModeScope scope(fb);return scope.lock && dsiModeCoherent(fb) ? 1 : 0;
+}
+uint32_t XE::wrapDSIGetModeInformation(IOService *fb,int32_t mode,void *raw) {
+    if(!dsiModeTarget(fb))return FunctionCast(wrapDSIGetModeInformation,callbackXE->orgDSIMode[4])(fb,mode,raw);
+    DSIModeScope scope(fb);if(!scope.lock || !dsiModeCoherent(fb))return kIOReturnNotReady;
+    if(!raw || mode!=XELP::DSI::AppleAdapter::FixedModeID)return kIOReturnBadArgument;
+    const auto result=FunctionCast(wrapDSIGetModeInformation,callbackXE->orgDSIMode[4])(fb,mode,raw);
+    if(!result && !XELP::DSI::AppleAdapter::annotateMode(dsiFixedMode.mode,
+        *static_cast<XELP::DSI::AppleAdapter::ModeInformation *>(raw)))return kIOReturnNotReady;
+    return result;
+}
 
 bool XE::processDisplay13FramebufferTopology(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
 	const char *os="__ZN31AppleIntelFramebufferController16getOSInformationEv";
