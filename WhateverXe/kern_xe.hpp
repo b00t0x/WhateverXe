@@ -13,6 +13,7 @@
 #include "kern_dsi_ggtt.hpp"
 #include "kern_dsi_surface.hpp"
 #include "kern_dsi_quiesce.hpp"
+#include "kern_dsi_clock.hpp"
 #include "kern_tgl_tc_native.hpp"
 #include "kern_tgl_native_fia.hpp"
 #include "kern_tgl_hdmi_wiring.hpp"
@@ -143,7 +144,8 @@ private:
     bool dsiResourcesReady {};
     bool bindDSIResources(IOService *);
     XELP::DSI::Quiesce::Result dsiStop;
-    bool dsiStopAttempted {},dsiIRQParked {};
+    XELP::DSI::Clock::Result dsiClockStop;
+    bool dsiStopAttempted {},dsiIRQParked {},dsiDDIReleased {};
     bool quiesceDSIPath(IOService *,IOService *,OSObject *);
     static uint32_t wrapDisplay13ProbeMode(OSObject *);
     bool dsiCacheHooksReady {};

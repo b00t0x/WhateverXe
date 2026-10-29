@@ -8,6 +8,7 @@ body=re.search(r'bool XE::quiesceDSIPath\(.*?\n\}',s,re.S)[0]
 b=(root/'tests/dsi_boot.cpp').read_text();fixture=b[b.index('struct IO {'):b.index('Boot capture(')]
 code=r'''
 #include "kern_dsi_quiesce.hpp"
+#include "kern_dsi_clock.hpp"
 #include "kern_dsi_boot.hpp"
 #include "kern_display13_fb_memory.hpp"
 #include "kern_display13_power_bridge.hpp"
@@ -29,6 +30,7 @@ bool IOSimpleLockLockDisableInterrupt(IOSimpleLock*){assert(locks.back()==3);loc
 void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock*,bool v){assert(v && locks.back()==4);locks.pop_back();}
 struct OSObject {alignas(8) uint8_t bytes[0x4B90]{};unsigned refs=1,size=sizeof(bytes);
  OSObject *getMetaClass(){return this;}unsigned getClassSize(){return size;}
+ void setProperty(const char*,bool value){assert(locks==std::vector<unsigned>{1} && !value);}
  void retain(){++refs;}void release(){assert(refs>1);--refs;}};
 using IOService=OSObject;
 struct IOWorkLoop:OSObject {bool gate=false,busy=false;unsigned closes=0,opens=0;};
@@ -37,7 +39,7 @@ bool tryClose(IOWorkLoop *p){assert(locks==std::vector<unsigned>{1});++p->closes
 void open(IOWorkLoop *p){assert(locks==std::vector<unsigned>{1} && p->gate);p->gate=false;++p->opens;}
 struct IOMemoryMap {
  std::vector<uint32_t> bar=std::vector<uint32_t>(0x1000000/4);bool freeze=false,pending=false,failMasterRestore=false,failMasterMask=false;
- unsigned masterWrites=0;bool gtOnly=false;
+ unsigned masterWrites=0,pllFail=0;bool gtOnly=false;
  uintptr_t getVirtualAddress(){return reinterpret_cast<uintptr_t>(bar.data());}size_t getLength(){return 0x1000000;}
  uint32_t &reg(uint32_t r){return bar[r/4];}
 }*activeMap;
@@ -57,16 +59,18 @@ struct Display13FBIRQIO {
  }
 };
 struct {IORecursiveLock *lock=nullptr;uintptr_t thread=0;XELPComboClock::ClockAllocation allocation;}comboClockTransaction;
-struct {IOLock *lock=nullptr;IOService *controller=nullptr;IOMemoryMap *map=nullptr;IOWorkLoop *workLoop=nullptr;OSObject *dsiPort=nullptr;
+struct {IOLock *lock=nullptr;IOService *controller=nullptr;void *power=nullptr;IOMemoryMap *map=nullptr;IOWorkLoop *workLoop=nullptr;OSObject *dsiPort=nullptr;
  Display13Transcoder::Bindings transcoders;Readout bootDSI;Display13Power::NativeBridge bridge;bool clockFaulted=false,memoryFaulted=false;
- struct {unsigned updating=0;}dbuf;
+ struct {unsigned updating=0;Display13Transcoder::Bindings transcoders;}dbuf;
  struct {IOService *memoryFramebuffer=nullptr;bool destroyingPath=false,wmProgramming=false,wmCommitting=false;}pipe[3];
 }display13FBPower;
 struct {uintptr_t base=0;IOSimpleLock *lock=nullptr;IOService *controller=nullptr;Display13FBIRQ::State state;
  unsigned handlers=0,softwareHandlers=0,admittedPipes=0,blockedPipes=0;bool quiescing=false;
  Display13FBIRQ::HandlerScopes scopes;}display13FBIRQ;
 void adlnFault(bool &fault,unsigned){assert(locks==std::vector<unsigned>({1,2,3}));fault=true;}
-bool mappingBound=true;
+struct {bool ready=true;}dsiFixedMode;
+bool dsiModeTarget(IOService *fb){return fb==display13FBPower.pipe[0].memoryFramebuffer;}
+bool mappingBound=true,failDDIPut=false;
 bool adlnWriterMappingBound(){return mappingBound;}
 bool adlnIRQOwner(IOService *p){return p && p==display13FBIRQ.controller;}
 namespace TGLFBBinding {enum class Status{Complete,Unavailable};struct Binding{Status status=Status::Complete;unsigned pipe=0,ddi=0;};}
@@ -79,6 +83,10 @@ void tick(unsigned us){assert(locks==std::vector<unsigned>({1,2,3}));auto &m=*ac
  if(!(m.reg(0x7B008)&(1U<<31)))m.reg(0x7B008)&=~(1U<<30);
  if(m.reg(0x6B0D8)&1)m.reg(0x6B0D8)|=1U<<16;
  if(!(m.reg(0x64000)&(1U<<31)))m.reg(0x64000)|=0x80;
+ if(!(m.reg(0x46014)&(1U<<31)) && m.pllFail!=1)m.reg(0x46014)&=~(1U<<30);
+ if(!(m.reg(0x46014)&(1U<<27)) && m.pllFail!=2)m.reg(0x46014)&=~(1U<<26);
+ if(us==10 && m.pllFail==3)m.reg(0x45404)=0;
+ if(us==10 && m.pllFail==4)m.reg(0x16428C)^=1;
  if(m.pending){auto c=display13FBPower.controller;*reinterpret_cast<uint32_t*>(c->bytes+0xE08)|=1;}
  if(m.gtOnly){display13FBIRQ.handlers=1;display13FBIRQ.scopes.total=1;}
 }
@@ -86,8 +94,18 @@ void IOSleep(unsigned ms){tick(ms*1000);}void IODelay(unsigned us){tick(us);}
 struct XE {
  uintptr_t adlnWorkLoopInGate=reinterpret_cast<uintptr_t>(inGate),adlnWorkLoopTryClose=reinterpret_cast<uintptr_t>(tryClose),adlnWorkLoopOpen=reinterpret_cast<uintptr_t>(open);
  struct {unsigned dsi=1;operator unsigned()const{return dsi;}}adlnOutputWiring;void *adlnPlatform=nullptr;
- bool dsiResourcesReady=true,dsiStopAttempted=false,dsiIRQParked=false;
- IOService *adlnTopologyController=nullptr;Profile dsiProfile;Boot dsiBoot;Quiesce::Result dsiStop;
+ bool dsiResourcesReady=true,dsiStopAttempted=false,dsiIRQParked=false,dsiDDIReleased=false;
+ IOService *adlnTopologyController=nullptr;Profile dsiProfile;Boot dsiBoot;Quiesce::Result dsiStop;Clock::Result dsiClockStop;
+ static bool adlnPowerReference(void *power,unsigned operation,unsigned domain){
+  assert(locks==std::vector<unsigned>({1,2}) && operation==4 && domain==0 && power==display13FBPower.power);
+  if(failDDIPut)return false;
+  IOLockLock(display13FBPower.lock);Display13FBBootIO io{display13FBPower.map};
+  // Initial firmware DDI power is borrowed; releasing its actual native
+  // reference cannot manufacture a power-well write in this fixture.
+  struct PowerIO:Display13FBBootIO {void write(uint32_t,uint32_t){assert(false);}void delayUs(unsigned){assert(false);}} pio{io};
+  const auto result=display13FBPower.bridge.putDDI(pio,0);
+  IOLockUnlock(display13FBPower.lock);return result.status==Display13Power::Status::Complete;
+ }
  bool quiesceDSIPath(IOService*,IOService*,OSObject*);
 };
 BODY
@@ -97,35 +115,36 @@ struct Case {
  IORecursiveLock fbLock{1},clockLock{2};IOLock ownerLock;IOSimpleLock irqLock;
  Case(){
   using Power=decltype(display13FBPower);display13FBPower.~Power();new (&display13FBPower) Power;
-  display13FBIRQ={};comboClockTransaction={};mappingBound=true;pathBinding={};activeMap=&map;
+  display13FBIRQ={};comboClockTransaction={};mappingBound=true;pathBinding={};activeMap=&map;dsiFixedMode.ready=true;failDDIPut=false;
   IO defaults;for(const auto &v:defaults.regs)map.reg(v.first)=v.second;
   map.reg(0x42084)=1U<<30;map.reg(0x6B0D0)=0x01001040;map.reg(0x6001C)=0x0437077F;map.reg(0x6B010)=map.reg(0x6B00C);
   map.reg(0x45454)=3;map.reg(0x42000)=0x8E380000;map.reg(0x70040)=100;
   // Keep a real peer IRQ/plane image live and make preservation observable.
+  map.reg(0x164280)&=~(1U<<11);map.reg(0x46010)=0xCC000000;
   map.reg(0x71008)=0xC0000000;map.reg(0x71180)=0x94001000;map.reg(0x61400)=0x90000000;
   map.reg(Display13FBIRQ::Master)=Display13FBIRQ::Enable;
   map.reg(Display13FBIRQ::PipeIIR(0)+4)=Display13FBIRQ::PipeOwned;
   map.reg(Display13FBIRQ::PipeIIR(1)+4)=Display13FBIRQ::PipeOwned;
   auto &c=display13FBPower;auto &irq=display13FBIRQ;auto &clock=comboClockTransaction;
-  c.lock=&ownerLock;c.controller=&controller;c.map=&map;c.workLoop=&loop;c.dsiPort=&port;
-  c.pipe[0].memoryFramebuffer=&fb;c.transcoders.dsi0Pipe=0;
+  c.lock=&ownerLock;c.controller=&controller;c.power=&controller;c.map=&map;c.workLoop=&loop;c.dsiPort=&port;
+  c.pipe[0].memoryFramebuffer=&fb;c.transcoders.dsi0Pipe=0;c.dbuf.transcoders=c.transcoders;
   xe.adlnTopologyController=&controller;xe.dsiProfile=profile();
   c.bootDSI=decodeReadout([&](uint32_t r,uint32_t &v){v=map.reg(r);return true;},38400);assert(c.bootDSI.matches(xe.dsiProfile));xe.dsiBoot.source=c.bootDSI;
   clock.lock=&clockLock;clock.allocation.external[0]=reinterpret_cast<uintptr_t>(&controller);clock.allocation.binding[0]=2;
   irq.controller=&controller;irq.lock=&irqLock;irq.base=map.getVirtualAddress();irq.admittedPipes=3;
   irq.state.begun=true;irq.state.enabled=true;irq.state.active=3;irq.state.configured=3;irq.state.transcoders=c.transcoders;
-  auto &b=c.bridge;auto &s=b.state;b.begun=true;b.selectedPorts=3;s.ready=true;s.allowed=Display13Power::All;
+  auto &b=c.bridge;auto &s=b.state;b.begun=true;b.selectedPorts=3;b.bootPort=0;b.bootAdopted=true;b.bootPath=reinterpret_cast<uintptr_t>(&path);s.ready=true;s.allowed=Display13Power::All;
   const auto pg=Display13Power::dependencies(Display13Power::nativeScope(1)),ddi=Display13Power::dependencies(Display13Power::ddiDomain(0));s.borrowed=pg|ddi;
-  for(unsigned i=0;i<Display13Power::Count;++i)if(s.borrowed&(1U<<i))s.refs[i]=2;
+  for(unsigned i=0;i<Display13Power::Count;++i)if(s.borrowed&(1U<<i))s.refs[i]=unsigned(bool(pg&(1U<<i)))+unsigned(bool(ddi&(1U<<i)));
   b.pgRefs[0]=1;b.pgLease[0].owner=&s;b.pgLease[0].domains=pg;b.ddiRefs[0]=1;b.ddiLease[0].owner=&s;b.ddiLease[0].domains=ddi;
   put(&fb,0x4220,&fbLock);put(&fb,0x4A00,1U);put(&fb,0x4A08,&path);put(&path,0x3644,2U);put(&path,0x3648,&port);put(&port,0x550,1U);
   put(&controller,0xE00,&loop);put(&controller,0x90,&irqLock);
  }
  bool run(){bool r=xe.quiesceDSIPath(&controller,&fb,&path);assert(locks.empty() && loop.refs==1);return r;}
- void retained(){auto &b=display13FBPower.bridge;assert(b.pgRefs[0]==1 && b.ddiRefs[0]==1);
-  assert(comboClockTransaction.allocation.external[0]==reinterpret_cast<uintptr_t>(&controller));
-  assert(map.reg(0x46014)==0xCC000000 && map.reg(0x45404)==0xFC0F);
-  assert(Display13FBMemory::field<uint32_t>(&path,0x3644)==2);
+ void retained(bool clockGone=false){auto &b=display13FBPower.bridge;assert(b.pgRefs[0]==1 && b.ddiRefs[0]==unsigned(!xe.dsiDDIReleased));
+  assert(comboClockTransaction.allocation.external[0]==(clockGone?0:reinterpret_cast<uintptr_t>(&controller)));
+  assert(map.reg(0x46010)==0xCC000000 && map.reg(0x45404)==0xFC0F);
+  assert(Display13FBMemory::field<uint32_t>(&path,0x3644)==(xe.dsiIRQParked && xe.dsiClockStop.complete() && xe.dsiDDIReleased?1U:2U));
  }
 };
 int main(){
@@ -138,7 +157,15 @@ int main(){
   assert(c.loop.opens==unsigned(!own) && c.loop.closes==unsigned(!own));
   assert(c.map.reg(0x71180)==0x94001000 && c.map.reg(Display13FBIRQ::PipeIIR(1)+4)==Display13FBIRQ::PipeOwned);
   assert(Display13FBMemory::field<uint32_t>(&c.controller,0xE08)==2 && Display13FBMemory::field<uint32_t>(&c.controller,0xE10)==(1U<<6));
-  c.retained();const auto before=c.map.bar;assert(!c.run() && c.map.bar==before && c.xe.dsiIRQParked); // one-shot journal
+  assert(!dsiFixedMode.ready && c.xe.dsiDDIReleased);
+  assert(c.xe.dsiClockStop.complete() && c.xe.dsiClockStop.writes==2 && !c.map.reg(0x46014));
+  assert(display13FBPower.transcoders.dsi0Pipe==UINT32_MAX && display13FBIRQ.state.transcoders.dsi0Pipe==UINT32_MAX);
+  assert(display13FBIRQ.admittedPipes==2 && display13FBPower.dbuf.transcoders.dsi0Pipe==UINT32_MAX && !c.xe.dsiResourcesReady);
+  XELPComboClock::ClockSnapshot snapshot;snapshot.layout=XELPComboClock::Layout::Display13;
+  snapshot.mux[0]=c.map.reg(0x164280);snapshot.enable[0]=c.map.reg(0x46010);snapshot.enable[1]=c.map.reg(0x46014);
+  const auto reused=comboClockTransaction.allocation.choose(XELPComboClock::Port(0),snapshot,true);
+  assert(reused.valid && reused.pll==1 && !reused.keepPLL);
+  c.retained(true);const auto before=c.map.bar;assert(!c.run() && c.map.bar==before && c.xe.dsiIRQParked); // one-shot journal
  }
  for(unsigned bad=0;bad<12;++bad){Case c;
   switch(bad){case 0:c.loop.busy=true;break;case 1:mappingBound=false;break;
@@ -156,8 +183,26 @@ int main(){
  {Case c;c.map.pending=true;assert(!c.run() && c.xe.dsiStop.complete() && !c.xe.dsiIRQParked);
   assert(display13FBIRQ.state.active==3 && Display13FBMemory::field<uint32_t>(&c.controller,0xE08)==1);c.retained();}
  {Case c;c.map.failMasterRestore=true;assert(!c.run() && c.xe.dsiStop.complete() && !c.xe.dsiIRQParked);
-  assert(display13FBIRQ.state.faulted && !display13FBIRQ.state.enabled && !c.map.reg(Display13FBIRQ::Master));c.retained();}
- puts("PASS production DSI quiesce: real host/IRQ cores, FB-gate-clock-owner ordering, no wait under IRQ lock, actual queues/scopes, GT/peer preservation, retained resources and one-shot failure journal");
+  assert(display13FBIRQ.state.faulted && !display13FBIRQ.state.enabled && !c.map.reg(Display13FBIRQ::Master));c.retained(true);}
+ {Case c;failDDIPut=true;assert(!c.run() && c.xe.dsiClockStop.complete() && !c.xe.dsiDDIReleased);
+  assert(dsiFixedMode.ready && display13FBPower.bridge.pgRefs[0]==1 && display13FBPower.bridge.ddiRefs[0]==1);c.retained(true);}
+ {Case c;display13FBPower.bridge.bootAdopted=false;assert(!c.run() && c.xe.dsiClockStop.complete() && !c.xe.dsiDDIReleased);
+  assert(display13FBPower.bridge.ddiRefs[0]==1);c.retained(true);}
+ for(unsigned failure=1;failure<=4;++failure){Case c;c.map.pllFail=failure;
+  assert(!c.run() && c.xe.dsiStop.complete() && c.xe.dsiIRQParked==(failure!=3) && !c.xe.dsiClockStop.complete());
+  assert(dsiFixedMode.ready);
+  assert(c.xe.dsiClockStop.status==(failure==1?Clock::Status::Disable:failure==2?Clock::Status::Power:failure==3?Clock::Status::Ownership:Clock::Status::Source));
+  assert(comboClockTransaction.allocation.external[0]==reinterpret_cast<uintptr_t>(&c.controller));
+  assert(display13FBPower.transcoders.dsi0Pipe==0 && display13FBIRQ.state.transcoders.dsi0Pipe==0 && c.xe.dsiResourcesReady);
+  assert(c.map.reg(0x46010)==0xCC000000);
+  const auto before=c.map.bar;assert(!c.run() && c.map.bar==before);
+ }
+ for(bool software:{false,true}){Case c;
+  if(software)comboClockTransaction.allocation.binding[1]=2;else c.map.reg(0x164280)|=1U<<2;
+  assert(!c.run() && c.xe.dsiStop.complete() && c.xe.dsiClockStop.status==Clock::Status::Peer);
+  assert(!c.xe.dsiClockStop.writes && c.map.reg(0x46014)==0xCC000000);c.retained();
+ }
+ puts("PASS production DSI quiesce: real host/IRQ cores, FB-gate-clock-owner ordering, no wait under IRQ lock, actual queues/scopes, PLL stop/owner withdrawal, GT/peer preservation, retained resources on failure and one-shot journal");
 }
 '''.replace('FIXTURE',fixture).replace('BODY',body)
 with tempfile.TemporaryDirectory(prefix='dsi-quiesce-adapter-') as directory:

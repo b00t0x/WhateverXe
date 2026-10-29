@@ -9684,8 +9684,8 @@ static bool adlnWriterMappingBound() {
 			native->getPhysicalAddress(),native->getLength(),c.map->getPhysicalAddress(),c.map->getLength());
 }
 
-// Host stop and actual native IRQ retirement. This is deliberately separate
-// from allocator, PLL-owner and power release: a hardware stop is not a full
+// Host/IRQ/PLL retirement; the native DDI reference follows the stopped clock.
+// Keep the real stopped source separate from Session cleanup: it is not a full
 // Session StopProof. The one-shot journal retains a partial stop for diagnosis.
 bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     auto &c=display13FBPower;auto &clock=comboClockTransaction;auto &irq=display13FBIRQ;
@@ -9703,7 +9703,7 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     const bool acquired=boundLoop && !inGate && reinterpret_cast<bool (*)(IOWorkLoop *)>(adlnWorkLoopTryClose)(loop);
     if(!inGate && !acquired) {if(loop)loop->release();IORecursiveLockUnlock(mutex);return false;}
     IORecursiveLockLock(clock.lock);IOLockLock(c.lock);
-    uint64_t record[24] {1};bool masked=false,maskOK=false,parked=false,restored=false,enabled=false;uint32_t master=0;
+    uint64_t record[33] {3};bool masked=false,maskOK=false,parked=false,restored=false,enabled=false,modeWithdrawn=false;uint32_t master=0;
     const auto qualified=[&]() {
         if(adlnOutputWiring.dsi!=1 || !dsiResourcesReady || !dsiProfile.valid() ||
            controller!=c.controller || controller!=adlnTopologyController || c.workLoop!=loop ||
@@ -9729,7 +9729,8 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         bool ready(){return owns();}
         void write(uint32_t reg,uint32_t value) {
             if(readable(reg) && (reg==0x70080 || reg==0x70084 || reg==0x70088 || reg==0x70180 || reg==0x7019C ||
-               reg==0x7B008 || reg==0x6B0D8 || reg==0x6B400 || reg==0x164280 || reg==0x64000))
+               reg==0x7B008 || reg==0x6B0D8 || reg==0x6B400 || reg==0x164280 || reg==0x64000 ||
+               reg==0x46010+4*display13FBPower.bootDSI.identity.pll))
                 *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg)=value;
         }
         void delayUs(unsigned us){if(us>=1000)IOSleep((us+999)/1000);else IODelay(us);}
@@ -9775,7 +9776,23 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
                     irq.softwareHandlers,static_cast<uint32_t>(record[11]));
                 record[14]=static_cast<uint32_t>(status);parked=status==Display13FBIRQ::Status::Complete;
             }
+            IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
+            if(parked) {
+                dsiClockStop=XELP::DSI::Clock::retire(io,c.bootDSI,dsiStop,true,clock.allocation,
+                    reinterpret_cast<uintptr_t>(controller));
+            }
+            saved=IOSimpleLockLockDisableInterrupt(irq.lock);
+            if(dsiClockStop.complete()) {
+                // The host and its PLL are now stopped. Withdraw both maps at
+                // the same masked IRQ boundary, so an external clock client
+                // no longer tries to re-adopt the obsolete running DSI source.
+                c.transcoders.dsi0Pipe=UINT32_MAX;irq.state.transcoders=c.transcoders;c.dbuf.transcoders=c.transcoders;
+                __atomic_fetch_and(&irq.admittedPipes,~1U,__ATOMIC_RELEASE);
+                __atomic_store_n(&dsiResourcesReady,false,__ATOMIC_RELEASE);
+            }
             irq.quiescing=false;irq.blockedPipes=0;
+            const auto wells=irqIO.read(Display13FBIRQ::Driver);
+            if(wells==UINT32_MAX || (wells&3)!=3)irq.state.faulted=true;
             if(!irq.state.faulted) {
                 irqIO.write(Display13FBIRQ::Master,master&Display13FBIRQ::Enable);
                 const auto after=irqIO.read(Display13FBIRQ::Master);
@@ -9790,12 +9807,36 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     record[15]=masked;record[16]=parked;record[17]=restored;record[18]=dsiStopAttempted;
     record[19]=static_cast<uint32_t>(dsiStop.stage);record[20]=static_cast<uint32_t>(dsiStop.error);
     record[21]=dsiStop.writes;record[22]=dsiStop.waitUs;record[23]=dsiIRQParked;
-    const bool complete=parked && restored;
+    record[24]=static_cast<uint32_t>(dsiClockStop.status);record[25]=dsiClockStop.reg;record[26]=dsiClockStop.after;
+    record[27]=dsiClockStop.writes;record[28]=dsiClockStop.waitUs;record[29]=dsiClockStop.complete();
+    // The donor's disableClocks(port,peer) puts this DDI reference at 6db04;
+    // PG1 belongs to freeDisplayPathResources and must remain until memory /
+    // DDB / path destruction. Match that ownership without running DDI/DP code.
+    const bool stopped=parked && restored && dsiClockStop.complete();
+    record[30]=c.bridge.ddiRefs[0];
+    if(stopped && c.bridge.bootAdopted && c.bridge.bootPath==reinterpret_cast<uintptr_t>(path) &&
+       c.bridge.bootPort==0 && !c.bridge.bootDDIProtected && c.bridge.ddiRefs[0]==1 && c.power) {
+        auto power=c.power;
+        IOLockUnlock(c.lock);const bool put=adlnPowerReference(power,4,0);IOLockLock(c.lock);
+        dsiDDIReleased=put && c.power==power && !c.bridge.ddiRefs[0] && !c.bridge.ddiLease[0].owner;
+    }
+    record[31]=c.bridge.ddiRefs[0];record[32]=dsiDDIReleased;
+    const bool complete=stopped && dsiDDIReleased;
+    if(complete) {
+        // Exact donor disableDisplay publishes path state 1 only after its
+        // clock-disable call (4dbba -> 4dbc6). Mirror that CPU completion now,
+        // never on a partial host/IRQ/PLL stop or by replaying the donor body.
+        *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(path)+0x3644)=1;
+        *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(path)+0x170)=0;
+        *reinterpret_cast<uint8_t *>(reinterpret_cast<uint8_t *>(fb)+0x4270)=0;
+        if(dsiModeTarget(fb)){dsiFixedMode.ready=false;modeWithdrawn=true;}
+    }
     // Close the existing native writer/free gate before dropping the FB mutex,
     // even after host success. Remove this conservative guard only with the
     // separate Session/allocator/clock/power retirement transaction in place.
     if(masked)adlnFault(c.memoryFaulted,__LINE__);
     IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
+    if(modeWithdrawn)fb->setProperty("WEXDSIFixedModeReady",false);
     if(acquired)reinterpret_cast<void (*)(IOWorkLoop *)>(adlnWorkLoopOpen)(loop);
     loop->release();IORecursiveLockUnlock(mutex);
     adlnPublishMemory("N97FBDSIHostStop",0,record,sizeof(record));
@@ -9805,7 +9846,7 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
 void XE::wrapAlderLakeNDisableDisplay(IOService *controller,IOService *fb,OSObject *path,uint8_t mode) {
 	if(callbackXE->adlnOutputWiring.dsi && dsiLifecycleTarget(fb,path)) {
 		callbackXE->quiesceDSIPath(controller,fb,path);
-		// Host/IRQ completion alone does not authorize allocator/PLL/power
+		// Host/IRQ/PLL/DDI completion alone does not authorize allocator/PG
 		// release. Keep the retention guard until the full retirement adapter
 		// supplies a real Session StopProof; this void donor ABI has no error.
 		auto &c=display13FBPower;
