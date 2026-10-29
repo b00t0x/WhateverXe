@@ -9962,6 +9962,14 @@ IOMemoryDescriptor *XE::wrapAlderLakeNAperture(IOService *fb,int apertureIndex) 
 			const auto layout=Display13FBMemory::poolLayout(c.controller,0x1C20,0x10000000);
 			backing=adlnInspectSysMem(static_cast<IOService *>(c.controller),fb,slot,layout).status==Display13FBSysMem::Status::Complete;
 		}
+		// IOGraphics may ask before the first DSI mode transaction has set
+		// dimensions. The validated pool is still owned, but no aperture was
+		// published. Return unavailable without poisoning that shared owner.
+		// Nonzero invalid ranges and lost backing retain the fault path below.
+		if(!base && !bytes && parent && backing && !slot && callbackXE->adlnOutputWiring.dsi==1 &&
+		   dsiModeTarget(fb) && !dsiPendingTarget(fb) && !callbackXE->dsiStopAttempted) {
+			IOLockUnlock(c.lock);return nullptr;
+		}
 		if(!parent || !backing ||
 			!Display13FBMemory::apertureRange(c.pipe[pipe].memory.pool,base,bytes,parent->getLength()))parent=nullptr;
 		if(parent)parent->retain();else {
