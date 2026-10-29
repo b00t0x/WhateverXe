@@ -10,6 +10,7 @@
 
 #include "kern_tgl_tc_boot.hpp"
 #include "kern_dsi_boot.hpp"
+#include "kern_dsi_ggtt.hpp"
 #include "kern_tgl_tc_native.hpp"
 #include "kern_tgl_native_fia.hpp"
 #include "kern_tgl_hdmi_wiring.hpp"
@@ -135,6 +136,7 @@ private:
     OSData *dsiFirmware {}; // Private immutable copy backing profile/sequence spans.
     XELP::DSI::Profile dsiProfile;
     XELP::DSI::Boot dsiBoot;
+    XELP::DSI::GGTTMode dsiGGTT;
     bool prepareDSIFirmware(IOService *);
     bool dsiResourcesReady {};
     bool bindDSIResources(IOService *);

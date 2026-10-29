@@ -10554,7 +10554,13 @@ bool XE::bindDSIResources(IOService *controller) {
     if(!controller || controller->getMetaClass()->getClassSize()<0x1C20 ||
        !display13FBIRQReady || !clock.lock || !c.lock)return false;
     IORecursiveLockLock(clock.lock);IOLockLock(c.lock);
-    Display13FBBootIO io{c.map};
+    struct IO : Display13FBBootIO {
+        explicit IO(IOMemoryMap *map):Display13FBBootIO{map} {}
+        void write(uint32_t reg,uint32_t value) {
+            if(reg==0x42084 && readable(reg))
+                *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg)=value;
+        }
+    } io{c.map};
     const bool owned=adlnOutputWiring.dsi==1 && dsiProfile.valid() && dsiBoot.complete() &&
         c.controller==controller && controller==adlnTopologyController && !clock.thread &&
         !dsiResourcesReady && c.transcoders.dsi0Pipe==UINT32_MAX &&
@@ -10570,11 +10576,16 @@ bool XE::bindDSIResources(IOService *controller) {
         if(!irq.controller && !irq.handlers && !irq.softwareHandlers && !irq.quiescing &&
            !irq.admittedPipes && irq.state.transcoders.dsi0Pipe==UINT32_MAX && !irq.state.begun && !irq.state.enabled && !irq.state.faulted &&
            clock.allocation.retain(0,dsiBoot.source.identity.pll,reinterpret_cast<uintptr_t>(controller),snapshot)) {
-            c.bootDSI=dsiBoot.source;c.transcoders.dsi0Pipe=0;
-            irq.state.transcoders=c.transcoders;irq.base=c.map->getVirtualAddress();irq.lock=irqLock;
-            __atomic_store_n(&irq.admittedPipes,1U,__ATOMIC_RELEASE);
-            __atomic_store_n(&irq.controller,controller,__ATOMIC_RELEASE);
-            __atomic_store_n(&dsiResourcesReady,true,__ATOMIC_RELEASE);ready=true;
+            // Native X/Y tiled scanout and every external output use GGTT.
+            // The live DSI GOP is linear, so this shared mode can be prepared
+            // without disabling its plane. Retain PLL/power on any failure.
+            if(XELP::DSI::prepareGGTT(io,dsiBoot,xelpMemory,dsiGGTT)) {
+                c.bootDSI=dsiBoot.source;c.transcoders.dsi0Pipe=0;
+                irq.state.transcoders=c.transcoders;irq.base=c.map->getVirtualAddress();irq.lock=irqLock;
+                __atomic_store_n(&irq.admittedPipes,1U,__ATOMIC_RELEASE);
+                __atomic_store_n(&irq.controller,controller,__ATOMIC_RELEASE);
+                __atomic_store_n(&dsiResourcesReady,true,__ATOMIC_RELEASE);ready=true;
+            } else adlnFault(c.memoryFaulted,__LINE__);
         }
         IOSimpleLockUnlockEnableInterrupt(irqLock,saved);
     }
