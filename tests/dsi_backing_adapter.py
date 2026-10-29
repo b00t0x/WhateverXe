@@ -5,7 +5,7 @@ import hashlib,re,subprocess,sys,tempfile
 root=Path(__file__).resolve().parents[1]
 s=(root/'WhateverXe/kern_xe.cpp').read_text()
 functions='\n'.join(re.search(r'(?:bool|uint32_t|void) XE::'+name+r'\(.*?\n\}',s,re.S)[0] for name in
- ['wrapDSIBackingAllocate','wrapDSIBackingFree','prepareDSINativeBacking','discardDSINativeBacking','probeDSINativeBacking'])
+ ['wrapDSIBackingAllocate','wrapDSIBackingFree','prepareDSINativeBacking','validateDSINativeBacking','paintDSINativeBacking','discardDSINativeBacking','probeDSINativeBacking'])
 state=re.search(r'struct DSIPendingBackingOwner \{.*?\n\};',s,re.S)[0]
 if len(sys.argv)>1:
  b=Path(sys.argv[1]).read_bytes();assert hashlib.sha256(b).hexdigest()=='bd1a21f5e622aadabdab6441f6b5c38ed73fa3053c783fdf0fb7e4b309f273d0'
@@ -17,6 +17,7 @@ if len(sys.argv)>1:
  assert 'routeMultipleShort' in installer
 code=r'''
 #include "kern_dsi_native_backing.hpp"
+#include "kern_dsi_test_image.hpp"
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -28,21 +29,35 @@ template<class T>void put(void *p,unsigned off,T v){memcpy(static_cast<uint8_t*>
 unsigned fbDepth=0,ownerDepth=0,gpuDepth=0,allocCalls=0,freeCalls=0,buffers=0,expectedFlags=0;
 uintptr_t thread=1;void *current_thread(){return reinterpret_cast<void*>(thread);}
 struct IOLock{};struct IORecursiveLock{};
-void IOLockLock(IOLock*){assert(fbDepth && !ownerDepth && !gpuDepth);++ownerDepth;}
+void IOLockLock(IOLock*){assert(fbDepth && !ownerDepth && gpuDepth<=1);++ownerDepth;}
 void IOLockUnlock(IOLock*){assert(ownerDepth==1);--ownerDepth;}
 void *IOMalloc(size_t n){assert(!ownerDepth && !gpuDepth);++buffers;return calloc(1,n);}
 void IOFree(void *p,size_t n){assert(!ownerDepth && !gpuDepth && n==64 && buffers);--buffers;free(p);}
+alignas(4096) uint32_t cpuImage[8355840/4];
+bool failCPUMap=false;unsigned cpuMaps=0;
+constexpr unsigned kIOMapAnywhere=1;void *kernel_task=reinterpret_cast<void*>(1);
+struct CPUMap {
+ uintptr_t getVirtualAddress(){return reinterpret_cast<uintptr_t>(cpuImage);}
+ uint64_t getLength(){return sizeof(cpuImage);}
+ void release(){assert(gpuDepth==1 && !ownerDepth && cpuMaps==1);--cpuMaps;}
+}cpuMap;
 struct OSObject {
  alignas(8) uint8_t bytes[0x4B90]{};unsigned size=sizeof(bytes),refs=1;const char *kind="object";
  OSObject *getMetaClass(){return this;}unsigned getClassSize(){return size;}
  bool metaCast(const char *name){return !strcmp(kind,name);}void retain(){++refs;}void release(){assert(refs>1);--refs;}
  uint32_t callPlatformFunction(const char*,bool,void*,void*,void*,void*);
+ uint64_t getLength(){return sizeof(cpuImage);}
+ CPUMap *createMappingInTask(void *task,uintptr_t address,unsigned options,uint64_t offset,uint64_t bytes){
+  assert(gpuDepth==1 && fbDepth && !ownerDepth && !cpuMaps && task==kernel_task && !address && options==kIOMapAnywhere && !offset && bytes==sizeof(cpuImage));
+  if(failCPUMap)return nullptr;++cpuMaps;return &cpuMap;}
+
 };
-using IOService=OSObject;
+using IOService=OSObject;using IOMemoryDescriptor=OSObject;
+#define OSDynamicCast(T,p) static_cast<T *>(p)
 uint64_t receipt[16]{};
 struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry root;return &root;}
- void setProperty(const char *name,const void *p,unsigned n){assert(!strcmp(name,"WEXDSIBackingTrial") && n==sizeof(receipt));memcpy(receipt,p,n);}};
-OSObject nativeMapping,nativeMemory;
+ void setProperty(const char *name,const void *p,unsigned n){if(!strcmp(name,"WEXDSIImage")){assert(n==48);return;}assert(!strcmp(name,"WEXDSIBackingTrial") && n==sizeof(receipt));memcpy(receipt,p,n);}};
+OSObject nativeMapping,nativeMemory,nativeDescriptor;
 IOService *modeFB=nullptr;bool dsiModeTarget(IOService *fb){return fb && modeFB==fb;}
 struct DSIModeScope {IORecursiveLock *lock;explicit DSIModeScope(IOService *fb):lock(field<IORecursiveLock*>(fb,0x4220)){if(lock)++fbDepth;}
  ~DSIModeScope(){assert(!ownerDepth && !gpuDepth);if(lock){assert(fbDepth);--fbDepth;}}};
@@ -61,7 +76,7 @@ bool adlnSysMemOwner(void*,const Pool&){assert(ownerDepth);return true;}
 Display13FBMemory::Readout display13FBInspectMemory(IOService*,bool,unsigned,bool){assert(ownerDepth);Display13FBMemory::Readout r;r.status=source?Status::Complete:Status::PTE;return r;}
 struct Display13SurfaceIO {
  Map *map;unsigned pipe;bool memoryReady(uintptr_t m,uintptr_t mem,uintptr_t owner,uint64_t n){
-  assert(ownerDepth && !gpuDepth && map);return m==reinterpret_cast<uintptr_t>(&nativeMapping) && mem==reinterpret_cast<uintptr_t>(&nativeMemory) && owner && n==8355840;}
+  assert(ownerDepth && gpuDepth==1 && map);return m==reinterpret_cast<uintptr_t>(&nativeMapping) && mem==reinterpret_cast<uintptr_t>(&nativeMemory) && owner && n==8355840;}
  uint64_t physical(uintptr_t,uint64_t off,uint64_t &span){span=4096;return 0x180000000ULL+off;}
  uint64_t readPTE(uint32_t reg){const uint64_t off=(uint64_t(reg)-0x800000)*512-0x10000000;
   return (0x180000000ULL+off+(badPTE?4096:0))|0x99;}
@@ -84,7 +99,8 @@ struct XE {
  static bool dsiNativeUpdateAllowed(IOService *fb){assert(fbDepth);return available && !dsiPendingTarget(fb);}
  static uint32_t wrapDSIBackingAllocate(OSObject*,void*,uint32_t);
  static uint32_t wrapDSIBackingFree(OSObject*,void*,uint32_t);
- bool prepareDSINativeBacking(IOService*);bool discardDSINativeBacking(IOService*);
+ bool paintDSINativeBacking(unsigned);
+ bool prepareDSINativeBacking(IOService*);bool validateDSINativeBacking();bool discardDSINativeBacking(IOService*);
  void probeDSINativeBacking(IOService*);bool dsiBackingAttempted=false;uint32_t dsiBackingStage=0;
 }*callbackXE;
 uint32_t OSObject::callPlatformFunction(const char *name,bool wait,void *record,void *index,void *flags,void *extra){
@@ -98,7 +114,7 @@ FUNCTIONS
 struct Case {
  IOService fb,owner,controller,machine,pipe,other;IOLock lock;IORecursiveLock fbLock;Map map;XE xe;
  Case(){
-  assert(!dsiPendingBacking.framebuffer && !buffers);callbackXE=&xe;modeFB=&fb;nativePipe=&pipe;alternatePipe=&other;
+  assert(!dsiPendingBacking.framebuffer && !buffers && !cpuMaps);failCPUMap=false;put(&nativeMemory,0xD0,&nativeDescriptor);callbackXE=&xe;modeFB=&fb;nativePipe=&pipe;alternatePipe=&other;
   binding=source=available=true;badPTE=failAllocate=failFree=dropMap=changePipe=detachAfterAllocate=false;thread=1;
   display13FBPower={&lock,&controller,&map};display13FBGTT.sharedPoolPrefix=0x6192000;
   xe.dsiProfile.status=ProfileStatus::Valid;xe.dsiProfile.mode={135255,1080,46,22,2,1920,82,40,2,86,154};
@@ -113,6 +129,11 @@ struct Case {
  void discard(){assert(xe.discardDSINativeBacking(&fb));}
 };
 int main(){
+ {Case c;failCPUMap=true;assert(!c.xe.prepareDSINativeBacking(&c.fb));assert(!dsiPendingBacking.image.complete && !cpuMaps);c.discard();}
+ {Case c;assert(c.xe.prepareDSINativeBacking(&c.fb));
+  assert(dsiPendingBacking.image.complete && dsiPendingBacking.image.bytes==sizeof(cpuImage) && dsiPendingBacking.image.digest==0xf89939c5 && !cpuMaps);
+  c.discard();assert(!dsiPendingBacking.image.complete);}
+
  {Case c;const auto a=allocCalls,f=freeCalls;DSIModeScope scope(&c.fb);
   available=false;c.xe.probeDSINativeBacking(&c.fb);assert(!c.xe.dsiBackingAttempted && allocCalls==a && receipt[2]==1);
   available=true;c.xe.probeDSINativeBacking(&c.fb);

@@ -248,6 +248,8 @@ private:
     mach_vm_address_t orgDSIBacking[2] {};
     bool processDSIBackingHooks(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     bool prepareDSINativeBacking(IOService *);
+    bool validateDSINativeBacking();
+    bool paintDSINativeBacking(unsigned);
     bool discardDSINativeBacking(IOService *);
     void probeDSINativeBacking(IOService *);
     bool dsiBackingAttempted {};

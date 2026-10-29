@@ -9,6 +9,7 @@
 
 #include "kern_dsi_native_cache.hpp"
 #include "kern_dsi_native_backing.hpp"
+#include "kern_dsi_test_image.hpp"
 #include "kern_xe.hpp"
 #include "kern_framebuffer_donor.hpp"
 #include "kern_xelp_os.hpp"
@@ -4647,6 +4648,7 @@ struct DSIPendingBackingOwner {
     bool allocating {},freeing {},allocated {},freed {},armed {};
     uint32_t nativeResult {};
     Display13FBMemory::SurfaceReadout proof;
+    XELP::DSI::TestImage::Result image;
 };
 static DSIPendingBackingOwner dsiPendingBacking;
 static bool dsiPendingTarget(IOService *fb) {
@@ -5352,7 +5354,8 @@ uint32_t XE::wrapDSIBackingAllocate(OSObject *pipe,void *record,uint32_t flags) 
         o.pinnedMap=reinterpret_cast<OSObject *>(r.map);o.pinnedMemory=reinterpret_cast<OSObject *>(r.memory);
         o.pinnedMap->retain();o.pinnedMemory->retain();
     }
-    return o.allocated ? result : kIOReturnNotReady;
+    return o.allocated && callbackXE->validateDSINativeBacking() &&
+        callbackXE->paintDSINativeBacking(0) ? result : kIOReturnNotReady;
 }
 uint32_t XE::wrapDSIBackingFree(OSObject *pipe,void *record,uint32_t flags) {
     auto &o=dsiPendingBacking;
@@ -5413,6 +5416,30 @@ bool XE::prepareDSINativeBacking(IOService *fb) {
     dsiBackingStage=5;
     if(result || !o.allocated)return false; // Retain partial state for discard.
     IOLockLock(c.lock);
+    const bool verified=c.controller==controller && adlnSharedBinding(controller,owner) &&
+        o.pipe && o.pinnedMap && o.pinnedMemory &&
+        Display13FBMemory::field<IOService *>(o.pipe,0x88)==owner &&
+        Display13FBMemory::field<uintptr_t>(o.pipe,0x1298)==record->memory &&
+        Display13FBMemory::field<uintptr_t>(o.pipe,0x12A0)==record->map &&
+        !Display13FBMemory::field<uintptr_t>(o.pipe,0x12A8) &&
+        reserve==__atomic_load_n(&display13FBGTT.sharedPoolPrefix,__ATOMIC_ACQUIRE) &&
+        reserve==Display13FBMemory::field<uint32_t>(owner,0x13C0) &&
+        !c.memoryFaulted && !c.clockFaulted &&
+        XELP::DSI::NativeBacking::allocated(*record,dsiProfile,o.proof);
+    IOLockUnlock(c.lock);if(verified)dsiBackingStage=6;return verified;
+}
+
+// Called by allocateScanoutMemory's routed entry while the native display
+// machine still holds the GPU lock. Keep object/PTE validation in that scope;
+// retained map/memory references alone do not serialize GGTT replacement.
+bool XE::validateDSINativeBacking() {
+    auto &o=dsiPendingBacking;auto &c=display13FBPower;
+    auto fb=o.framebuffer;auto owner=o.accelerator;auto record=o.record;
+    if(!fb || !owner || !record || !o.allocating || !o.allocated || !o.pinnedMap || !o.pinnedMemory ||
+       o.thread!=reinterpret_cast<uintptr_t>(current_thread()) || !c.lock)return false;
+    auto controller=static_cast<IOService *>(c.controller);
+    const auto reserve=__atomic_load_n(&display13FBGTT.sharedPoolPrefix,__ATOMIC_ACQUIRE);
+    IOLockLock(c.lock);
     bool verified=false;
     const auto pipeBound=[&]() {
         return o.pipe && Display13FBMemory::field<IOService *>(o.pipe,0x88)==owner &&
@@ -5422,15 +5449,45 @@ bool XE::prepareDSINativeBacking(IOService *fb) {
     };
     if(pipeBound() && c.controller==controller && c.map && c.map->getVirtualAddress() && c.map->getLength()==0x1000000 &&
        adlnSharedBinding(controller,owner) && !c.memoryFaulted && !c.clockFaulted &&
-       reserve==__atomic_load_n(&display13FBGTT.sharedPoolPrefix,__ATOMIC_ACQUIRE) &&
-       reserve==Display13FBMemory::field<uint32_t>(owner,0x13C0)) {
+       reserve && reserve==Display13FBMemory::field<uint32_t>(owner,0x13C0)) {
         Display13SurfaceIO io {c.map,0};
         o.proof=Display13FBMemory::inspectPendingSurface(io,controller,controller->getMetaClass()->getClassSize(),
             fb,fb->getMetaClass()->getClassSize(),reinterpret_cast<uintptr_t>(owner),reserve,
             (c.map->getLength()-0x800000)/8*4096,xelpMemory,record);
         verified=pipeBound() && XELP::DSI::NativeBacking::allocated(*record,dsiProfile,o.proof);
     }
-    IOLockUnlock(c.lock);if(verified)dsiBackingStage=6;return verified;
+    IOLockUnlock(c.lock);return verified;
+}
+
+// Mapping and writes remain inside the same native GPU lock as the allocator
+// and full PTE proof. The GPU map is IGAccelMemoryMap, not IOMemoryMap: create
+// a separate CPU mapping from its validated SysMemory descriptor.
+bool XE::paintDSINativeBacking(unsigned phase) {
+    auto &o=dsiPendingBacking;
+    o.image={};
+    if(!o.allocating || !o.allocated || o.armed || !o.record || !o.pinnedMemory ||
+       o.thread!=reinterpret_cast<uintptr_t>(current_thread()) ||
+       !XELP::DSI::NativeBacking::allocated(*o.record,dsiProfile,o.proof))return false;
+    auto descriptor=OSDynamicCast(IOMemoryDescriptor,Display13FBMemory::field<OSObject *>(o.pinnedMemory,0xD0));
+    if(!descriptor || descriptor->getLength()<o.proof.bytes)return false;
+    const auto shape=XELP::DSI::TestImage::layout(dsiProfile.mode.width,dsiProfile.mode.height,
+        static_cast<uint32_t>(o.proof.pitch),o.proof.bytes);
+    if(!shape.valid())return false;
+    auto map=descriptor->createMappingInTask(kernel_task,0,kIOMapAnywhere,0,o.proof.bytes);
+    if(!map)return false;
+    const auto address=map->getVirtualAddress();
+    if(address && map->getLength()==o.proof.bytes && !(address&4095)) {
+        o.image=XELP::DSI::TestImage::paint(reinterpret_cast<volatile uint32_t *>(address),map->getLength(),shape,phase);
+        if(o.image.complete) {
+            for(uint64_t offset=0;offset<o.proof.bytes;offset+=64)
+                asm volatile("clflush (%0)"::"r"(address+offset):"memory");
+            asm volatile("mfence":::"memory");
+        }
+    }
+    map->release();
+    uint64_t receipt[] {1,phase,o.image.complete,o.image.bytes,o.image.digest,o.proof.gpu};
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIImage",receipt,sizeof(receipt));
+    return o.image.complete;
 }
 
 // P2's first real fixed-mode request exercises allocation and unarmed cleanup
@@ -5480,7 +5537,7 @@ bool XE::discardDSINativeBacking(IOService *fb) {
         owner=o.accelerator;pipe=o.pipe;record=o.record;mapping=o.pinnedMap;memory=o.pinnedMemory;
         __atomic_store_n(&o.framebuffer,static_cast<IOService *>(nullptr),__ATOMIC_RELEASE);
         __atomic_store_n(&o.pipe,static_cast<OSObject *>(nullptr),__ATOMIC_RELEASE);
-        o.accelerator=nullptr;o.record=nullptr;o.pinnedMap=o.pinnedMemory=nullptr;__atomic_store_n(&o.thread,uintptr_t(0),__ATOMIC_RELEASE);o.allocated=o.freed=false;o.nativeResult=0;o.proof={};
+        o.accelerator=nullptr;o.record=nullptr;o.pinnedMap=o.pinnedMemory=nullptr;__atomic_store_n(&o.thread,uintptr_t(0),__ATOMIC_RELEASE);o.allocated=o.freed=false;o.nativeResult=0;o.proof={};o.image={};
     }
     IOFree(record,sizeof(XELP::DSI::NativeBacking::Record));
     if(mapping)mapping->release();if(memory)memory->release();if(pipe)pipe->release();owner->release();fb->release();return true;
