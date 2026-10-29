@@ -44,6 +44,7 @@ struct {IOLock *lock=nullptr;IOService *controller=nullptr;OSObject *dsiPort=nul
  struct {struct {bool faulted=false,suspended=false;}state;}bridge;struct {bool faulted=false;}dbuf;
  struct {IOService *memoryFramebuffer=nullptr;bool destroyingPath=false;}pipe[3];
  Display13Transcoder::Bindings transcoders;}display13FBPower;
+struct {uint32_t clientMode=0x10000;}dsiFixedMode;
 IOService *panel=nullptr,*nativeFB=nullptr;bool dsiModeTarget(IOService *f){return f && f==panel;}
 constexpr uint32_t kIOReturnNotReady=0xe00002d8U,kIOReturnUnsupported=0xe00002c7U,kIOReturnSuccess=0;
 #define FunctionCast(f,p) reinterpret_cast<decltype(&f)>(p)
@@ -68,7 +69,7 @@ unsigned streamCalls=0;OSObject *expectedPath=nullptr;
 uint32_t nativeStream(IOService*,IOService*,OSObject*,const void*);
 struct XE {
  struct {unsigned dsi=1;}adlnOutputWiring;bool dsiStopAttempted=false,dsiResourcesReady=true;
- bool dsiPanelOnly=false;bool publishDSINativeMode(IOService*){return false;}
+ bool dsiPanelOnly=false,publicationReady=false;bool publishDSINativeMode(IOService*){return publicationReady;}
  bool dsiNativeWriterHooksReady=true;uintptr_t orgDSICursor[2]{};
  uintptr_t orgDSIMode[6]{};
  static void recordDSIClient(IOService*,unsigned,uint64_t,uint32_t){};
@@ -156,7 +157,7 @@ uint32_t nativeStream(IOService *ctl,IOService *fb,OSObject *path,const void *ti
 template<class T>void put(void *p,unsigned o,T v){memcpy(static_cast<uint8_t*>(p)+o,&v,sizeof(v));}
 struct Case {
  IOService fb,ctl,peer;OSObject path,port;IOLock lock;
- Case(){assert(!fbLock.depth && !owner);expectedWriters=1;nestedCursor=nestedTx=nestedAttribute=false;xe={};
+ Case(){assert(!fbLock.depth && !owner);expectedWriters=1;nestedCursor=nestedTx=nestedAttribute=false;xe={};dsiFixedMode={};
   xe.orgDSIAttributes[0]=reinterpret_cast<uintptr_t>(nativeAttribute);
   xe.orgDSIAttributes[1]=reinterpret_cast<uintptr_t>(nativeConnectionAttribute);
   xe.orgDSIAttributes[2]=reinterpret_cast<uintptr_t>(nativePower);
@@ -187,8 +188,11 @@ int main(){
   xe.dsiStopAttempted=true;
   assert(XE::wrapDSISetDisplayMode(&c.fb,0x10000,0)==kIOReturnNotReady && backingCalls==before+1);}
 
- // Public mode rejection precedes SaveNVRAMMode, disable, timing/backing and
- // native notifications; even the selected fixed mode is not yet admitted.
+ {Case c;dsiFixedMode.clientMode=0x80001000;xe.publicationReady=true;
+  assert(!XE::wrapDSISetDisplayMode(&c.fb,static_cast<int32_t>(0x80001000),0));
+  assert(Display13FBMemory::field<uint32_t>(&c.fb,0x4250)==0x80001000);
+  assert(XE::wrapDSISetDisplayMode(&c.fb,static_cast<int32_t>(0x80001001),0)==kIOReturnNotReady);}
+ // Unsupported depth never reaches ordinary mode writes.
  {Case c;auto before=modeCalls;assert(XE::wrapDSISetDisplayMode(&c.fb,0x10000,2)==kIOReturnNotReady);
   assert(modeCalls==before && !fbLock.depth && !owner);}
  {Case c;auto before=armCalls;XE::wrapDisplay13WMArmUpdate(&c.fb);assert(armCalls==before+1 && !fbLock.depth);}

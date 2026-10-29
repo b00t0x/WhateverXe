@@ -180,7 +180,7 @@ int main(){
  auto validations=calls[1];assert(XE::wrapDSIValidateMode(fb,mode+0x400,&description,&timing)==kIOReturnBadArgument);
  assert(!description && !timing && calls[1]==validations);
  ModeInformation info;assert(!XE::wrapDSIGetModeInformation(fb,mode,&info));
- assert(info.width==1080 && info.height==1920 && info.widthMM==86 && info.heightMM==154 && info.depth==2);
+ assert(info.width==1080 && info.height==1920 && info.widthMM==86 && info.heightMM==154 && info.depth==0);
  assert(!(info.flags&0x00400000));
  auto invalid=p.mode;invalid.width=0;assert(!annotateMode(invalid,info));
  assert(XE::wrapDSIGetModeInformation(fb,mode,nullptr)==kIOReturnBadArgument);
@@ -192,6 +192,22 @@ int main(){
  data->bytes.resize(1);assert(XE::wrapDSISetDetailedTimings(fb,replacement)==kIOReturnUnsupported);
  assert(XE::wrapDSISetDetailedTimings(fb,nullptr)==kIOReturnUnsupported);
  data->release();replacement->release();
+ auto offered=dsiFixedMode.timing;offered.reservedA[0]=0x80001001;offered.signalLevels=1;
+ offered.pixelClock=offered.minPixelClock=offered.maxPixelClock=135260000;
+ auto list=OSArray::withCapacity(1);auto wrong=offered;wrong.horizontalActive=640;
+ auto wrongData=OSData::withBytes(&wrong,sizeof(wrong));auto offeredData=OSData::withBytes(&offered,sizeof(offered));
+ list->setObject(wrongData);list->setObject(offeredData);
+ assert(!XE::wrapDSISetDetailedTimings(fb,list));assert(dsiFixedMode.clientMode==0x80001001 && list->refs==1);
+ assert(dsiModeCoherent(fb) && Display13FBMemory::field<OSArray*>(fb,0x4260)==dsiFixedMode.array);
+ assert(!XE::wrapDSIValidateMode(fb,static_cast<int32_t>(0x80001001),nullptr,&timing));
+ assert(timing==dsiFixedMode.data->getBytesNoCopy());
+ assert(XE::wrapDSIValidateMode(fb,static_cast<int32_t>(0x80001000),nullptr,&timing)==kIOReturnBadArgument);
+ assert(!XE::wrapDSIGetModes(fb,&mode) && static_cast<uint32_t>(mode)==0x80001001);
+ assert(!XE::wrapDSIGetCurrentMode(fb,&current,&depth) && static_cast<uint32_t>(current)==0x80001001);
+ assert(!XE::wrapDSIGetModeInformation(fb,mode,&info) && info.width==1080 && info.height==1920 && !info.depth);
+ offeredData->bytes[64]^=1;
+ assert(XE::wrapDSISetDetailedTimings(fb,list)==kIOReturnUnsupported && dsiFixedMode.clientMode==0x80001001);
+ wrongData->release();offeredData->release();list->release();
  fb->removeProperty("IOFBDetailedTimings");assert(!XE::wrapDSIGetModeCount(fb) && dsiFixedMode.array->refs==1);
  assert(XE::wrapDSIValidateMode(fb,mode,nullptr,nullptr)==kIOReturnNotReady);
  const auto cleanup=[&]{

@@ -27,11 +27,27 @@ inline bool annotateMode(const Mode &m,ModeInformation &info) {
     if(!m.valid() || info.width!=m.width || info.height!=m.height)return false;
     info.refresh=static_cast<uint32_t>((uint64_t(m.clockKHz)*1000*65536+m.htotal()*uint64_t(m.vtotal())/2)/
         (m.htotal()*uint64_t(m.vtotal())));
+    info.depth=0; // the adopted DSI surface is RGB8 only
     info.widthMM=static_cast<uint16_t>(m.widthMM);info.heightMM=static_cast<uint16_t>(m.heightMM);
     // IOGraphics: valid/safe/default + built-in + native. Acceleration is a
     // separate runtime qualification, never inferred from a fixed mode.
     info.flags|=0x02000407;
     return true;
+}
+// The observed Big Sur detailed-mode namespace carries the array index in
+// the low ten bits. Admit a client ID only after its full timing is matched.
+inline bool clientTiming(const Timing &fixed,const Timing &offered,unsigned index) {
+    if(index>=1024 || offered.reservedA[0]!=(0x80001000U|index) || offered.signalLevels>1)return false;
+    const uint64_t rounded=((fixed.pixelClock+5000)/10000)*10000;
+    if(offered.pixelClock!=rounded || offered.minPixelClock!=rounded || offered.maxPixelClock!=rounded ||
+       rounded<fixed.minPixelClock || rounded>fixed.maxPixelClock)return false;
+    auto normalized=offered;
+    normalized.reservedA[0]=fixed.reservedA[0];normalized.signalLevels=fixed.signalLevels;
+    normalized.pixelClock=fixed.pixelClock;normalized.minPixelClock=fixed.minPixelClock;normalized.maxPixelClock=fixed.maxPixelClock;
+    return !memcmp(&normalized,&fixed,sizeof(fixed));
+}
+inline bool acceptsMode(uint32_t mode,uint32_t clientMode) {
+    return mode==FixedModeID || mode==clientMode;
 }
 // Synthetic Apple enumeration descriptor derived only from the panel profile.
 // EDID wire layout reference: Linux v6.12 include/drm/drm_edid.h. This is not

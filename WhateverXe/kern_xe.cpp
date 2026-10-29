@@ -4673,6 +4673,7 @@ struct DSIFixedModeOwner {
     OSData *data {};
     XELP::DSI::Mode mode;
     XELP::DSI::AppleAdapter::Timing timing;
+    uint32_t clientMode {XELP::DSI::AppleAdapter::FixedModeID};
     bool ready {};
 };
 static DSIFixedModeOwner dsiFixedMode;
@@ -7281,7 +7282,7 @@ bool XE::releaseDSIFixedMode(IOService *fb) {
        fb->getProperty("IOFBDetailedTimings"))return false;
     auto array=o.array;auto data=o.data;
     __atomic_store_n(&o.framebuffer,static_cast<IOService *>(nullptr),__ATOMIC_RELEASE);
-    o.array=nullptr;o.data=nullptr;o.mode={};o.timing={};
+    o.array=nullptr;o.data=nullptr;o.mode={};o.timing={};o.clientMode=XELP::DSI::AppleAdapter::FixedModeID;
     OSSafeReleaseNULL(array);OSSafeReleaseNULL(data);fb->release();return true;
 }
 
@@ -7345,13 +7346,13 @@ uint32_t XE::wrapDSIGetCurrentMode(IOService *fb,int32_t *mode,int32_t *depth) {
     const bool ready=scope.lock && dsiModeTarget(fb) && dsiModeCoherent(fb) &&
         Display13FBMemory::field<uint8_t>(fb,0x1E0) && dsiNativeUpdateAllowed(fb);
     if(ready) {
-        const uint32_t fixed=XELP::DSI::AppleAdapter::FixedModeID;
+        const uint32_t fixed=dsiFixedMode.clientMode;
         memcpy(reinterpret_cast<uint8_t *>(fb)+0x4250,&fixed,sizeof(fixed));
         if(mode)*mode=fixed;
         if(depth)*depth=Display13FBMemory::field<uint32_t>(fb,0x4254);
     }
     const auto result=ready ? kIOReturnSuccess : kIOReturnNotReady;
-    recordDSIClient(fb,10,ready ? XELP::DSI::AppleAdapter::FixedModeID : 0,result);return result;
+    recordDSIClient(fb,10,ready ? dsiFixedMode.clientMode : 0,result);return result;
 }
 
 uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
@@ -7359,25 +7360,30 @@ uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
     const auto result=[&]() -> uint32_t {
         if(!dsiModeTarget(fb))return FunctionCast(wrapDSISetDetailedTimings,callbackXE->orgDSIMode[0])(fb,array);
         DSIModeScope scope(fb);if(!scope.lock || !dsiModeCoherent(fb))return kIOReturnNotReady;
-        // Observe the actual standard enumeration offer before extending ID
-        // admission. The retained hardware mode and array remain unchanged.
-        uint64_t offer[16] {1,array ? array->getCount() : 0,UINT32_MAX};
+        uint32_t client=0;uint64_t offer[16] {2,array ? array->getCount() : 0,UINT32_MAX};
         if(array && array->getCount()<=1024)for(unsigned i=0;i<array->getCount();++i) {
             auto bytes=OSDynamicCast(OSData,array->getObject(i));
             if(!bytes || bytes->getLength()!=sizeof(dsiFixedMode.timing))continue;
             const auto &t=*static_cast<const XELP::DSI::AppleAdapter::Timing *>(bytes->getBytesNoCopy());
-            if(t.horizontalActive!=dsiFixedMode.mode.width || t.verticalActive!=dsiFixedMode.mode.height)continue;
-            offer[2]=i;offer[3]=t.reservedA[0];offer[4]=t.pixelClock;
+            if(!XELP::DSI::AppleAdapter::clientTiming(dsiFixedMode.timing,t,i))continue;
+            client=t.reservedA[0];offer[2]=i;offer[3]=client;offer[4]=t.pixelClock;
             offer[5]=t.horizontalActive;offer[6]=t.horizontalBlanking;offer[7]=t.horizontalSyncOffset;offer[8]=t.horizontalSyncWidth;
             offer[9]=t.verticalActive;offer[10]=t.verticalBlanking;offer[11]=t.verticalSyncOffset;offer[12]=t.verticalSyncWidth;
             offer[13]=t.scalerFlags;offer[14]=t.horizontalScaled;offer[15]=t.verticalScaled;break;
         }
         IORegistryEntry::getRegistryRoot()->setProperty("WEXDSITimingOffer",offer,sizeof(offer));
         auto data=array && array->getCount()==1 ? OSDynamicCast(OSData,array->getObject(0)) : nullptr;
-        if(!data || data->getLength()!=sizeof(dsiFixedMode.timing) ||
-           memcmp(data->getBytesNoCopy(),&dsiFixedMode.timing,sizeof(dsiFixedMode.timing)))return kIOReturnUnsupported;
+        const bool canonical=data && data->getLength()==sizeof(dsiFixedMode.timing) &&
+            !memcmp(data->getBytesNoCopy(),&dsiFixedMode.timing,sizeof(dsiFixedMode.timing));
+        if(!client && !canonical)return kIOReturnUnsupported;
+        // Preserve the immutable native timing/array. The client ID is only
+        // an alias of that exact retained link; other offered modes fail validation.
         const auto result=FunctionCast(wrapDSISetDetailedTimings,callbackXE->orgDSIMode[0])(fb,dsiFixedMode.array);
-        return result==kIOReturnSuccess && !dsiModeCoherent(fb) ? kIOReturnNotReady : result;
+        if(result==kIOReturnSuccess) {
+            if(!dsiModeCoherent(fb))return kIOReturnNotReady;
+            if(client)dsiFixedMode.clientMode=client;
+        }
+        return result;
     }();
     recordDSIClient(fb,1,array!=nullptr,result);
     return result;
@@ -7388,8 +7394,9 @@ uint32_t XE::wrapDSIValidateMode(IOService *fb,int32_t mode,const void **descrip
         if(!dsiModeTarget(fb))return FunctionCast(wrapDSIValidateMode,callbackXE->orgDSIMode[1])(fb,mode,description,timing);
         if(description)*description=nullptr;if(timing)*timing=nullptr;
         DSIModeScope scope(fb);if(!scope.lock || !dsiModeCoherent(fb))return kIOReturnNotReady;
-        if(mode!=XELP::DSI::AppleAdapter::FixedModeID)return kIOReturnBadArgument;
-        const auto result=FunctionCast(wrapDSIValidateMode,callbackXE->orgDSIMode[1])(fb,mode,description,timing);
+        if(!XELP::DSI::AppleAdapter::acceptsMode(mode,dsiFixedMode.clientMode))return kIOReturnBadArgument;
+        const auto result=FunctionCast(wrapDSIValidateMode,callbackXE->orgDSIMode[1])(
+            fb,XELP::DSI::AppleAdapter::FixedModeID,description,timing);
         if(!result && timing && *timing!=dsiFixedMode.data->getBytesNoCopy())return kIOReturnNotReady;
         return result;
     }();
@@ -7402,7 +7409,7 @@ uint32_t XE::wrapDSIGetModes(IOService *fb,int32_t *modes) {
         if(!dsiModeTarget(fb))return FunctionCast(wrapDSIGetModes,callbackXE->orgDSIMode[2])(fb,modes);
         DSIModeScope scope(fb);if(!scope.lock || !dsiModeCoherent(fb))return kIOReturnNotReady;
         if(!modes)return kIOReturnBadArgument;
-        *modes=XELP::DSI::AppleAdapter::FixedModeID;return kIOReturnSuccess;
+        *modes=dsiFixedMode.clientMode;return kIOReturnSuccess;
     }();
     recordDSIClient(fb,3,modes!=nullptr,result);
     return result;
@@ -7421,7 +7428,7 @@ uint32_t XE::wrapDSIGetModeInformation(IOService *fb,int32_t mode,void *raw) {
     const auto result=[&]() -> uint32_t {
         if(!dsiModeTarget(fb))return FunctionCast(wrapDSIGetModeInformation,callbackXE->orgDSIMode[4])(fb,mode,raw);
         DSIModeScope scope(fb);if(!scope.lock || !dsiModeCoherent(fb))return kIOReturnNotReady;
-        if(!raw || mode!=XELP::DSI::AppleAdapter::FixedModeID)return kIOReturnBadArgument;
+        if(!raw || !XELP::DSI::AppleAdapter::acceptsMode(mode,dsiFixedMode.clientMode))return kIOReturnBadArgument;
         const auto result=FunctionCast(wrapDSIGetModeInformation,callbackXE->orgDSIMode[4])(fb,mode,raw);
         if(!result && !XELP::DSI::AppleAdapter::annotateMode(dsiFixedMode.mode,
             *static_cast<XELP::DSI::AppleAdapter::ModeInformation *>(raw)))return kIOReturnNotReady;
@@ -7542,9 +7549,11 @@ uint32_t XE::wrapDSISetDisplayMode(IOService *fb,int32_t mode,int32_t depth) {
                     static_cast<uint32_t>(depth),dsiModeTarget(fb),callbackXE->dsiResourcesReady,
                     Display13FBMemory::field<uint32_t>(fb,0x420C)};
                 IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIModeRequest",record,sizeof(record));
-                if(mode!=XELP::DSI::AppleAdapter::FixedModeID || depth || !dsiModeTarget(fb))return kIOReturnNotReady;
+                if(!XELP::DSI::AppleAdapter::acceptsMode(mode,dsiFixedMode.clientMode) || depth || !dsiModeTarget(fb))return kIOReturnNotReady;
                 if(dsiNativeUpdateAllowed(fb) && !dsiPendingTarget(fb))callbackXE->probeDSINativeBacking(fb);
-                return callbackXE->publishDSINativeMode(fb) ? kIOReturnSuccess : kIOReturnNotReady;
+                if(!callbackXE->publishDSINativeMode(fb))return kIOReturnNotReady;
+                *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(fb)+0x4250)=dsiFixedMode.clientMode;
+                return kIOReturnSuccess;
             }
         }
         return FunctionCast(wrapDSISetDisplayMode,callbackXE->orgDSIMode[5])(fb,mode,depth);

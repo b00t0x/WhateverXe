@@ -10,6 +10,16 @@ int main() {
     assert(t.verticalActive==1920&&t.verticalBlanking==82&&t.verticalSyncOffset==40&&t.verticalSyncWidth==2);
     assert(t.bitsPerColorComponent==2&&t.pixelEncoding==1&&t.numLinks==1);
     assert(!t.scalerFlags&&!t.horizontalScaled&&!t.verticalScaled&&!t.verticalBlankingExtension);
+    auto offered=t;offered.reservedA[0]=0x80001000;offered.signalLevels=1;
+    offered.pixelClock=offered.minPixelClock=offered.maxPixelClock=135260000;
+    assert(AppleAdapter::clientTiming(t,offered,0));
+    for(unsigned offset=4;offset<sizeof(offered);++offset) {
+        auto corrupt=offered;reinterpret_cast<uint8_t*>(&corrupt)[offset]^=0x80;
+        assert(!AppleAdapter::clientTiming(t,corrupt,0));
+    }
+    assert(!AppleAdapter::clientTiming(t,offered,1));
+    offered.reservedA[0]=0x80001001;assert(AppleAdapter::clientTiming(t,offered,1));
+    assert(!AppleAdapter::acceptsMode(0x80001002,0x80001001));
     uint8_t edid[128];assert(AppleAdapter::makePanelEDID(p.mode,edid));
     unsigned sum=0;for(auto b:edid)sum+=b;assert(!(sum&255));
     assert(edid[18]==1 && edid[19]==4 && edid[20]==0xA0 && edid[24]==2 && !edid[126]);
