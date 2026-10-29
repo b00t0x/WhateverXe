@@ -6712,6 +6712,15 @@ static bool dsiCachePath(OSObject *path) {
     return !port || port->getMetaClass()->getClassSize()<0x580 || Display13FBMemory::field<uint32_t>(port,0x120)==0;
 }
 
+// Called at the existing mode/disable owners, before any donor notification or
+// cursor/MMIO write. A retained panel FB remains ours even if its path fields
+// are damaged. Ambiguous objects must not escape into the normal DDI writer.
+static bool dsiLifecycleTarget(IOService *fb,OSObject *path) {
+    if(dsiModeTarget(fb) || !fb || fb->getMetaClass()->getClassSize()<0x4B90)return true;
+    const auto attached=Display13FBMemory::singlePath<OSObject *>(fb);
+    return attached!=path || dsiCachePath(attached);
+}
+
 bool XE::updateDSIBootCache(IOService *controller,IOService *fb,OSObject *path) {
     auto &c=display13FBPower;
     if(!c.lock || !controller || !fb || !path || fb->getMetaClass()->getClassSize()<0x4B90 ||
@@ -7224,6 +7233,15 @@ uint32_t XE::wrapDisplay13TCLightUp(void *controller,void *rawFB,void *rawPath,c
 
 uint32_t XE::wrapDisplay13TCSetMode(void *controller,void *fb,const void *timing) {
     auto self=callbackXE;
+    // The GOP-preserving surface adapter must replace this refusal before
+    // startup admission can open. The original sends a begin notification and
+    // writes ordinary clock/timing state before reaching LightUpEDP.
+    if(self->adlnOutputWiring.dsi) {
+        auto service=static_cast<IOService *>(fb);
+        const auto path=service && service->getMetaClass()->getClassSize()>=0x4B90 ?
+            Display13FBMemory::singlePath<OSObject *>(service) : nullptr;
+        if(dsiLifecycleTarget(service,path))return kIOReturnNotReady;
+    }
     return Display13TC::finishMode(
         [&](){return FunctionCast(wrapDisplay13TCSetMode,self->orgDisplay13TCSetMode)(controller,fb,timing);},
         [&](){reinterpret_cast<void (*)(void *,void *,uint32_t)>(self->display13TCNotify)(controller,fb,1);});
@@ -9667,6 +9685,14 @@ static bool adlnWriterMappingBound() {
 }
 
 void XE::wrapAlderLakeNDisableDisplay(IOService *controller,IOService *fb,OSObject *path,uint8_t mode) {
+	if(callbackXE->adlnOutputWiring.dsi && dsiLifecycleTarget(fb,path)) {
+		// This void callback cannot report an unsupported stop. Latch failure so
+		// resource retirement retains the live backing/leases. Do not run even
+		// the cursor prefix until the DSI stop transaction owns its rollback.
+		auto &c=display13FBPower;
+		if(c.lock){IOLockLock(c.lock);adlnFault(c.memoryFaulted,__LINE__);IOLockUnlock(c.lock);}
+		return;
+	}
 	auto &c=display13FBPower;Display13Cursor::Result result;bool selected=false;unsigned pipe=UINT32_MAX;
 	if(c.lock && controller==c.controller && fb && fb->getMetaClass()->getClassSize()>=0x4B90 && path && path->getMetaClass()->getClassSize()>=0x3730) {
 		IOLockLock(c.lock);
