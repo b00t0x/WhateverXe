@@ -14,6 +14,11 @@ struct Mode {
     uint16_t width {},hblank {},hfront {},hsync {},height {},vblank {},vfront {},vsync {},widthMM {},heightMM {};
     uint32_t htotal() const {return uint32_t(width)+hblank;}
     uint32_t vtotal() const {return uint32_t(height)+vblank;}
+    bool valid() const {
+        return clockKHz && clockKHz<=300000 && width && height && hsync && vsync &&
+            uint32_t(hfront)+hsync<hblank && uint32_t(vfront)+vsync<vblank &&
+            htotal()<=65536 && vtotal()<=65536;
+    }
 };
 struct Profile {
     ProfileStatus status {ProfileStatus::Bounds};
@@ -111,9 +116,7 @@ inline Profile parseProfile(Span input,bool allowFinalEndQuirk=false) {
     m.hfront=profileU16(t+8);m.hsync=profileU16(t+10);m.height=profileU16(t+12);
     m.vblank=profileU16(t+14);m.vfront=profileU16(t+16);m.vsync=profileU16(t+18);
     m.widthMM=profileU16(t+20);m.heightMM=profileU16(t+22);
-    if(!m.clockKHz || m.clockKHz>300000 || !m.width || !m.height || !m.hsync || !m.vsync ||
-       uint32_t(m.hfront)+m.hsync>=m.hblank || uint32_t(m.vfront)+m.vsync>=m.vblank ||
-       m.htotal()>65536 || m.vtotal()>65536)return failure;
+    if(!m.valid())return failure;
     failure.status=ProfileStatus::Backlight;
     if(backlight.size<273 || backlight.data[0]!=6)return failure;
     const auto bl=backlight.data+1+6*r.panel;

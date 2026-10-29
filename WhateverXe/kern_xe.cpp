@@ -16,6 +16,7 @@
 #include "kern_xelp_forcewake_irq.hpp"
 #include "kern_display13_boot.hpp"
 #include "kern_display13_dsi_trial.hpp"
+#include "kern_dsi_readout.hpp"
 #include "kern_display13_firmware.hpp"
 #include "kern_display13_tc_aux.hpp"
 #include "kern_display13_tc_mode.hpp"
@@ -3949,6 +3950,21 @@ void XE::adlnBootstrap(IOPCIDevice *pci) {
         if(words) {
             for(unsigned i=0;i<arrsize(regs);++i){words[2*i]=regs[i];words[2*i+1]=io.read(regs[i]);}
             pci->setProperty("WEXDisplay13DSIBoot",words,sizeof(regs)*2);
+            if(checkKernelArgument("-wex-dsi-audit")) {
+                // Decode only already collected words. Overlapping sources
+                // must agree; this summary is not a stable adoption certificate.
+                const auto cached=[&](uint32_t reg,uint32_t &value) {
+                    uint32_t bootValue=0;const bool found=AlderLakeN::value(result,reg,bootValue);
+                    for(unsigned i=0;i<arrsize(regs);++i)if(regs[i]==reg) {
+                        value=words[2*i+1];return !found || value==bootValue;
+                    }
+                    value=bootValue;return found;
+                };
+                uint32_t dssm=UINT32_MAX;cached(0x51004,dssm);
+                const uint32_t references[]={24000,19200,38400};const auto index=(dssm>>29)&7;
+                auto decoded=XELP::DSI::decodeReadout(cached,index<3?references[index]:0);
+                pci->setProperty("WEXDSIReadout",&decoded,sizeof(decoded));
+            }
             IOFree(words,sizeof(regs)*2);
         }
     }

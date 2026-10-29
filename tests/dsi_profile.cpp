@@ -46,9 +46,14 @@ int main(int argc,char **argv) {
     assert(link.htotal==0x04650437&&link.hsync==0x044F044D&&link.vtotal==0x07D1077F&&link.vsync==0x07A907A7);
     const auto pll=pllPlan(link.portKHz,19200);
     assert(pll.valid&&pll.divider==12&&pll.p==2&&pll.q==3&&pll.k==2);
-    assert((pll.fraction<<9|pll.integer)==0x34CDFB); // saved DPLL0_CFGCR0
+    assert(pll.cfg0()==0x6999FB&&pll.cfg1()==0xE84);
     const auto doubled=pllPlan(link.portKHz,38400);
     assert(doubled.valid&&doubled.integer==pll.integer&&doubled.fraction==(pll.fraction+1)/2);
+    assert(doubled.cfg0()==0x34CDFB&&doubled.cfg1()==0xE84); // saved DPLL0, 38.4 MHz + WA
+    assert(pllAFE(doubled.cfg0(),doubled.cfg1(),38400)==811529);
+    assert(pllAFE(pll.cfg0(),pll.cfg1(),19200)==811529);
+    assert(!pllAFE(doubled.cfg0(),0,38400)&&!pllAFE(doubled.cfg0(),0xE84,27000));
+    assert(!pllAFE(doubled.cfg0()|1U<<29,0xE84,38400)); // SSC outside supported profile
     assert(!pllPlan(0,19200).valid&&!pllPlan(UINT32_MAX,19200).valid&&!pllPlan(162306,27000).valid);
     for(unsigned clock=10000;clock<500000;clock+=137) {
         auto v=pllPlan(clock,24000);if(!v.valid)continue;

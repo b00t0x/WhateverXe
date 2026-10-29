@@ -13,7 +13,7 @@ inline uint32_t cappedCeil(uint32_t numerator,uint32_t denominator,uint32_t cap)
 }
 inline LinkPlan linkPlan(const Profile &p) {
     LinkPlan r;
-    if(!p.valid() || p.lanes!=4 || p.byteClock!=0 || !p.mode.clockKHz || p.mode.clockKHz>300000 ||
+    if(!p.valid() || p.lanes!=4 || p.byteClock!=0 || !p.mode.valid() ||
        p.clockPrepareZero<p.clockPrepare || p.hsPrepareZero<p.hsPrepare)return r;
     const auto &m=p.mode;
     r.afeKHz=m.clockKHz*6;r.portKHz=r.afeKHz/5;
@@ -33,7 +33,29 @@ inline LinkPlan linkPlan(const Profile &p) {
 }
 struct PLLPlan {
     bool valid {};uint32_t referenceKHz {},dcoKHz {},divider {},p {},q {},k {},integer {},fraction {};
+    uint32_t cfg0() const {return valid?(fraction<<10)|integer:0;}
+    uint32_t cfg1() const {
+        const auto pe=p==2?1U:p==3?2U:p==5?4U:p==7?8U:0;
+        const auto ke=k==1?1U:k==2?2U:k==3?4U:0;
+        return valid?(q<<10)|(q!=1?1U<<9:0)|(ke<<6)|(pe<<2):0;
+    }
 };
+// Decode the TGL/ADL Combo format (fraction starts at bit10, not the older
+// SKL WRPLL's bit9). Return AFE kHz before the DSI lane/bpp conversion.
+inline uint32_t pllAFE(uint32_t cfg0,uint32_t cfg1,uint32_t referenceKHz) {
+    if((referenceKHz!=19200 && referenceKHz!=24000 && referenceKHz!=38400) ||
+       (cfg0&~0x1FFFFFFU) || (cfg1&~0x3FFFCU))return 0;
+    const auto pe=(cfg1>>2)&15,ke=(cfg1>>6)&7;
+    const auto p=pe==1?2U:pe==2?3U:pe==4?5U:pe==8?7U:0;
+    const auto k=ke==1?1U:ke==2?2U:ke==4?3U:0;
+    const auto q=(cfg1&(1U<<9))?((cfg1>>10)&255):1;
+    if(!p || !k || !q || (k!=2 && q!=1))return 0;
+    const auto integer=cfg0&1023;auto fraction=(cfg0>>10)&32767;
+    if(referenceKHz==38400){referenceKHz=19200;fraction*=2;}
+    const auto dco=uint64_t(integer)*referenceKHz+uint64_t(fraction)*referenceKHz/32768;
+    if(dco<7998000 || dco>10000000)return 0;
+    return uint32_t(dco/(p*q*k));
+}
 inline PLLPlan pllPlan(uint32_t portKHz,uint32_t referenceKHz) {
     PLLPlan r;
     if(!portKHz || portKHz>600000 || (referenceKHz!=19200 && referenceKHz!=24000 && referenceKHz!=38400))return r;
