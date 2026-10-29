@@ -6742,14 +6742,18 @@ bool XE::processDisplay13DSIModes(KernelPatcher &patcher,size_t index,mach_vm_ad
         "__ZN21AppleIntelFramebuffer15getDisplayModesEPi",
         "__ZN21AppleIntelFramebuffer19getDisplayModeCountEv",
         "__ZN21AppleIntelFramebuffer28getInformationForDisplayModeEiP24IODisplayModeInformation",
-        "__ZN21AppleIntelFramebuffer14setDisplayModeEii"};
-    const uint32_t offsets[]={0x30D0E,0x30DE2,0x31FE6,0x32D04,0x32010,0x30F10};
+        "__ZN21AppleIntelFramebuffer14setDisplayModeEii",
+        "__ZN21AppleIntelFramebuffer21getCurrentDisplayModeEPiS0_",
+        "__ZN21AppleIntelFramebuffer13getOnlineInfoEP21AppleIntelDisplayPathPhS2_"};
+    const uint32_t offsets[]={0x30D0E,0x30DE2,0x31FE6,0x32D04,0x32010,0x30F10,0x32A88,0x2E232};
     const uint8_t entries[][16]={
         {0x55,0x48,0x89,0xE5,0x41,0x56,0x53,0x49,0x89,0xF6,0x48,0x89,0xFB,0x48,0xFF,0x05},
         {0x55,0x48,0x89,0xE5,0x41,0x56,0x53,0x48,0xFF,0x05,0x98,0x93,0x0A,0x00,0x83,0xFE},
         {0x55,0x48,0x89,0xE5,0x48,0xFF,0x05,0x8F,0x84,0x0A,0x00,0x80,0xBF,0xE0,0x01,0x00},
         {0x55,0x48,0x89,0xE5,0x48,0xFF,0x05,0xE1,0x79,0x0A,0x00,0x80,0xBF,0xE0,0x01,0x00},
         {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x53,0x48,0x83,0xEC,0x18,0x49,0x89,0xD6},
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC},
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC},
         {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC}};
     if(!display13FramebufferRequested || size<=0x32D14)return false;
     for(unsigned i=0;i<arrsize(offsets);++i) {
@@ -6762,7 +6766,9 @@ bool XE::processDisplay13DSIModes(KernelPatcher &patcher,size_t index,mach_vm_ad
         {symbols[2],wrapDSIGetModes,orgDSIMode[2]},
         {symbols[3],wrapDSIGetModeCount,orgDSIMode[3]},
         {symbols[4],wrapDSIGetModeInformation,orgDSIMode[4]},
-        {symbols[5],wrapDSISetDisplayMode,orgDSIMode[5]}};
+        {symbols[5],wrapDSISetDisplayMode,orgDSIMode[5]},
+        {symbols[6],wrapDSIGetCurrentMode,orgDSIMode[6]},
+        {symbols[7],wrapDSIGetOnlineInfo,orgDSIMode[7]}};
     const bool ready=patcher.routeMultiple(index,routes,arrsize(routes),address,size);
     patcher.clearError();return ready;
 }
@@ -6771,13 +6777,14 @@ bool XE::processDisplay13DSIModes(KernelPatcher &patcher,size_t index,mach_vm_ad
 // observe calls before the fixed-mode owner is bound; do not treat the trace
 // as admission or invoke any driver/hardware operation while collecting it.
 void XE::recordDSIClient(IOService *fb,unsigned event,uint64_t argument,uint32_t result) {
-    if(!callbackXE->adlnOutputWiring.dsi || event>=10 || !fb ||
+    if(!callbackXE->adlnOutputWiring.dsi || event>=12 || !fb ||
        fb->getMetaClass()->getClassSize()<0x4B90 || Display13FBMemory::field<uint32_t>(fb,0x1DC))return;
     DSIModeScope scope(fb);if(!scope.lock)return;
-    static uint64_t counts[10] {};
+    static uint64_t counts[12] {};
     const char *keys[] {"WEXDSIClientBind","WEXDSIClientTimings","WEXDSIClientValidate",
         "WEXDSIClientModes","WEXDSIClientCount","WEXDSIClientInfo","WEXDSIClientSetMode",
-        "WEXDSIClientAttribute","WEXDSIClientConnection","WEXDSIClientPower"};
+        "WEXDSIClientAttribute","WEXDSIClientConnection","WEXDSIClientPower",
+        "WEXDSIClientCurrent","WEXDSIClientOnline"};
     const auto count=__atomic_add_fetch(&counts[event],1ULL,__ATOMIC_RELAXED);
     uint64_t words[] {1,event,count,argument,result,
         Display13FBMemory::field<uint8_t>(fb,0x1E0),Display13FBMemory::field<uint8_t>(fb,0x44DE),
@@ -6840,6 +6847,43 @@ bool XE::releaseDSIFixedMode(IOService *fb) {
     __atomic_store_n(&o.framebuffer,static_cast<IOService *>(nullptr),__ATOMIC_RELEASE);
     o.array=nullptr;o.data=nullptr;o.mode={};o.timing={};
     OSSafeReleaseNULL(array);OSSafeReleaseNULL(data);fb->release();return true;
+}
+
+// Native online detection assumes eDP AUX/EDID. A DSI panel has no such
+// sink. Answer only for the real adopted path and its immutable fixed mode;
+// returning an empty EDID does not manufacture panel data or touch AUX power.
+uint32_t XE::wrapDSIGetOnlineInfo(IOService *fb,OSObject *path,uint8_t *online,uint8_t *edid) {
+    if(!callbackXE->adlnOutputWiring.dsi)return FunctionCast(wrapDSIGetOnlineInfo,callbackXE->orgDSIMode[7])(fb,path,online,edid);
+    if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
+    if(Display13FBMemory::field<uint32_t>(fb,0x1DC))return FunctionCast(wrapDSIGetOnlineInfo,callbackXE->orgDSIMode[7])(fb,path,online,edid);
+    if(!online || !edid)return kIOReturnBadArgument;
+    *online=0;bzero(edid,128);
+    DSIModeScope scope(fb);
+    const bool ready=scope.lock && dsiModeTarget(fb) && dsiModeCoherent(fb) &&
+        path && path==Display13FBMemory::singlePath<OSObject *>(fb) && dsiNativeUpdateAllowed(fb);
+    if(ready)*online=1;
+    const auto result=ready ? kIOReturnSuccess : kIOReturnNotReady;
+    recordDSIClient(fb,11,*online,result);return result;
+}
+
+// The donor initializes current mode to -5, then tries to recover it through
+// normal-transcoder timing conversion. DSI already has a qualified GOP and
+// fixed timing. Publish that same current mode under the native FB mutex.
+uint32_t XE::wrapDSIGetCurrentMode(IOService *fb,int32_t *mode,int32_t *depth) {
+    if(!callbackXE->adlnOutputWiring.dsi)return FunctionCast(wrapDSIGetCurrentMode,callbackXE->orgDSIMode[6])(fb,mode,depth);
+    if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
+    if(Display13FBMemory::field<uint32_t>(fb,0x1DC))return FunctionCast(wrapDSIGetCurrentMode,callbackXE->orgDSIMode[6])(fb,mode,depth);
+    DSIModeScope scope(fb);
+    const bool ready=scope.lock && dsiModeTarget(fb) && dsiModeCoherent(fb) &&
+        Display13FBMemory::field<uint8_t>(fb,0x1E0) && dsiNativeUpdateAllowed(fb);
+    if(ready) {
+        const uint32_t fixed=XELP::DSI::AppleAdapter::FixedModeID;
+        memcpy(reinterpret_cast<uint8_t *>(fb)+0x4250,&fixed,sizeof(fixed));
+        if(mode)*mode=fixed;
+        if(depth)*depth=Display13FBMemory::field<uint32_t>(fb,0x4254);
+    }
+    const auto result=ready ? kIOReturnSuccess : kIOReturnNotReady;
+    recordDSIClient(fb,10,ready ? XELP::DSI::AppleAdapter::FixedModeID : 0,result);return result;
 }
 
 uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {

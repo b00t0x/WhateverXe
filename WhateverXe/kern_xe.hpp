@@ -215,12 +215,14 @@ private:
     bool xelpBindProbe(void *controller);
 	bool display13FBTopologyHooksReady {false};
     bool display13DSIModeHooksReady {};
-    mach_vm_address_t orgDSIMode[6] {};
+    mach_vm_address_t orgDSIMode[8] {};
     bool processDisplay13DSIModes(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     static void recordDSIClient(IOService *,unsigned,uint64_t,uint32_t);
     bool releaseDSIFixedMode(IOService *);
     bool bindDSIFixedMode(IOService *,const XELP::DSI::Profile &);
     static uint32_t setDSIPortMode(OSObject *,uint32_t);
+    static uint32_t wrapDSIGetCurrentMode(IOService *,int32_t *,int32_t *);
+    static uint32_t wrapDSIGetOnlineInfo(IOService *,OSObject *,uint8_t *,uint8_t *);
     static uint32_t wrapDSISetDetailedTimings(IOService *,OSArray *);
     static uint32_t wrapDSISetDisplayMode(IOService *,int32_t,int32_t);
     static bool dsiNativeUpdateAllowed(IOService *);

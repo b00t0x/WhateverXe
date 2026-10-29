@@ -7,7 +7,7 @@ root = Path(__file__).resolve().parents[1]
 source = (root/'WhateverXe/kern_xe.cpp').read_text()
 owner = source[source.index('struct DSIFixedModeOwner {'):source.index('// AlderLakeN start bypasses')]
 names = ['recordDSIClient', 'releaseDSIFixedMode', 'bindDSIFixedMode', 'wrapDSISetDetailedTimings', 'wrapDSIValidateMode',
-         'wrapDSIGetModes', 'wrapDSIGetModeCount', 'wrapDSIGetModeInformation']
+         'wrapDSIGetModes', 'wrapDSIGetModeCount', 'wrapDSIGetModeInformation', 'wrapDSIGetCurrentMode', 'wrapDSIGetOnlineInfo']
 functions = '\n'.join(re.search(r'(?:void|bool|uint32_t) XE::'+name+r'\(.*?\n\}', source, re.S)[0] for name in names)
 if len(sys.argv) == 2:
     binary = Path(sys.argv[1]).read_bytes()
@@ -16,7 +16,7 @@ if len(sys.argv) == 2:
     offsets = [int(x, 0) for x in re.search(r'offsets\[\]=\{([^}]+)', installer)[1].split(',')]
     entries = re.search(r'entries\[\]\[16\]=\{(.*?)\};', installer, re.S)[1]
     entries = [bytes(int(x, 0) for x in row.split(',')) for row in re.findall(r'\{([^}]+)\}', entries)]
-    assert len(entries) == len(offsets) == 6
+    assert len(entries) == len(offsets) == 8
     for offset, entry in zip(offsets, entries):
         assert binary[offset:offset+16] == entry, hex(offset)
 
@@ -61,7 +61,7 @@ struct IOService:OSObject {
  ~IOService(){for(auto i:properties)i.second->release();}
 };
 struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}
- void setProperty(const char *,const void *p,unsigned n){assert(n==128);const auto w=static_cast<const uint64_t *>(p);assert(w[0]==1 && w[1]<10 && w[2]);}};
+ void setProperty(const char *,const void *p,unsigned n){assert(n==128);const auto w=static_cast<const uint64_t *>(p);assert(w[0]==1 && w[1]<12 && w[2]);}};
 struct IORecursiveLock {unsigned depth=0;};struct IOLock {unsigned depth=0;};
 void IORecursiveLockLock(IORecursiveLock *l){++l->depth;}void IORecursiveLockUnlock(IORecursiveLock *l){assert(l->depth);--l->depth;}
 void IOLockLock(IOLock *l){++l->depth;}void IOLockUnlock(IOLock *l){assert(l->depth);--l->depth;}
@@ -80,7 +80,11 @@ struct {IOLock *lock;void *controller;Display13Transcoder::Bindings transcoders;
  bool memoryFaulted=false;struct {struct {bool faulted=false;} state;} bridge;} display13FBPower;
 struct XE {
  bool display13DSIModeHooksReady=true;Display13OutputWiring adlnOutputWiring;void *adlnTopologyController=nullptr;
- uint8_t adlnPlatform[0x1c0]{};uintptr_t orgDSIMode[5]{};
+ uint8_t adlnPlatform[0x1c0]{};uintptr_t orgDSIMode[8]{};
+ static bool updateReady;
+ static bool dsiNativeUpdateAllowed(IOService *){return updateReady;}
+ static uint32_t wrapDSIGetCurrentMode(IOService *,int32_t *,int32_t *);
+ static uint32_t wrapDSIGetOnlineInfo(IOService *,OSObject *,uint8_t *,uint8_t *);
  static void recordDSIClient(IOService *,unsigned,uint64_t,uint32_t);
  bool releaseDSIFixedMode(IOService *);
  bool bindDSIFixedMode(IOService *,const XELP::DSI::Profile &);
@@ -90,6 +94,7 @@ struct XE {
  static uint32_t wrapDSIGetModeCount(IOService *);
  static uint32_t wrapDSIGetModeInformation(IOService *,int32_t,void *);
 } xe,*callbackXE=&xe;
+bool XE::updateReady=true;
 OWNER
 FUNCTIONS
 uint32_t publish(IOService *fb,OSArray *a){++calls[0];if(a)fb->setProperty("IOFBDetailedTimings",a);else {if(!clearOK)return 0;fb->removeProperty("IOFBDetailedTimings");}
@@ -104,6 +109,9 @@ uint32_t information(IOService *fb,int32_t mode,void *p){++calls[4];const void *
  auto timing=static_cast<const XELP::DSI::AppleAdapter::Timing*>(t);
  auto info=static_cast<XELP::DSI::AppleAdapter::ModeInformation*>(p);*info={};
  info->width=geometryOK?timing->horizontalActive:1;info->height=timing->verticalActive;info->depth=2;return 0;}
+unsigned nativeCurrentCalls=0,nativeOnlineCalls=0;
+uint32_t nativeCurrent(IOService *,int32_t *m,int32_t *d){++nativeCurrentCalls;if(m)*m=77;if(d)*d=3;return 7;}
+uint32_t nativeOnline(IOService *,OSObject *,uint8_t *on,uint8_t *edid){++nativeOnlineCalls;if(on)*on=9;if(edid)edid[0]=42;return 8;}
 int main(){
  using namespace XELP::DSI;using namespace AppleAdapter;IORecursiveLock fbLock;IOLock ownerLock;
  auto fb=new IOService;auto peer=new IOService;testPath=peer;
@@ -113,6 +121,8 @@ int main(){
  xe.orgDSIMode[0]=reinterpret_cast<uintptr_t>(publish);xe.orgDSIMode[1]=reinterpret_cast<uintptr_t>(validate);
  xe.orgDSIMode[2]=reinterpret_cast<uintptr_t>(modes);xe.orgDSIMode[3]=reinterpret_cast<uintptr_t>(count);
  xe.orgDSIMode[4]=reinterpret_cast<uintptr_t>(information);
+ xe.orgDSIMode[6]=reinterpret_cast<uintptr_t>(nativeCurrent);xe.orgDSIMode[7]=reinterpret_cast<uintptr_t>(nativeOnline);
+ Display13FBMemory::field<uint32_t>(peer,0x1DC)=1;
  Profile p;p.status=ProfileStatus::Valid;p.lanes=4;p.mode={135255,1080,46,22,2,1920,82,40,2,86,154};
  auto plan=linkPlan(p);auto &r=display13FBPower.bootDSI;r.status=ReadoutStatus::Complete;r.identity={0,0,0,1};
  r.afeKHz=811500;r.htotal=plan.htotal;r.hsync=plan.hsync;r.vtotal=plan.vtotal;r.vsync=plan.vsync;
@@ -122,6 +132,29 @@ int main(){
   assert(!xe.bindDSIFixedMode(fb,p) && !dsiModeTarget(fb) && alive==before && !calls[0]);}
  dataOK=arrayOK=true;display13FBPower.memoryFaulted=false;
  assert(xe.bindDSIFixedMode(fb,p) && fb->refs==2 && dsiFixedMode.array->refs==2 && dsiFixedMode.data->refs==2);
+ // Adopted DSI presence does not call native EDID/AUX or alter the EDID identity.
+ uint8_t online=0,edid[128];memset(edid,0xCC,sizeof(edid));
+ assert(!XE::wrapDSIGetOnlineInfo(fb,peer,&online,edid) && online==1 && !nativeOnlineCalls);
+ for(auto b:edid)assert(b==0);
+ assert(XE::wrapDSIGetOnlineInfo(fb,fb,&online,edid)==kIOReturnNotReady && !online);
+ assert(XE::wrapDSIGetOnlineInfo(fb,peer,nullptr,edid)==kIOReturnBadArgument);
+ int32_t current=-9,depth=-9;
+ Display13FBMemory::field<uint8_t>(fb,0x1E0)=1;
+ Display13FBMemory::field<uint32_t>(fb,0x4250)=uint32_t(-5);
+ Display13FBMemory::field<uint32_t>(fb,0x4254)=0;
+ assert(!XE::wrapDSIGetCurrentMode(fb,&current,&depth) && current==FixedModeID && !depth && !nativeCurrentCalls);
+ assert(Display13FBMemory::field<uint32_t>(fb,0x4250)==FixedModeID);
+ XE::updateReady=false;current=-9;
+ assert(XE::wrapDSIGetCurrentMode(fb,&current,&depth)==kIOReturnNotReady && current==-9);
+ assert(XE::wrapDSIGetOnlineInfo(fb,peer,&online,edid)==kIOReturnNotReady && !online);XE::updateReady=true;
+ Display13FBMemory::field<uint8_t>(fb,0x1E0)=0;
+ assert(XE::wrapDSIGetCurrentMode(fb,&current,&depth)==kIOReturnNotReady);
+ Display13FBMemory::field<uint8_t>(fb,0x1E0)=1;
+ assert(XE::wrapDSIGetCurrentMode(peer,&current,&depth)==7 && current==77 && depth==3);
+ assert(XE::wrapDSIGetOnlineInfo(peer,peer,&online,edid)==8 && online==9 && edid[0]==42);
+ xe.adlnOutputWiring.dsi=0;assert(XE::wrapDSIGetCurrentMode(fb,&current,&depth)==7);
+ assert(XE::wrapDSIGetOnlineInfo(fb,peer,&online,edid)==8);xe.adlnOutputWiring.dsi=1;
+ assert(nativeCurrentCalls==2 && nativeOnlineCalls==2);
  auto callsBeforeRepeat=calls[0];assert(xe.bindDSIFixedMode(fb,p) && calls[0]==callsBeforeRepeat && fb->refs==2 && dsiFixedMode.array->refs==2);
  auto other=p;++other.mode.clockKHz;assert(!xe.bindDSIFixedMode(fb,other));
  assert(XE::wrapDSIGetModeCount(fb)==1 && XE::wrapDSIGetModeCount(peer)==3);
