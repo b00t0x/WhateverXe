@@ -103,6 +103,7 @@ struct XE {
  static uint32_t wrapDSIBackingFree(OSObject*,void*,uint32_t);
  bool paintDSINativeBacking(unsigned);Session dsiSession;
  bool switchDSINativeSurface(){assert(gpuDepth==1 && fbDepth && !ownerDepth);return true;}
+ bool probeDSIModeGeometry(IOService*){assert(fbDepth && !ownerDepth && !gpuDepth);return true;}
  bool prepareDSINativeBacking(IOService*);bool validateDSINativeBacking();bool discardDSINativeBacking(IOService*);
  void probeDSINativeBacking(IOService*);bool dsiBackingAttempted=false;uint32_t dsiBackingStage=0;
 }*callbackXE;

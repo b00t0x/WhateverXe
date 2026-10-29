@@ -247,6 +247,8 @@ private:
     bool dsiBackingHooksReady {};
     mach_vm_address_t orgDSIBacking[2] {};
     bool processDSIBackingHooks(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    mach_vm_address_t dsiComputeGeometry {};
+    bool probeDSIModeGeometry(IOService *);
     bool prepareDSINativeBacking(IOService *);
     bool validateDSINativeBacking();
     bool paintDSINativeBacking(unsigned);

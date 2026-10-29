@@ -9,6 +9,7 @@
 
 #include "kern_dsi_native_cache.hpp"
 #include "kern_dsi_native_backing.hpp"
+#include "kern_dsi_native_mode.hpp"
 #include "kern_dsi_test_image.hpp"
 #include "kern_xe.hpp"
 #include "kern_framebuffer_donor.hpp"
@@ -5402,6 +5403,9 @@ bool XE::prepareDSINativeBacking(IOService *fb) {
         display13FBInspectMemory(fb,true,0,false).status==Display13FBMemory::Status::Complete;
     if(ready){fb->retain();owner->retain();}
     IOLockUnlock(c.lock);if(!ready)return false;
+    // Prepare the real native dimensions before handing this allocation to
+    // its later public mode owner. No mode-success or backing is published.
+    if(!probeDSIModeGeometry(fb)) {owner->release();fb->release();return false;}
     dsiBackingStage=3;
     auto record=static_cast<XELP::DSI::NativeBacking::Record *>(IOMalloc(sizeof(request)));
     if(!record){owner->release();fb->release();return false;}
@@ -5427,6 +5431,54 @@ bool XE::prepareDSINativeBacking(IOService *fb) {
         !c.memoryFaulted && !c.clockFaulted &&
         XELP::DSI::NativeBacking::allocated(*record,dsiProfile,o.proof);
     IOLockUnlock(c.lock);if(verified)dsiBackingStage=6;return verified;
+}
+
+// The first P3 step uses the donor's CPU geometry helper. The selected Y
+// layout is the same native tile-mode-3 allocation validated by the caller.
+// Retain a bounded receipt of the remaining native transaction prerequisites.
+bool XE::probeDSIModeGeometry(IOService *fb) {
+    if(!dsiComputeGeometry || !dsiModeTarget(fb) || !dsiModeCoherent(fb))return false;
+    auto path=Display13FBMemory::singlePath<OSObject *>(fb);
+    auto &c=display13FBPower;IOLockLock(c.lock);
+    auto controller=static_cast<IOService *>(c.controller);
+    uint64_t receipt[16] {1,0,Display13FBMemory::field<uint8_t>(fb,0x4A18),
+        Display13FBMemory::field<uint32_t>(fb,0x4350),Display13FBMemory::field<uint32_t>(fb,0x420C)};
+    const bool bound=path && path->getMetaClass()->getClassSize()>=0x3730 && controller &&
+        Display13FBMemory::field<IOService *>(fb,0x1D0)==controller &&
+        Display13FBMemory::field<IOService *>(path,0x32B0)==fb && !c.dsiNativeWriters &&
+        !c.memoryFaulted && !c.clockFaulted && !dsiStopAttempted;
+    uint8_t savedFB[0x30],savedPath[0x20];
+    memcpy(savedFB,reinterpret_cast<uint8_t *>(fb)+0x430C,sizeof(savedFB));
+    if(bound)memcpy(savedPath,reinterpret_cast<uint8_t *>(path)+0xF0,sizeof(savedPath));
+    const bool prepared=bound && XELP::DSI::AppleAdapter::prepareGeometry(fb,path,dsiProfile,dsiFixedMode.timing,
+        reinterpret_cast<void (*)(void *,const XELP::DSI::AppleAdapter::Timing *)>(dsiComputeGeometry));
+    receipt[1]=prepared;receipt[5]=Display13FBMemory::field<uint32_t>(fb,0x430C);
+    receipt[6]=Display13FBMemory::field<uint32_t>(fb,0x4310);receipt[7]=Display13FBMemory::field<uint32_t>(fb,0x4314);
+    receipt[8]=Display13FBMemory::field<uint32_t>(fb,0x4334);receipt[9]=Display13FBMemory::field<uint32_t>(fb,0x4338);
+    if(controller) {
+        receipt[10]=Display13FBMemory::field<OSObject *>(controller,0xC10)!=nullptr;
+        receipt[11]=Display13FBMemory::field<uint8_t>(controller,0x1BB4);
+        auto panel=Display13FBMemory::field<OSObject *>(controller,0xD0);
+        receipt[12]=panel!=nullptr;
+        if(panel && panel->getMetaClass()->getClassSize()>=0x70) {
+            receipt[13]=Display13FBMemory::field<uint8_t>(panel,0x68);
+            receipt[14]=Display13FBMemory::field<IOService *>(panel,0x50)==fb;
+        }
+        receipt[15]=Display13FBMemory::field<uint8_t>(controller,0xE53);
+    }
+    // Until FB+4348 publishes the native backing, leave public aperture
+    // dimensions untouched. Otherwise IOGraphics could map the old GOP while
+    // the identification plane reads the new tiled allocation.
+    if(bound) {
+        memcpy(reinterpret_cast<uint8_t *>(fb)+0x430C,savedFB,sizeof(savedFB));
+        memcpy(reinterpret_cast<uint8_t *>(path)+0xF0,savedPath,sizeof(savedPath));
+        const uint32_t bpp=static_cast<uint32_t>(receipt[3]);
+        memcpy(reinterpret_cast<uint8_t *>(fb)+0x4350,&bpp,sizeof(bpp));
+        *(reinterpret_cast<uint8_t *>(fb)+0x4A18)=static_cast<uint8_t>(receipt[2]);
+    }
+    IOLockUnlock(c.lock);
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIGeometry",receipt,sizeof(receipt));
+    return prepared;
 }
 
 // Called by allocateScanoutMemory's routed entry while the native display
@@ -6995,6 +7047,11 @@ bool XE::processDisplay13DSIModes(KernelPatcher &patcher,size_t index,mach_vm_ad
         const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,symbols[i],address,size);patcher.clearError();
         if(fn!=address+offsets[i] || memcmp(reinterpret_cast<void *>(fn),entries[i],16))return false;
     }
+    const char *geometry="__ZN21AppleIntelFramebuffer32computeTransformAndSetDimensionsEPK29IODetailedTimingInformationV2";
+    const auto compute=patcher.solveSymbol<mach_vm_address_t>(index,geometry,address,size);patcher.clearError();
+    const uint8_t entry[]={0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC};
+    if(compute!=address+0x31484 || memcmp(reinterpret_cast<void *>(compute),entry,sizeof(entry)))return false;
+    dsiComputeGeometry=compute;
     KernelPatcher::RouteRequest routes[]={
         {symbols[0],wrapDSISetDetailedTimings,orgDSIMode[0]},
         {symbols[1],wrapDSIValidateMode,orgDSIMode[1]},
