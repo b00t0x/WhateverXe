@@ -33,6 +33,39 @@ inline bool annotateMode(const Mode &m,ModeInformation &info) {
     info.flags|=0x02000407;
     return true;
 }
+// Synthetic Apple enumeration descriptor derived only from the panel profile.
+// EDID wire layout reference: Linux v6.12 include/drm/drm_edid.h. This is not
+// an EDID read from the panel and does not advertise DP/HDMI, HDR or DPMS.
+inline bool makePanelEDID(const Mode &m,uint8_t (&edid)[128]) {
+    memset(edid,0,sizeof(edid));
+    const uint32_t clock=(m.clockKHz+5)/10;
+    if(!m.valid() || !clock || clock>65535 || m.width>4095 || m.height>4095 ||
+       m.hblank>4095 || m.vblank>4095 || m.hfront>1023 || m.hsync>1023 ||
+       m.vfront>63 || m.vsync>63 || m.widthMM>4095 || m.heightMM>4095 ||
+       m.widthMM>2550 || m.heightMM>2550)return false;
+    const uint32_t rounded=clock*10;
+    const uint32_t error=rounded>m.clockKHz ? rounded-m.clockKHz : m.clockKHz-rounded;
+    if(uint64_t(error)*10000>m.clockKHz)return false; // retained link: at most 100 ppm
+    const uint8_t header[]={0,255,255,255,255,255,255,0};memcpy(edid,header,8);
+    edid[8]=0x5C;edid[9]=0xB8; // synthetic WEX identity, no panel serial
+    edid[10]=0x10;edid[11]=0xD5;
+    edid[18]=1;edid[19]=4;edid[20]=0xA0; // digital RGB8, transport unspecified
+    edid[21]=static_cast<uint8_t>((m.widthMM+5)/10);
+    edid[22]=static_cast<uint8_t>((m.heightMM+5)/10);
+    edid[23]=0xFF;edid[24]=2; // gamma unspecified, preferred DTD, fixed frequency
+    for(unsigned i=38;i<54;++i)edid[i]=1; // no standard/established timings
+    auto d=edid+54;d[0]=clock;d[1]=clock>>8;
+    d[2]=m.width;d[3]=m.hblank;d[4]=((m.width>>8)<<4)|(m.hblank>>8);
+    d[5]=m.height;d[6]=m.vblank;d[7]=((m.height>>8)<<4)|(m.vblank>>8);
+    d[8]=m.hfront;d[9]=m.hsync;d[10]=((m.vfront&15)<<4)|(m.vsync&15);
+    d[11]=((m.hfront>>8)<<6)|((m.hsync>>8)<<4)|((m.vfront>>4)<<2)|(m.vsync>>4);
+    d[12]=m.widthMM;d[13]=m.heightMM;d[14]=((m.widthMM>>8)<<4)|(m.heightMM>>8);
+    d[17]=0x18; // separate negative sync, matching the fixed Apple timing
+    edid[75]=0xFC;memcpy(edid+77,"WEX DSI VBT\n  ",13);
+    edid[93]=0x10;edid[111]=0x10; // unused descriptor slots
+    uint8_t sum=0;for(unsigned i=0;i<127;++i)sum+=edid[i];edid[127]=static_cast<uint8_t>(0-sum);
+    return true;
+}
 inline bool makeTiming(const Profile &p,Timing &result) {
     result={};const auto &m=p.mode;
     if(!p.valid() || !m.valid())return false;

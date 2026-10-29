@@ -61,7 +61,7 @@ struct IOService:OSObject {
  ~IOService(){for(auto i:properties)i.second->release();}
 };
 struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}
- void setProperty(const char *,const void *p,unsigned n){assert(n==128);const auto w=static_cast<const uint64_t *>(p);assert(w[0]==1 && w[1]<13 && w[2]);}};
+ void setProperty(const char *key,const void *p,unsigned n){assert(n==128);if(!strcmp(key,"WEXDSITimingOffer"))return;const auto w=static_cast<const uint64_t *>(p);assert(w[0]==1 && w[1]<13 && w[2]);}};
 struct IORecursiveLock {unsigned depth=0;};struct IOLock {unsigned depth=0;};
 void IORecursiveLockLock(IORecursiveLock *l){++l->depth;}void IORecursiveLockUnlock(IORecursiveLock *l){assert(l->depth);--l->depth;}
 void IOLockLock(IOLock *l){++l->depth;}void IOLockUnlock(IOLock *l){assert(l->depth);--l->depth;}
@@ -136,13 +136,17 @@ int main(){
   assert(!xe.bindDSIFixedMode(fb,p) && !dsiModeTarget(fb) && alive==before && !calls[0]);}
  dataOK=arrayOK=true;display13FBPower.memoryFaulted=false;
  assert(xe.bindDSIFixedMode(fb,p) && fb->refs==2 && dsiFixedMode.array->refs==2 && dsiFixedMode.data->refs==2);
- // Adopted DSI presence does not call native EDID/AUX or alter the EDID identity.
+ // Profile-derived enumeration never calls native EDID/AUX.
  uint8_t online=0,edid[128];memset(edid,0xCC,sizeof(edid));uint64_t length=128;
- assert(XE::wrapDSIDDC(fb,1,edid,&length,0,nullptr)==kIOReturnUnsupported && !length && edid[0]==0xCC && !nativeDDCCalls);
+ assert(!XE::wrapDSIDDC(fb,1,edid,&length,0,nullptr) && length==128 && edid[0]==0 && edid[1]==255 && !nativeDDCCalls);
+ uint8_t expected[128];assert(makePanelEDID(p.mode,expected) && !memcmp(edid,expected,128));
+ length=127;memset(edid,0xCC,128);assert(XE::wrapDSIDDC(fb,1,edid,&length,0,nullptr)==kIOReturnBadArgument && !length && edid[0]==0xCC);
+ length=128;assert(XE::wrapDSIDDC(fb,2,edid,&length,0,nullptr)==kIOReturnUnsupported && !length);
+ length=128;assert(XE::wrapDSIDDC(fb,1,edid,&length,1,nullptr)==kIOReturnUnsupported && !length);
  assert(XE::wrapDSIDDC(peer,2,edid,&length,1,testPath)==9 && length==128 && nativeDDCCalls==1);
  xe.adlnOutputWiring.dsi=0;assert(XE::wrapDSIDDC(fb,2,edid,&length,1,testPath)==9 && nativeDDCCalls==2);xe.adlnOutputWiring.dsi=1;
  assert(!XE::wrapDSIGetOnlineInfo(fb,peer,&online,edid) && online==1 && !nativeOnlineCalls);
- for(auto b:edid)assert(b==0);
+ assert(!memcmp(edid,expected,128));
  assert(XE::wrapDSIGetOnlineInfo(fb,fb,&online,edid)==kIOReturnNotReady && !online);
  assert(XE::wrapDSIGetOnlineInfo(fb,peer,nullptr,edid)==kIOReturnBadArgument);
  int32_t current=-9,depth=-9;

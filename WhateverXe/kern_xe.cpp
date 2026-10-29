@@ -7287,18 +7287,29 @@ bool XE::releaseDSIFixedMode(IOService *fb) {
 
 // IOGraphics also requests EDID independently of online detection. Stop at
 // the shared internal DDC entry, before it acquires AUX power on behalf of
-// the built-in panel. DSI exposes its profile through the fixed-mode API.
+// the built-in panel. Supply one synthetic profile descriptor from CPU memory.
 uint32_t XE::wrapDSIDDC(IOService *fb,uint32_t block,uint8_t *data,uint64_t *length,uint32_t flags,OSObject *path) {
     if(!callbackXE->adlnOutputWiring.dsi)return FunctionCast(wrapDSIDDC,callbackXE->orgDSIMode[8])(fb,block,data,length,flags,path);
     if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
     if(Display13FBMemory::field<uint32_t>(fb,0x1DC))return FunctionCast(wrapDSIDDC,callbackXE->orgDSIMode[8])(fb,block,data,length,flags,path);
-    if(length)*length=0;
-    recordDSIClient(fb,12,block,kIOReturnUnsupported);return kIOReturnUnsupported;
+    const auto result=[&]() -> uint32_t {
+        if(!length || !data)return kIOReturnBadArgument;
+        const auto capacity=*length;*length=0;
+        if(block!=1 || flags)return kIOReturnUnsupported;
+        if(capacity<128)return kIOReturnBadArgument;
+        DSIModeScope scope(fb);
+        if(!scope.lock || !dsiModeTarget(fb) || !dsiModeCoherent(fb) ||
+           (path && path!=Display13FBMemory::singlePath<OSObject *>(fb)))return kIOReturnNotReady;
+        uint8_t edid[128];
+        if(!XELP::DSI::AppleAdapter::makePanelEDID(dsiFixedMode.mode,edid))return kIOReturnNotReady;
+        memcpy(data,edid,sizeof(edid));*length=sizeof(edid);return kIOReturnSuccess;
+    }();
+    recordDSIClient(fb,12,block,result);return result;
 }
 
 // Native online detection assumes eDP AUX/EDID. A DSI panel has no such
 // sink. Answer only for the real adopted path and its immutable fixed mode;
-// returning an empty EDID does not manufacture panel data or touch AUX power.
+// its synthetic profile descriptor is supplied without touching AUX power.
 uint32_t XE::wrapDSIGetOnlineInfo(IOService *fb,OSObject *path,uint8_t *online,uint8_t *edid) {
     if(!callbackXE->adlnOutputWiring.dsi)return FunctionCast(wrapDSIGetOnlineInfo,callbackXE->orgDSIMode[7])(fb,path,online,edid);
     if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
@@ -7316,8 +7327,10 @@ uint32_t XE::wrapDSIGetOnlineInfo(IOService *fb,OSObject *path,uint8_t *online,u
     DSIModeScope scope(fb);
     const bool ready=scope.lock && dsiModeTarget(fb) && dsiModeCoherent(fb) &&
         path && path==Display13FBMemory::singlePath<OSObject *>(fb) && dsiNativeUpdateAllowed(fb);
-    if(ready)*online=1;
-    const auto result=ready ? kIOReturnSuccess : kIOReturnNotReady;
+    uint8_t descriptor[128];
+    const bool described=ready && XELP::DSI::AppleAdapter::makePanelEDID(dsiFixedMode.mode,descriptor);
+    if(described){*online=1;memcpy(edid,descriptor,sizeof(descriptor));}
+    const auto result=described ? kIOReturnSuccess : kIOReturnNotReady;
     recordDSIClient(fb,11,*online,result);return result;
 }
 
@@ -7346,6 +7359,20 @@ uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
     const auto result=[&]() -> uint32_t {
         if(!dsiModeTarget(fb))return FunctionCast(wrapDSISetDetailedTimings,callbackXE->orgDSIMode[0])(fb,array);
         DSIModeScope scope(fb);if(!scope.lock || !dsiModeCoherent(fb))return kIOReturnNotReady;
+        // Observe the actual standard enumeration offer before extending ID
+        // admission. The retained hardware mode and array remain unchanged.
+        uint64_t offer[16] {1,array ? array->getCount() : 0,UINT32_MAX};
+        if(array && array->getCount()<=1024)for(unsigned i=0;i<array->getCount();++i) {
+            auto bytes=OSDynamicCast(OSData,array->getObject(i));
+            if(!bytes || bytes->getLength()!=sizeof(dsiFixedMode.timing))continue;
+            const auto &t=*static_cast<const XELP::DSI::AppleAdapter::Timing *>(bytes->getBytesNoCopy());
+            if(t.horizontalActive!=dsiFixedMode.mode.width || t.verticalActive!=dsiFixedMode.mode.height)continue;
+            offer[2]=i;offer[3]=t.reservedA[0];offer[4]=t.pixelClock;
+            offer[5]=t.horizontalActive;offer[6]=t.horizontalBlanking;offer[7]=t.horizontalSyncOffset;offer[8]=t.horizontalSyncWidth;
+            offer[9]=t.verticalActive;offer[10]=t.verticalBlanking;offer[11]=t.verticalSyncOffset;offer[12]=t.verticalSyncWidth;
+            offer[13]=t.scalerFlags;offer[14]=t.horizontalScaled;offer[15]=t.verticalScaled;break;
+        }
+        IORegistryEntry::getRegistryRoot()->setProperty("WEXDSITimingOffer",offer,sizeof(offer));
         auto data=array && array->getCount()==1 ? OSDynamicCast(OSData,array->getObject(0)) : nullptr;
         if(!data || data->getLength()!=sizeof(dsiFixedMode.timing) ||
            memcmp(data->getBytesNoCopy(),&dsiFixedMode.timing,sizeof(dsiFixedMode.timing)))return kIOReturnUnsupported;

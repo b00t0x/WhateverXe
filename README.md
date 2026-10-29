@@ -148,7 +148,7 @@ The experimental `-wex-dsi-hdmi-test` argument transfers a qualified Display13 D
 
 The optional `-wex-dsi-audit` argument checks the supported MIPI DSI firmware layout and pre-native GOP state, including peer engines and the stolen-memory GGTT prefix, then publishes diagnostic summaries. It is disabled by default; the audit does not program the display or enable DSI output.
 
-The optional `-wex-dsi-adopt` argument selects experimental MIPI DSI firmware-GOP adoption on a supported panel profile. It preserves the firmware link and enables native path and fixed-mode setup; a complete accelerated desktop is not yet supported. Do not combine it with `-wex-dsi-hdmi-test`. The additional `-wex-dsi-panel-only` argument temporarily excludes external outputs from online detection and mode setting during internal-panel development; physical output wiring is unchanged. Omit it to test external coexistence.
+The optional `-wex-dsi-adopt` argument selects experimental MIPI DSI firmware-GOP adoption on a supported panel profile. It preserves the firmware link and exposes a synthetic EDID derived from the panel profile for native path and fixed-mode setup; a complete accelerated desktop is not yet supported. Do not combine it with `-wex-dsi-hdmi-test`. The additional `-wex-dsi-panel-only` argument temporarily excludes external outputs from online detection and mode setting during internal-panel development; physical output wiring is unchanged. Omit it to test external coexistence.
 
 ### Internal-panel brightness
 
