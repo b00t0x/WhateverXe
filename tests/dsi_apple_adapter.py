@@ -79,7 +79,7 @@ Binding adlnInspectPathBinding(IOService *,OSObject *path,void *,const Display13
 struct {IOLock *lock;void *controller;Display13Transcoder::Bindings transcoders;XELP::DSI::Readout bootDSI;
  bool memoryFaulted=false;struct {struct {bool faulted=false;} state;} bridge;} display13FBPower;
 struct XE {
- bool display13DSIModeHooksReady=true;Display13OutputWiring adlnOutputWiring;void *adlnTopologyController=nullptr;
+ bool dsiPanelOnly=false;bool display13DSIModeHooksReady=true;Display13OutputWiring adlnOutputWiring;void *adlnTopologyController=nullptr;
  uint8_t adlnPlatform[0x1c0]{};uintptr_t orgDSIMode[9]{};
  static bool updateReady;
  static bool dsiNativeUpdateAllowed(IOService *){return updateReady;}
@@ -159,6 +159,9 @@ int main(){
  Display13FBMemory::field<uint8_t>(fb,0x1E0)=1;
  assert(XE::wrapDSIGetCurrentMode(peer,&current,&depth)==7 && current==77 && depth==3);
  assert(XE::wrapDSIGetOnlineInfo(peer,peer,&online,edid)==8 && online==9 && edid[0]==42);
+ xe.dsiPanelOnly=true;auto beforeOnline=nativeOnlineCalls;
+ assert(!XE::wrapDSIGetOnlineInfo(peer,peer,&online,edid) && !online && !edid[0] && nativeOnlineCalls==beforeOnline);
+ assert(XE::wrapDSIGetOnlineInfo(peer,peer,nullptr,edid)==kIOReturnBadArgument);xe.dsiPanelOnly=false;
  xe.adlnOutputWiring.dsi=0;assert(XE::wrapDSIGetCurrentMode(fb,&current,&depth)==7);
  assert(XE::wrapDSIGetOnlineInfo(fb,peer,&online,edid)==8);xe.adlnOutputWiring.dsi=1;
  assert(nativeCurrentCalls==2 && nativeOnlineCalls==2);

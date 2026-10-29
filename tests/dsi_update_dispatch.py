@@ -32,7 +32,8 @@ struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegis
   assert(!strcmp(name,"WEXDSIModeRequest") && bytes==64);
   const auto words=static_cast<const uint64_t *>(data);assert(words[0]==1);
  }};
-IOService *pendingFB=nullptr;bool dsiPendingTarget(IOService *fb){return fb && pendingFB==fb;}using IOLock=int;
+IOService *pendingFB=nullptr;bool dsiPendingTarget(IOService *fb){return fb && pendingFB==fb;}using IOLock=int;struct {bool modeReady=false;} dsiPendingBacking;
+bool dsiPublishedTarget(IOService *fb){return dsiPendingTarget(fb) && dsiPendingBacking.modeReady;}
 struct IORecursiveLock {unsigned depth=0;};
 unsigned owner=0,modeCalls=0,armCalls=0,backingCalls=0;IORecursiveLock fbLock;bool expectDSI=false,endingWriter=false;
 void IOLockLock(IOLock*){assert((fbLock.depth || endingWriter) && !owner);++owner;}void IOLockUnlock(IOLock*){assert(owner==1);--owner;}
@@ -67,6 +68,7 @@ unsigned streamCalls=0;OSObject *expectedPath=nullptr;
 uint32_t nativeStream(IOService*,IOService*,OSObject*,const void*);
 struct XE {
  struct {unsigned dsi=1;}adlnOutputWiring;bool dsiStopAttempted=false,dsiResourcesReady=true;
+ bool dsiPanelOnly=false;bool publishDSINativeMode(IOService*){return false;}
  bool dsiNativeWriterHooksReady=true;uintptr_t orgDSICursor[2]{};
  uintptr_t orgDSIMode[6]{};
  static void recordDSIClient(IOService*,unsigned,uint64_t,uint32_t){};

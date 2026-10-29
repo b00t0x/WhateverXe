@@ -1,4 +1,4 @@
-// Exact donor boot cache view. This is not a register-address translator or a
+// Exact donor boot/active cache view. This is not a register-address translator or a
 // restore/programming image: DSI mode/stop must use their own adapter. DP M/N,
 // MSA, normal DDI function and unsupported HBLANK have no DSI counterpart here.
 #ifndef KERN_DSI_NATIVE_CACHE_HPP
@@ -36,6 +36,30 @@ template<class IO> bool read(IO &io,const Boot &boot,const XELPMemory::Layout &m
             v.plane[0]==0 && v.plane[1]==boot.control && v.plane[3]==boot.size &&
             v.plane[4]==boot.stride && v.plane[5]==boot.surface && !(v.scaler[0]&0x80000000U) &&
             bootUnchanged(io,boot,memory);
+    };
+    View a,b;if(!capture(a) || !capture(b) || memcmp(&a,&b,sizeof(a)))return false;
+    out=a;return true;
+}
+// Once native backing is public, plane surfaces and cursor/color caches
+// belong to ordinary native transactions. Check the retained DSI link and
+// fixed source geometry, but do not require the obsolete GOP plane image.
+template<class IO> bool readActive(IO &io,const Boot &boot,uint32_t scaler,View &out) {
+    if(!boot.complete() || boot.source.identity.pipe!=0 || (scaler && scaler!=0x68180 && scaler!=0x68280))return false;
+    const auto capture=[&](View &v) {
+        if(!sourceUnchanged(io,boot.source))return false;
+        const auto word=[&](uint32_t r,uint32_t &value) {
+            if(!io.readable(r))return false;value=io.read(r);return value!=UINT32_MAX;
+        };
+        const uint32_t timing[]={0x6B000,0,0x6B008,0x6B00C,0x6B010,0x6B014};
+        for(unsigned i=0;i<6;++i)if(timing[i] && !word(timing[i],v.timing[i]))return false;
+        if(!word(0x6001C,v.source) || !word(0x7B008,v.conf) || !word(0x70030,v.misc) ||
+           !word(0x6B028,v.shift) || !word(0x4A480,v.csc) || !word(0x70080,v.cursor))return false;
+        for(unsigned i=0;i<6;++i)if(!word(PlaneRegisters[i],v.plane[i]))return false;
+        if(scaler && (!word(scaler,v.scaler[0]) || !word(scaler-0x10,v.scaler[1]) || !word(scaler-0xC,v.scaler[2])))return false;
+        return v.timing[0]==boot.source.htotal && v.timing[2]==boot.source.hsync &&
+            v.timing[3]==boot.source.vtotal && v.timing[4]==v.timing[3] && v.timing[5]==boot.source.vsync &&
+            v.source==((boot.source.htotal&65535)<<16 | (boot.source.vtotal&65535)) &&
+            v.conf==boot.source.conf && sourceUnchanged(io,boot.source);
     };
     View a,b;if(!capture(a) || !capture(b) || memcmp(&a,&b,sizeof(a)))return false;
     out=a;return true;

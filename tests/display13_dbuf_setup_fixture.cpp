@@ -97,6 +97,7 @@ void XE::wrapDisplay13WMArmUpdate(IOService *fb){
  }
 }
 IOService *pendingBackingFB=nullptr;
+struct {bool modeReady=false;} dsiPendingBacking;
 bool dsiPendingTarget(IOService *fb){return fb && fb==pendingBackingFB;}
 // PRODUCTION_SETUP
 alignas(16) static uint8_t ctl[0x1c20],fb[3][0x4b90],paths[3][0x3730],planes[3][0x1c8];

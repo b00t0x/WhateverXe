@@ -3871,6 +3871,8 @@ Display13OutputWiring XE::display13BoardWiring(IOService *provider) {
         if(checkKernelArgument("-wex-dsi-hdmi-test") || !board.valid || board.panel ||
            (board.selected()&1) || !prepareDSIFirmware(provider))return {};
         board.dsi=1;
+        dsiPanelOnly=checkKernelArgument("-wex-dsi-panel-only");
+        IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPanelOnly",dsiPanelOnly);
         if(!board.described())return {};
     }
     return board;
@@ -4646,7 +4648,7 @@ struct DSIPendingBackingOwner {
     OSObject *pipe {},*pinnedMap {},*pinnedMemory {};
     XELP::DSI::NativeBacking::Record *record {};
     uintptr_t thread {};
-    bool allocating {},freeing {},allocated {},freed {},armed {};
+    bool allocating {},freeing {},allocated {},freed {},armed {},published {},modeReady {};
     uint32_t nativeResult {};
     Display13FBMemory::SurfaceReadout proof;
     XELP::DSI::TestImage::Result image;
@@ -4654,6 +4656,11 @@ struct DSIPendingBackingOwner {
 static DSIPendingBackingOwner dsiPendingBacking;
 static bool dsiPendingTarget(IOService *fb) {
     return fb && __atomic_load_n(&dsiPendingBacking.framebuffer,__ATOMIC_ACQUIRE)==fb;
+}
+
+static bool dsiPublishedTarget(IOService *fb) {
+    return dsiPendingTarget(fb) && dsiPendingBacking.published && dsiPendingBacking.record &&
+        Display13FBMemory::field<void *>(fb,0x4348)==dsiPendingBacking.record;
 }
 
 
@@ -5356,7 +5363,8 @@ uint32_t XE::wrapDSIBackingAllocate(OSObject *pipe,void *record,uint32_t flags) 
         o.pinnedMap->retain();o.pinnedMemory->retain();
     }
     return o.allocated && callbackXE->validateDSINativeBacking() &&
-        callbackXE->paintDSINativeBacking(0) && callbackXE->switchDSINativeSurface() ? result : kIOReturnNotReady;
+        callbackXE->paintDSINativeBacking(0) && callbackXE->switchDSINativeSurface() &&
+        callbackXE->publishDSINativeBacking() ? result : kIOReturnNotReady;
 }
 uint32_t XE::wrapDSIBackingFree(OSObject *pipe,void *record,uint32_t flags) {
     auto &o=dsiPendingBacking;
@@ -5651,6 +5659,120 @@ bool XE::switchDSINativeSurface() {
     return switched && updated;
 }
 
+// Still inside allocateScanoutMemory's GPU lock and the FB mutex. Transfer
+// the already latched allocation to the native FB without reallocating it.
+// Returning stolen slot zero changes bookkeeping only; its GGTT reservation
+// and the firmware retired-backing record remain held through Session stop.
+bool XE::publishDSINativeBacking() {
+    auto &o=dsiPendingBacking;auto &c=display13FBPower;auto fb=o.framebuffer;
+    if(!fb || !o.allocating || o.thread!=reinterpret_cast<uintptr_t>(current_thread()) ||
+       !o.armed || !o.allocated || o.published || dsiSession.state!=XELP::DSI::SessionState::Streaming ||
+       !dsiComputeGeometry || !orgAlderLakeNScanoutFree)return false;
+    IOLockLock(c.lock);
+    auto controller=static_cast<IOService *>(c.controller);auto path=Display13FBMemory::singlePath<OSObject *>(fb);
+    const auto pool=Display13FBMemory::pool(controller);
+    const auto count=Display13FBMemory::field<uint8_t>(controller,0xDF5);
+    const auto used=Display13FBMemory::field<uint8_t>(controller,0xDF4);
+    const auto mask=Display13FBMemory::field<uint32_t>(controller,0xDF0);
+    uint64_t receipt[12] {1,1,count,used,mask};
+    uint8_t savedFB[0x30],savedPath[0x20];
+    memcpy(savedFB,reinterpret_cast<uint8_t *>(fb)+0x430C,sizeof(savedFB));
+    if(!path) {IOLockUnlock(c.lock);return false;}
+    memcpy(savedPath,reinterpret_cast<uint8_t *>(path)+0xF0,sizeof(savedPath));
+    const auto oldBpp=Display13FBMemory::field<uint32_t>(fb,0x4350);
+    const auto oldTiled=Display13FBMemory::field<uint8_t>(fb,0x4A18);
+    Display13FBBootIO io{c.map};
+    bool ready=dsiResourcesReady && !dsiStopAttempted && !c.memoryFaulted && !c.clockFaulted &&
+        !c.dsiNativeWriters && !c.bridge.state.faulted && dsiModeCoherent(fb) &&
+        Display13FBMemory::allocatedSlot(controller,fb)==0 && pool.state==1 && !pool.descriptor &&
+        adlnSharedBinding(controller,o.accelerator) &&
+        XELP::DSI::NativeBacking::allocated(*o.record,dsiProfile,o.proof) &&
+        XELP::DSI::Surface::source(io,c.bootDSI) &&
+        XELP::DSI::Surface::word(io,0x701AC,UINT32_MAX,static_cast<uint32_t>(o.proof.gpu)) &&
+        XELP::DSI::AppleAdapter::prepareGeometry(fb,path,dsiProfile,dsiFixedMode.timing,
+            reinterpret_cast<void (*)(void *,const XELP::DSI::AppleAdapter::Timing *)>(dsiComputeGeometry));
+    IOLockUnlock(c.lock);
+    if(ready) {
+        // FB+4348 is still null, so the exact donor takes only the slot-zero
+        // FreeSysMem/freeFBMemory branch; no GPU free is reachable here.
+        FunctionCast(wrapAlderLakeNScanoutFree,orgAlderLakeNScanoutFree)(fb);
+        IOLockLock(c.lock);
+        receipt[5]=Display13FBMemory::field<uint8_t>(controller,0xDF4);
+        receipt[6]=Display13FBMemory::field<uint32_t>(controller,0xDF0);
+        receipt[7]=Display13FBMemory::field<uint8_t>(fb,0x4288);
+        ready=Display13FBMemory::slotReturned(count,0,used,mask,receipt[5],receipt[6],receipt[7]) &&
+            Display13FBMemory::poolReturned(pool,Display13FBMemory::pool(controller),0) &&
+            !Display13FBMemory::field<void *>(fb,0x4348) && !c.memoryFaulted &&
+            Display13FBMemory::field<uint32_t>(fb,0x4334)==o.proof.pitch;
+        if(ready) {
+            *reinterpret_cast<void **>(reinterpret_cast<uint8_t *>(fb)+0x4348)=o.record;
+            *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(fb)+0x4330)=static_cast<uint32_t>(o.proof.gpu);
+            c.pipe[0].scanout=o.proof;
+            __atomic_store_n(&c.pipe[0].publishedScanout,reinterpret_cast<uintptr_t>(o.record),__ATOMIC_RELEASE);
+            o.published=true;receipt[1]=2;
+        }
+        IOLockUnlock(c.lock);
+        if(ready)ready=updateDSIBootCache(controller,fb,path);
+    }
+    if(!o.published) {
+        IOLockLock(c.lock);
+        memcpy(reinterpret_cast<uint8_t *>(fb)+0x430C,savedFB,sizeof(savedFB));
+        memcpy(reinterpret_cast<uint8_t *>(path)+0xF0,savedPath,sizeof(savedPath));
+        memcpy(reinterpret_cast<uint8_t *>(fb)+0x4350,&oldBpp,sizeof(oldBpp));
+        *(reinterpret_cast<uint8_t *>(fb)+0x4A18)=oldTiled;
+        IOLockUnlock(c.lock);
+    }
+    receipt[8]=ready;receipt[9]=o.published;receipt[10]=o.proof.gpu;receipt[11]=o.proof.pitch;
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPublicBacking",receipt,sizeof(receipt));
+    return ready;
+}
+
+// The FB mutex spans native mode completion. These donor CPU leaves preserve
+// transaction/notification semantics; the ordinary DDI modesetter is bypassed
+// because the DSI link and the new primary plane are already running.
+bool XE::publishDSINativeMode(IOService *fb) {
+    auto &o=dsiPendingBacking;auto &c=display13FBPower;
+    if(!dsiPublishedTarget(fb) || !dsiModeCoherent(fb) || !dsiModeCPU[0] || !dsiModeCPU[1] || !dsiModeCPU[2])return false;
+    if(o.modeReady)return dsiNativeUpdateAllowed(fb);
+    uint64_t receipt[12] {1,1};
+    IOLockLock(c.lock);auto controller=static_cast<IOService *>(c.controller);
+    auto path=Display13FBMemory::singlePath<OSObject *>(fb);
+    const bool ready=!dsiStopAttempted && dsiResourcesReady && !c.memoryFaulted && !c.clockFaulted &&
+        !c.bridge.state.faulted && !c.dsiNativeWriters && dsiArmedBackingOwned(fb,path) &&
+        dsiSession.state==XELP::DSI::SessionState::Streaming &&
+        !Display13FBMemory::field<OSObject *>(controller,0xD0) &&
+        !Display13FBMemory::field<uintptr_t>(fb,0x4340) && Display13FBMemory::field<uint32_t>(fb,0x4338)==1;
+    IOLockUnlock(c.lock);
+    receipt[2]=ready;receipt[3]=ready && updateDSIBootCache(controller,fb,path);
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPublicMode",receipt,sizeof(receipt));
+    if(!receipt[2] || !receipt[3])return false;
+    uint32_t tile=2;
+    receipt[2]=o.accelerator->callPlatformFunction("EFITilingMode",true,&tile,nullptr,nullptr,nullptr);
+    if(!receipt[2]) {
+        *reinterpret_cast<uint8_t *>(reinterpret_cast<uint8_t *>(controller)+0xE53)=0;
+        *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(fb)+0x4250)=XELP::DSI::AppleAdapter::FixedModeID;
+        *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(fb)+0x4254)=0;
+        receipt[3]=reinterpret_cast<uint32_t (*)(IOService *)>(dsiModeCPU[0])(fb);
+        if(!receipt[3] && !Display13FBMemory::field<uintptr_t>(fb,0x4340)) {
+            reinterpret_cast<void (*)(IOService *,uint32_t)>(dsiModeCPU[1])(fb,0);
+            reinterpret_cast<void (*)(IOService *)>(dsiModeCPU[2])(fb);
+            IOLockLock(c.lock);
+            receipt[4]=Display13FBMemory::field<uint32_t>(fb,0x4000);
+            receipt[5]=Display13FBMemory::field<uint32_t>(fb,0x4008);
+            receipt[6]=Display13FBMemory::field<uint32_t>(fb,0x400C);
+            receipt[7]=Display13FBMemory::field<uint32_t>(fb,0x4200);
+            o.modeReady=!receipt[4] && receipt[5]==UINT32_MAX && receipt[6]==UINT32_MAX && receipt[7]==1 &&
+                !c.memoryFaulted && !c.clockFaulted && !c.bridge.state.faulted && !dsiStopAttempted &&
+                dsiArmedBackingOwned(fb,path) && dsiPublishedTarget(fb);
+            receipt[8]=o.modeReady;receipt[9]=Display13FBMemory::field<uint32_t>(fb,0x402C);
+            receipt[10]=Display13FBMemory::field<uint32_t>(fb,0x4334);receipt[11]=Display13FBMemory::field<uint32_t>(fb,0x4314);
+            IOLockUnlock(c.lock);
+        }
+    }
+    receipt[1]=2;IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPublicMode",receipt,sizeof(receipt));
+    return o.modeReady;
+}
+
 // A stopped stream may retain a native backing after partial cleanup. Its
 // ownership is distinct from the GOP pool, which stays reserved until later.
 bool XE::dsiArmedBackingOwned(IOService *fb,OSObject *path) {
@@ -5681,16 +5803,28 @@ bool XE::retireDSINativeBacking(IOService *fb,OSObject *path) {
         if(!dsiSession.stopped(proof))return false;
         dsiCleanup=dsiSession.takeCleanup();
     }
-    auto &o=dsiPendingBacking;o.armed=false;
+    auto &o=dsiPendingBacking;auto &c=display13FBPower;
+    const bool published=o.published;auto record=o.record;
+    IOLockLock(c.lock);
+    if(published && !dsiPublishedTarget(fb)) {IOLockUnlock(c.lock);return false;}
+    o.modeReady=false;
+    if(published) {
+        *reinterpret_cast<void **>(reinterpret_cast<uint8_t *>(fb)+0x4348)=nullptr;
+        __atomic_store_n(&c.pipe[0].publishedScanout,uintptr_t(0),__ATOMIC_RELEASE);
+        c.pipe[0].scanout={};o.published=false;
+    }
+    IOLockUnlock(c.lock);o.armed=false;
     if(discardDSINativeBacking(fb))return true;
-    o.armed=true;return false;
+    IOLockLock(c.lock);
+    if(published) {*reinterpret_cast<void **>(reinterpret_cast<uint8_t *>(fb)+0x4348)=record;o.published=true;}
+    o.armed=true;IOLockUnlock(c.lock);return false;
 }
 
-// P2's first real fixed-mode request tries a private identification surface
+// The first real fixed-mode request establishes an identification surface
 // while the native FB mutex is held. Retain any armed backing until stop.
-// Do this once after allocation starts;
+// Backing publication shares the native allocation serializer. Do this once after allocation starts;
 // an unavailable accelerator may be retried by a later mode request. Never
-// publish FB backing or report a WindowServer mode as established here.
+// report a WindowServer mode before its subsequent CPU completion succeeds.
 void XE::probeDSINativeBacking(IOService *fb) {
     if(dsiBackingAttempted)return;
     dsiBackingAttempted=true;
@@ -5734,7 +5868,7 @@ bool XE::discardDSINativeBacking(IOService *fb) {
         owner=o.accelerator;pipe=o.pipe;record=o.record;mapping=o.pinnedMap;memory=o.pinnedMemory;
         __atomic_store_n(&o.framebuffer,static_cast<IOService *>(nullptr),__ATOMIC_RELEASE);
         __atomic_store_n(&o.pipe,static_cast<OSObject *>(nullptr),__ATOMIC_RELEASE);
-        o.accelerator=nullptr;o.record=nullptr;o.pinnedMap=o.pinnedMemory=nullptr;__atomic_store_n(&o.thread,uintptr_t(0),__ATOMIC_RELEASE);o.allocated=o.freed=false;o.nativeResult=0;o.proof={};o.image={};
+        o.accelerator=nullptr;o.record=nullptr;o.pinnedMap=o.pinnedMemory=nullptr;__atomic_store_n(&o.thread,uintptr_t(0),__ATOMIC_RELEASE);o.allocated=o.freed=o.published=o.modeReady=false;o.nativeResult=0;o.proof={};o.image={};
     }
     IOFree(record,sizeof(XELP::DSI::NativeBacking::Record));
     if(mapping)mapping->release();if(memory)memory->release();if(pipe)pipe->release();owner->release();fb->release();return true;
@@ -7052,6 +7186,15 @@ bool XE::processDisplay13DSIModes(KernelPatcher &patcher,size_t index,mach_vm_ad
     const uint8_t entry[]={0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC};
     if(compute!=address+0x31484 || memcmp(reinterpret_cast<void *>(compute),entry,sizeof(entry)))return false;
     dsiComputeGeometry=compute;
+    const char *modeSymbols[]={"__ZN21AppleIntelFramebuffer21allocateLogicalBufferEv",
+        "__ZN21AppleIntelFramebuffer28setupInitialTransactionStateEj",
+        "__ZN21AppleIntelFramebuffer18setTransactionCapsEv"};
+    const uint32_t modeOffsets[]={0x31726,0x318E8,0x319D2};
+    for(unsigned i=0;i<3;++i) {
+        const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,modeSymbols[i],address,size);patcher.clearError();
+        if(fn!=address+modeOffsets[i] || memcmp(reinterpret_cast<void *>(fn),entry,4))return false;
+        dsiModeCPU[i]=fn;
+    }
     KernelPatcher::RouteRequest routes[]={
         {symbols[0],wrapDSISetDetailedTimings,orgDSIMode[0]},
         {symbols[1],wrapDSIValidateMode,orgDSIMode[1]},
@@ -7159,7 +7302,15 @@ uint32_t XE::wrapDSIDDC(IOService *fb,uint32_t block,uint8_t *data,uint64_t *len
 uint32_t XE::wrapDSIGetOnlineInfo(IOService *fb,OSObject *path,uint8_t *online,uint8_t *edid) {
     if(!callbackXE->adlnOutputWiring.dsi)return FunctionCast(wrapDSIGetOnlineInfo,callbackXE->orgDSIMode[7])(fb,path,online,edid);
     if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
-    if(Display13FBMemory::field<uint32_t>(fb,0x1DC))return FunctionCast(wrapDSIGetOnlineInfo,callbackXE->orgDSIMode[7])(fb,path,online,edid);
+    if(Display13FBMemory::field<uint32_t>(fb,0x1DC)) {
+        // Explicit development isolation; leave physical wiring and the
+        // ordinary external-output backend intact for coexistence testing.
+        if(callbackXE->dsiPanelOnly) {
+            if(!online || !edid)return kIOReturnBadArgument;
+            *online=0;bzero(edid,128);return kIOReturnSuccess;
+        }
+        return FunctionCast(wrapDSIGetOnlineInfo,callbackXE->orgDSIMode[7])(fb,path,online,edid);
+    }
     if(!online || !edid)return kIOReturnBadArgument;
     *online=0;bzero(edid,128);
     DSIModeScope scope(fb);
@@ -7348,12 +7499,13 @@ static bool dsiLifecycleTarget(IOService *fb,OSObject *path) {
 }
 
 // Native timing/resource setup can disable or reallocate before hwSetMode.
-// Refuse DSI here until its mode transaction owns those conditional steps.
+// DSI uses its own fixed-mode transaction to retain the adopted host link.
 uint32_t XE::wrapDSISetDisplayMode(IOService *fb,int32_t mode,int32_t depth) {
     recordDSIClient(fb,6,(uint64_t(static_cast<uint32_t>(mode))<<32)|static_cast<uint32_t>(depth),UINT32_MAX);
     const auto result=[&]() -> uint32_t {
         if(callbackXE->adlnOutputWiring.dsi) {
             if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
+            if(callbackXE->dsiPanelOnly && Display13FBMemory::field<uint32_t>(fb,0x1DC))return kIOReturnNotReady;
             DSIModeScope scope(fb);if(!scope.lock)return kIOReturnNotReady;
             if(dsiLifecycleTarget(fb,Display13FBMemory::singlePath<OSObject *>(fb))) {
                 // A bounded receipt of the real request. Keep the donor's mode
@@ -7363,9 +7515,9 @@ uint32_t XE::wrapDSISetDisplayMode(IOService *fb,int32_t mode,int32_t depth) {
                     static_cast<uint32_t>(depth),dsiModeTarget(fb),callbackXE->dsiResourcesReady,
                     Display13FBMemory::field<uint32_t>(fb,0x420C)};
                 IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIModeRequest",record,sizeof(record));
-                if(mode==XELP::DSI::AppleAdapter::FixedModeID && depth==0 && dsiModeTarget(fb) &&
-                   dsiNativeUpdateAllowed(fb))callbackXE->probeDSINativeBacking(fb);
-                return kIOReturnNotReady;
+                if(mode!=XELP::DSI::AppleAdapter::FixedModeID || depth || !dsiModeTarget(fb))return kIOReturnNotReady;
+                if(dsiNativeUpdateAllowed(fb) && !dsiPendingTarget(fb))callbackXE->probeDSINativeBacking(fb);
+                return callbackXE->publishDSINativeMode(fb) ? kIOReturnSuccess : kIOReturnNotReady;
             }
         }
         return FunctionCast(wrapDSISetDisplayMode,callbackXE->orgDSIMode[5])(fb,mode,depth);
@@ -7384,7 +7536,7 @@ bool XE::dsiNativeUpdateAllowed(IOService *fb) {
     if(!dsiLifecycleTarget(fb,path))return true;
     auto &c=display13FBPower;if(!c.lock)return false;
     IOLockLock(c.lock);
-    const bool ready=!dsiPendingTarget(fb) && !callbackXE->dsiStopAttempted && callbackXE->dsiResourcesReady &&
+    const bool ready=(!dsiPendingTarget(fb) || (dsiPublishedTarget(fb) && dsiPendingBacking.modeReady)) && !callbackXE->dsiStopAttempted && callbackXE->dsiResourcesReady &&
         !c.memoryFaulted && !c.clockFaulted && !c.bridge.state.faulted && !c.bridge.state.suspended &&
         !c.dbuf.faulted && c.pipe[0].memoryFramebuffer==fb && !c.pipe[0].destroyingPath &&
         c.transcoders.dsi0Pipe==0 && path && path->getMetaClass()->getClassSize()>=0x3730 &&
@@ -7395,11 +7547,11 @@ bool XE::dsiNativeUpdateAllowed(IOService *fb) {
     IOLockUnlock(c.lock);return ready;
 }
 
-// Owner lock held. P2 reserves pipe A for DSI even after its mapping is
+// Owner lock held. DSI reserves pipe A even after its mapping is
 // withdrawn. Late shared callbacks must not revive it or fault peer outputs.
 // An unbound/ambiguous callback cannot establish a different output owner.
 bool XE::dsiSharedWriterStopped(IOService *fb,unsigned pipe) {
-    return callbackXE->adlnOutputWiring.dsi && (dsiPendingTarget(fb) ||
+    return callbackXE->adlnOutputWiring.dsi && ((dsiPendingTarget(fb) && !dsiPendingBacking.modeReady) ||
         (callbackXE->dsiStopAttempted && (pipe==0 || pipe>=3 || dsiModeTarget(fb))));
 }
 
@@ -7655,7 +7807,8 @@ bool XE::updateDSIBootCache(IOService *controller,IOService *fb,OSObject *path) 
             }
         }
         XELP::DSI::NativeCache::View view;
-        ready=addresses && XELP::DSI::NativeCache::read(io,dsiBoot,xelpMemory,scale,view);
+        ready=addresses && (dsiPublishedTarget(fb) ? XELP::DSI::NativeCache::readActive(io,dsiBoot,scale,view) :
+            XELP::DSI::NativeCache::read(io,dsiBoot,xelpMemory,scale,view));
         if(ready)XELP::DSI::NativeCache::publish(view,path,plane,scaler);
     }
     IOLockUnlock(c.lock);return ready;
@@ -9669,7 +9822,7 @@ bool XE::wrapAlderLakeNScanoutAllocate(IOService *fb) {
 		binding=adlnInspectPathBinding(fb,Display13FBMemory::singlePath<OSObject *>(fb),callbackXE->adlnPlatform,callbackXE->adlnOutputWiring);
 		pipe=binding.pipe;
 	}
-	if(dsiSharedWriterStopped(fb,pipe)) {IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);return false;}
+	if(dsiPendingTarget(fb) || dsiSharedWriterStopped(fb,pipe)) {IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);return false;}
 	record[12]=pipe;record[13]=static_cast<uint32_t>(binding.status);record[14]=dual;
 	if(pipe<3 && !c.pipe[pipe].destroyingPath && (!dual || binding.status==TGLFBBinding::Status::Complete) &&
 		(c.bridge.bootAdopted || !pipe) && callbackXE->display13FBMemoryHooksReady && controller && c.bridge.begun &&
@@ -9737,7 +9890,7 @@ void XE::wrapAlderLakeNScanoutSetup(IOService *fb) {
 	IOWorkLoop *acquiredSwapGate=nullptr;OSObject *stopPath=nullptr;bool stopSwap=false;
 	IOLockLock(c.lock);
 	pipe=Display13FBMemory::boundPipe(c.pipe,fb);record[18]=pipe;
-	if(dsiSharedWriterStopped(fb,pipe)) {IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);return;}
+	if(dsiPendingTarget(fb) || dsiSharedWriterStopped(fb,pipe)) {IOLockUnlock(c.lock);IORecursiveLockUnlock(mutex);return;}
 	const auto binding=adlnInspectPathBinding(fb,Display13FBMemory::singlePath<OSObject *>(fb),callbackXE->adlnPlatform,callbackXE->adlnOutputWiring);
 	record[19]=static_cast<uint32_t>(binding.status);
 	if(callbackXE->display13FBMemoryHooksReady && pipe<3 && !c.pipe[pipe].destroyingPath && !c.memoryFaulted &&

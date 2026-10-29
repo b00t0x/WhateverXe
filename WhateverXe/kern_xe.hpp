@@ -245,9 +245,12 @@ private:
     static uint32_t wrapDSISetGammaTable(IOService *,uint32_t,uint32_t,uint32_t,void *,bool);
     bool dsiNativeWriterHooksReady {};
     bool dsiBackingHooksReady {};
+    bool dsiPanelOnly {};
     mach_vm_address_t orgDSIBacking[2] {};
     bool processDSIBackingHooks(KernelPatcher &,size_t,mach_vm_address_t,size_t);
-    mach_vm_address_t dsiComputeGeometry {};
+    mach_vm_address_t dsiComputeGeometry {},dsiModeCPU[3] {};
+    bool publishDSINativeBacking();
+    bool publishDSINativeMode(IOService *);
     bool probeDSIModeGeometry(IOService *);
     bool prepareDSINativeBacking(IOService *);
     bool validateDSINativeBacking();

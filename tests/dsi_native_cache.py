@@ -55,6 +55,7 @@ XELPMemory::Layout xelpMemory;bool display13Offline=false;
 void originalCache(IOService*,IOService*,OSObject*){++nativeCache;}
 void originalCRTC(IOService*,IOService*,OSObject*){++nativeCRTC;}
 #define FunctionCast(f,p) reinterpret_cast<decltype(&f)>(p)
+bool publishedBacking=false;bool dsiPublishedTarget(IOService*){return publishedBacking;}
 struct XE {
  bool dsiCacheHooksReady=true,dsiResourcesReady=true;IOService *adlnTopologyController;
  Display13OutputWiring adlnOutputWiring;alignas(8) uint8_t adlnPlatform[0x1C0]{};
@@ -109,6 +110,12 @@ int main(){
  assert(Display13FBMemory::field<uint32_t>(&path,0x18C)==0x1234 && Display13FBMemory::field<uint32_t>(&plane,0x104)==0x5001);
  assert(Display13FBMemory::field<uint32_t>(&scaler,0x48)==0x11 && Display13FBMemory::field<uint32_t>(&scaler,0x4C)==0x22);
  XE::wrapDSIGetCRTC(&controller,&fb,&path);assert(!nativeCache && !nativeCRTC && !faults);
+ auto originalRegs=io.regs;publishedBacking=true;
+ io.regs[0x7019C]=0x40400000;io.regs[0x70180]=0x94001008;io.regs[0x70188]=34;io.regs[0x70080]=0x27;
+ assert(xe.updateDSIBootCache(&controller,&fb,&path));
+ assert(Display13FBMemory::field<uint32_t>(&plane,0x120)==0x40400000 && Display13FBMemory::field<uint32_t>(&path,0x170)==0x27);
+ io.regs[0x6B000]^=1;unchanged();io.regs=originalRegs;publishedBacking=false;
+ assert(xe.updateDSIBootCache(&controller,&fb,&path));
  b.ddiRefs[0]=0;XE::wrapDSIGetCRTC(&controller,&fb,&path);assert(faults==1 && c.memoryFaulted);b.ddiRefs[0]=1;c.memoryFaulted=false;
  put(&path,0x3640,1U);put(&port,0x120,1U);XE::wrapDSIGetCRTC(&controller,&fb,&path);XE::wrapDSIUpdateCache(&controller,&fb,&path);
  assert(nativeCRTC==1 && nativeCache==1);
