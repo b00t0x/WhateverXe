@@ -5739,7 +5739,7 @@ bool XE::publishDSINativeMode(IOService *fb) {
     IOLockLock(c.lock);auto controller=static_cast<IOService *>(c.controller);
     auto path=Display13FBMemory::singlePath<OSObject *>(fb);
     const bool ready=!dsiStopAttempted && dsiResourcesReady && !c.memoryFaulted && !c.clockFaulted &&
-        !c.bridge.state.faulted && !c.dsiNativeWriters && dsiArmedBackingOwned(fb,path) &&
+        !c.bridge.state.faulted && !c.dbuf.faulted && !c.watermarkFaulted && !c.dsiNativeWriters && dsiArmedBackingOwned(fb,path) &&
         dsiSession.state==XELP::DSI::SessionState::Streaming &&
         !Display13FBMemory::field<OSObject *>(controller,0xD0) &&
         !Display13FBMemory::field<uintptr_t>(fb,0x4340) && Display13FBMemory::field<uint32_t>(fb,0x4338)==1;
@@ -5770,6 +5770,25 @@ bool XE::publishDSINativeMode(IOService *fb) {
             IOLockUnlock(c.lock);
         }
     }
+    if(o.modeReady) {
+        // Still under the native FB mutex: admit the existing DDB transaction,
+        // then require its latch before returning mode success to any client.
+        // GOP adoption may have no cursor reservation and a full primary DDB.
+        adlnSetupDBUFPipe(controller,fb,0,false);
+        IOLockLock(c.lock);
+        const auto &allocation=c.dbuf.pipe[0];const auto &pipe=c.pipe[0];
+        o.modeReady=!c.dbuf.faulted && !c.watermarkFaulted && !c.memoryFaulted && !c.clockFaulted &&
+            !c.bridge.state.faulted && !dsiStopAttempted && !pipe.wmPending &&
+            allocation.primary.start==40 && allocation.primary.end==2048 &&
+            allocation.cursor.start==0 && allocation.cursor.end==40 &&
+            pipe.wmLatch.status==Display13WM::Status::Complete && dsiPublishedTarget(fb);
+        uint64_t layout[] {1,allocation.primary.start,allocation.primary.end,allocation.cursor.start,allocation.cursor.end,
+            pipe.wmPending,static_cast<uint32_t>(pipe.wmLatch.status),static_cast<uint32_t>(pipe.wmLatch.check),
+            c.watermarkFaulted,c.dbuf.faulted,pipe.watermarkClockHz,o.modeReady};
+        IOLockUnlock(c.lock);
+        IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIModeDBUF",layout,sizeof(layout));
+    }
+    receipt[8]=o.modeReady;
     receipt[1]=2;IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPublicMode",receipt,sizeof(receipt));
     return o.modeReady;
 }
@@ -7574,7 +7593,7 @@ bool XE::dsiNativeUpdateAllowed(IOService *fb) {
     IOLockLock(c.lock);
     const bool ready=(!dsiPendingTarget(fb) || (dsiPublishedTarget(fb) && dsiPendingBacking.modeReady)) && !callbackXE->dsiStopAttempted && callbackXE->dsiResourcesReady &&
         !c.memoryFaulted && !c.clockFaulted && !c.bridge.state.faulted && !c.bridge.state.suspended &&
-        !c.dbuf.faulted && c.pipe[0].memoryFramebuffer==fb && !c.pipe[0].destroyingPath &&
+        !c.dbuf.faulted && !c.watermarkFaulted && c.pipe[0].memoryFramebuffer==fb && !c.pipe[0].destroyingPath &&
         c.transcoders.dsi0Pipe==0 && path && path->getMetaClass()->getClassSize()>=0x3730 &&
         Display13FBMemory::field<IOService *>(fb,0x1D0)==c.controller &&
         Display13FBMemory::field<IOService *>(path,0x32B0)==fb && Display13FBMemory::field<uint32_t>(path,0x3640)==0 &&

@@ -40,7 +40,7 @@ void IOLockLock(IOLock*){assert((fbLock.depth || endingWriter) && !owner);++owne
 void IORecursiveLockLock(IORecursiveLock *p){assert(!owner);++p->depth;}
 void IORecursiveLockUnlock(IORecursiveLock *p){assert(!owner && p->depth);--p->depth;}
 struct {IOLock *lock=nullptr;IOService *controller=nullptr;OSObject *dsiPort=nullptr;
- unsigned dsiNativeWriters=0;bool memoryFaulted=false,clockFaulted=false;
+ unsigned dsiNativeWriters=0;bool memoryFaulted=false,clockFaulted=false,watermarkFaulted=false;
  struct {struct {bool faulted=false,suspended=false;}state;}bridge;struct {bool faulted=false;}dbuf;
  struct {IOService *memoryFramebuffer=nullptr;bool destroyingPath=false;}pipe[3];
  Display13Transcoder::Bindings transcoders;}display13FBPower;
@@ -198,6 +198,7 @@ int main(){
  {Case c;auto before=armCalls;XE::wrapDisplay13WMArmUpdate(&c.fb);assert(armCalls==before+1 && !fbLock.depth);}
  {Case c;xe.dsiStopAttempted=true;c.refuse();}
  {Case c;xe.dsiResourcesReady=false;c.refuse();}
+ {Case c;display13FBPower.watermarkFaulted=true;c.refuse();}
  {Case c;display13FBPower.memoryFaulted=true;c.refuse();}
  {Case c;display13FBPower.bridge.state.suspended=true;c.refuse();}
  {Case c;display13FBPower.pipe[0].destroyingPath=true;c.refuse();}
