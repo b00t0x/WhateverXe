@@ -6859,6 +6859,35 @@ uint32_t XE::wrapDisplay13TCLightUp(void *controller,void *rawFB,void *rawPath,c
     const auto result=io.dp?Display13TC::lightUpDP(io,io.ddi,io.pipeIndex):Display13TC::lightUpTMDS(io,io.ddi,io.pipeIndex);
     uint32_t record[]={1,io.ddi,io.pipeIndex,uint32_t(result.stage),result.status};
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13TCLightUp",record,sizeof(record));
+    // Bounded post-LightUp readout, while the exact port/pipe leases are held.
+    // Observe only the DP-assigned TX pair; never change signal programming.
+    uint32_t link[32] {1,io.ddi,io.pipeIndex,result.status};bool captured=false;
+    IOLockLock(c.lock);
+    if(!result.status && io.dp && io.ddi>=3 && io.ddi<=6 && io.pipeIndex<3) {
+        Display13FBTCIO tc{port,io.ddi-3};Display13FBPowerIO power{c.map};Display13TC::Port p;
+        if(tc.owned(io.ddi) && c.bridge.outputHeld(power,io.ddi,io.pipeIndex) && Display13TC::Port::resolve(io.ddi,p)) {
+            const auto &mode=c.tcMode[io.ddi-3];const auto bank=io.pipeIndex*0x1000;
+            link[4]=mode.selectedMode;link[5]=mode.lanes.mask;link[6]=mode.lanes.pin;
+            link[7]=Display13FBMemory::field<uint32_t>(port,0x128);link[8]=Display13FBMemory::field<uint32_t>(port,0x124);
+            const uint32_t regs[]={p.buffer,p.ready,p.clock,p.pll,Display13TC::Clock::laneRegister(p.tc),0x44470,
+                0x60400+bank,0x60540+bank,0x46140+4*io.pipeIndex,0x70008+bank,
+                0x60030+bank,0x60034+bank,0x60040+bank,0x60044+bank};
+            for(unsigned i=0;i<arrsize(regs);++i)link[9+i]=tc.read(regs[i]);
+            for(unsigned group=0;group<2;++group) {
+                uint32_t v=0;const bool ok=Display13TC::PHY::access(tc,p,group*0x1000+0xa0,UINT32_MAX,v,false);
+                link[24+group]=ok?v:UINT32_MAX;
+            }
+            const unsigned group=mode.lanes.mask==12?1:0;
+            const uint32_t phy[]={0x2c0,0x2c4,0x2c8,0xd00};
+            for(unsigned i=0;i<arrsize(phy);++i) {
+                uint32_t v=0;const bool ok=Display13TC::PHY::access(tc,p,group*0x1000+phy[i],UINT32_MAX,v,false);
+                link[26+i]=ok?v:UINT32_MAX;
+            }
+            captured=true;
+        }
+    }
+    IOLockUnlock(c.lock);
+    if(captured){char key[40];snprintf(key,sizeof(key),"WEXDisplay13TCLink%u",io.ddi);IORegistryEntry::getRegistryRoot()->setProperty(key,link,sizeof(link));}
     return result.status;
 }
 
