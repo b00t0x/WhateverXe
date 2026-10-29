@@ -281,13 +281,18 @@ struct SurfaceReadout {
     uint64_t record {},map {},memory {},gpu {},bytes {},pitch {},refs {},kind {},flags {};
     uint64_t verifiedPages {},firstBadGPU {},expectedPhysical {},actualPTE {},reserve {};
 };
-template<class IO> SurfaceReadout inspectSurface(IO &io,const void *controller,size_t controllerBytes,
-                    const void *fb,size_t fbBytes,uintptr_t owner,uint64_t reserve,uint64_t gpuLimit,const XELPMemory::Layout &memory) {
+// Caller pins the record and native memory/map through the PTE walk. A pending
+// record need not be published into FB+4348; its existing pointer is checked
+// separately so publication during the inspection is detected.
+template<class IO> SurfaceReadout inspectSurfaceRecord(IO &io,const void *controller,size_t controllerBytes,
+                    const void *fb,size_t fbBytes,uintptr_t owner,uint64_t reserve,uint64_t gpuLimit,
+                    const XELPMemory::Layout &memory,const void *surface,const void *attached) {
     SurfaceReadout r;r.reserve=reserve;
     if(!owner || !associations(controller,controllerBytes,fb,fbBytes,owner,true)) {
         r.status=SurfaceStatus::Association;return r;
     }
-    const auto surface=field<const void *>(fb,0x4348);if(!surface)return r;
+    if(field<const void *>(fb,0x4348)!=attached) {r.status=SurfaceStatus::Association;return r;}
+    if(!surface)return r;
     uint8_t snapshot[64];memcpy(snapshot,surface,sizeof(snapshot));
     r.record=reinterpret_cast<uintptr_t>(surface);r.map=field<uintptr_t>(snapshot,0x10);
     r.memory=field<uintptr_t>(snapshot,0x18);r.gpu=field<uint64_t>(snapshot,0x20);
@@ -321,10 +326,37 @@ template<class IO> SurfaceReadout inspectSurface(IO &io,const void *controller,s
         ++r.verifiedPages;
     }
     if(!associations(controller,controllerBytes,fb,fbBytes,owner,true) ||
-       field<const void *>(fb,0x4348)!=surface || memcmp(snapshot,surface,sizeof(snapshot)) || !io.memoryReady(r.map,r.memory,owner,r.bytes)) {
+       field<const void *>(fb,0x4348)!=attached || memcmp(snapshot,surface,sizeof(snapshot)) || !io.memoryReady(r.map,r.memory,owner,r.bytes)) {
         r.status=SurfaceStatus::StateChanged;return r;
     }
     r.status=SurfaceStatus::Complete;return r;
+}
+template<class IO> SurfaceReadout inspectSurface(IO &io,const void *controller,size_t controllerBytes,
+                    const void *fb,size_t fbBytes,uintptr_t owner,uint64_t reserve,uint64_t gpuLimit,const XELPMemory::Layout &memory) {
+    const auto surface=fb && fbBytes>=0x4B90 ? field<const void *>(fb,0x4348) : nullptr;
+    return inspectSurfaceRecord(io,controller,controllerBytes,fb,fbBytes,owner,reserve,gpuLimit,memory,surface,surface);
+}
+// First DSI handoff: the real FB still owns stolen slot zero while the GPU
+// allocator owns a pending record beyond the reserved prefix. This proves
+// backing, not display-pipe ownership, serialization, or permission to arm.
+template<class IO> SurfaceReadout inspectPendingSurface(IO &io,const void *controller,size_t controllerBytes,
+                    const void *fb,size_t fbBytes,uintptr_t owner,uint64_t reserve,uint64_t gpuLimit,
+                    const XELPMemory::Layout &memory,const void *pending) {
+    SurfaceReadout failure;failure.status=SurfaceStatus::Association;
+    if(!pending || !owner || !associations(controller,controllerBytes,fb,fbBytes,owner) ||
+       allocatedSlot(controller,fb)!=0)return failure;
+    const auto before=pool(controller);
+    const auto mask=field<uint32_t>(controller,0xDF0);
+    const auto used=field<uint8_t>(controller,0xDF4),count=field<uint8_t>(controller,0xDF5);
+    if(before.state!=1 || before.descriptor || before.base || !before.bytes || (before.bytes&4095) ||
+       before.firstPage || before.pages!=before.bytes/4096 || !memory.valid ||
+       !memory.range(before.base,before.bytes,true) || before.physical!=memory.base+before.base ||
+       uint64_t(before.base)+before.bytes>reserve)return failure;
+    auto r=inspectSurfaceRecord(io,controller,controllerBytes,fb,fbBytes,owner,reserve,gpuLimit,memory,pending,nullptr);
+    if(r.status==SurfaceStatus::Complete && (allocatedSlot(controller,fb)!=0 ||
+       field<uint32_t>(controller,0xDF0)!=mask || field<uint8_t>(controller,0xDF4)!=used ||
+       field<uint8_t>(controller,0xDF5)!=count || !same(before,pool(controller))))r.status=SurfaceStatus::StateChanged;
+    return r;
 }
 template<class IO> Readout inspect(IO &io,const void *controller,size_t controllerBytes,
                                   const void *framebuffer,size_t framebufferBytes,
