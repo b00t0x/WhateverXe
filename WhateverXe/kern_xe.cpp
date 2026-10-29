@@ -6744,8 +6744,9 @@ bool XE::processDisplay13DSIModes(KernelPatcher &patcher,size_t index,mach_vm_ad
         "__ZN21AppleIntelFramebuffer28getInformationForDisplayModeEiP24IODisplayModeInformation",
         "__ZN21AppleIntelFramebuffer14setDisplayModeEii",
         "__ZN21AppleIntelFramebuffer21getCurrentDisplayModeEPiS0_",
-        "__ZN21AppleIntelFramebuffer13getOnlineInfoEP21AppleIntelDisplayPathPhS2_"};
-    const uint32_t offsets[]={0x30D0E,0x30DE2,0x31FE6,0x32D04,0x32010,0x30F10,0x32A88,0x2E232};
+        "__ZN21AppleIntelFramebuffer13getOnlineInfoEP21AppleIntelDisplayPathPhS2_",
+        "__ZN21AppleIntelFramebuffer13fbGetDDCBlockEjPhPyjP21AppleIntelDisplayPath"};
+    const uint32_t offsets[]={0x30D0E,0x30DE2,0x31FE6,0x32D04,0x32010,0x30F10,0x32A88,0x2E232,0x2F1B4};
     const uint8_t entries[][16]={
         {0x55,0x48,0x89,0xE5,0x41,0x56,0x53,0x49,0x89,0xF6,0x48,0x89,0xFB,0x48,0xFF,0x05},
         {0x55,0x48,0x89,0xE5,0x41,0x56,0x53,0x48,0xFF,0x05,0x98,0x93,0x0A,0x00,0x83,0xFE},
@@ -6754,7 +6755,8 @@ bool XE::processDisplay13DSIModes(KernelPatcher &patcher,size_t index,mach_vm_ad
         {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x53,0x48,0x83,0xEC,0x18,0x49,0x89,0xD6},
         {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC},
         {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC},
-        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC}};
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC},
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x50,0x44,0x89}};
     if(!display13FramebufferRequested || size<=0x32D14)return false;
     for(unsigned i=0;i<arrsize(offsets);++i) {
         const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,symbols[i],address,size);patcher.clearError();
@@ -6768,7 +6770,8 @@ bool XE::processDisplay13DSIModes(KernelPatcher &patcher,size_t index,mach_vm_ad
         {symbols[4],wrapDSIGetModeInformation,orgDSIMode[4]},
         {symbols[5],wrapDSISetDisplayMode,orgDSIMode[5]},
         {symbols[6],wrapDSIGetCurrentMode,orgDSIMode[6]},
-        {symbols[7],wrapDSIGetOnlineInfo,orgDSIMode[7]}};
+        {symbols[7],wrapDSIGetOnlineInfo,orgDSIMode[7]},
+        {symbols[8],wrapDSIDDC,orgDSIMode[8]}};
     const bool ready=patcher.routeMultiple(index,routes,arrsize(routes),address,size);
     patcher.clearError();return ready;
 }
@@ -6777,14 +6780,14 @@ bool XE::processDisplay13DSIModes(KernelPatcher &patcher,size_t index,mach_vm_ad
 // observe calls before the fixed-mode owner is bound; do not treat the trace
 // as admission or invoke any driver/hardware operation while collecting it.
 void XE::recordDSIClient(IOService *fb,unsigned event,uint64_t argument,uint32_t result) {
-    if(!callbackXE->adlnOutputWiring.dsi || event>=12 || !fb ||
+    if(!callbackXE->adlnOutputWiring.dsi || event>=13 || !fb ||
        fb->getMetaClass()->getClassSize()<0x4B90 || Display13FBMemory::field<uint32_t>(fb,0x1DC))return;
     DSIModeScope scope(fb);if(!scope.lock)return;
-    static uint64_t counts[12] {};
+    static uint64_t counts[13] {};
     const char *keys[] {"WEXDSIClientBind","WEXDSIClientTimings","WEXDSIClientValidate",
         "WEXDSIClientModes","WEXDSIClientCount","WEXDSIClientInfo","WEXDSIClientSetMode",
         "WEXDSIClientAttribute","WEXDSIClientConnection","WEXDSIClientPower",
-        "WEXDSIClientCurrent","WEXDSIClientOnline"};
+        "WEXDSIClientCurrent","WEXDSIClientOnline","WEXDSIClientDDC"};
     const auto count=__atomic_add_fetch(&counts[event],1ULL,__ATOMIC_RELAXED);
     uint64_t words[] {1,event,count,argument,result,
         Display13FBMemory::field<uint8_t>(fb,0x1E0),Display13FBMemory::field<uint8_t>(fb,0x44DE),
@@ -6847,6 +6850,17 @@ bool XE::releaseDSIFixedMode(IOService *fb) {
     __atomic_store_n(&o.framebuffer,static_cast<IOService *>(nullptr),__ATOMIC_RELEASE);
     o.array=nullptr;o.data=nullptr;o.mode={};o.timing={};
     OSSafeReleaseNULL(array);OSSafeReleaseNULL(data);fb->release();return true;
+}
+
+// IOGraphics also requests EDID independently of online detection. Stop at
+// the shared internal DDC entry, before it acquires AUX power on behalf of
+// the built-in panel. DSI exposes its profile through the fixed-mode API.
+uint32_t XE::wrapDSIDDC(IOService *fb,uint32_t block,uint8_t *data,uint64_t *length,uint32_t flags,OSObject *path) {
+    if(!callbackXE->adlnOutputWiring.dsi)return FunctionCast(wrapDSIDDC,callbackXE->orgDSIMode[8])(fb,block,data,length,flags,path);
+    if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
+    if(Display13FBMemory::field<uint32_t>(fb,0x1DC))return FunctionCast(wrapDSIDDC,callbackXE->orgDSIMode[8])(fb,block,data,length,flags,path);
+    if(length)*length=0;
+    recordDSIClient(fb,12,block,kIOReturnUnsupported);return kIOReturnUnsupported;
 }
 
 // Native online detection assumes eDP AUX/EDID. A DSI panel has no such
