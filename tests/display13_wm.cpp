@@ -358,14 +358,23 @@ int main() {
         assert(latch(wrongWM,wrongWM.snapshot(p)).status==Status::Readback);
         LatchIO wrongLine(p);wrongLine.moveToPipe(pipe);wrongLine.regs[0x45270+4*pipe]=118;
         assert(latch(wrongLine,wrongLine.snapshot(p)).status==Status::Readback);
-        // The diagnostic must retain the rejecting branch and the values
-        // already consumed by it, including pipe C, without probing farther.
+        // Reconnect keeps the old SURF while native WM/scaler flushes precede
+        // plane enable. A nonzero address cannot certify an active scanout.
         LatchIO disabledPlane(p);disabledPlane.moveToPipe(pipe);
         disabledPlane.regs[0x70180+0x1000*pipe]&=~Enabled;
         const auto controls=latch(disabledPlane,disabledPlane.snapshot(p));
-        assert(controls.status==Status::Conflict && controls.check==LatchCheck::Controls &&
+        assert(controls.status==Status::Unavailable && controls.check==LatchCheck::AwaitingScanout &&
             controls.pipeControl==0xC0000000 && controls.planeControl==0x04000000 &&
-            !controls.cursorControl && disabledPlane.reads.back()==0x70080+0x1000*pipe && disabledPlane.writes.empty());
+            !controls.cursorControl && disabledPlane.writes.empty() && !disabledPlane.elapsed && controls.frameAfter==0);
+        disabledPlane.regs[0x70280+0x1000*pipe]=Enabled;
+        assert(latch(disabledPlane,disabledPlane.snapshot(p)).status==Status::Conflict);
+        disabledPlane.regs[0x70280+0x1000*pipe]=0;
+        disabledPlane.regs[0x70180+0x1000*pipe]|=Enabled;
+        disabledPlane.frozen=true;
+        assert(latch(disabledPlane,disabledPlane.snapshot(p)).status==Status::CommitTimeout);
+        disabledPlane.frozen=false;disabledPlane.elapsed=0;
+        disabledPlane.regs[0x701AC+0x1000*pipe]=0;
+        assert(latch(disabledPlane,disabledPlane.snapshot(p)).status==Status::Complete);
         // Native scaler flush before the first attached scanout: timing and
         // WM are programmed, but the primary remains disabled and SURF is 0.
         // This is pending, not success; a later enabled surface must earn the

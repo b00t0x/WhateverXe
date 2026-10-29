@@ -345,13 +345,13 @@ template<class IO> Latch latch(IO &io,const Snapshot &s) {
         if(!Display13FBIRQ::powered(power,s.pipeIndex)) {r.status=Status::Power;return r;}
         const auto pipe=io.read(0x70008+bank),plane=io.read(0x70180+bank),cursor=io.read(0x70080+bank);
         r.check=LatchCheck::Controls;r.pipeControl=pipe;r.planeControl=plane;r.cursorControl=cursor;
-        // Native enablePlane may return before any scanout is attached, while
-        // programPipeScaler still flushes a zero SURF trigger via armUpdate.
-        // A disabled primary with no intended surface is not a live latch to
-        // prove yet, even if the native cursor becomes active first. Keep
-        // WM/DDB pending; never retire storage or certify the
-        // shared clock until a later real plane/surface update passes below.
-        const bool preparing=plane!=UINT32_MAX && !(plane&Enabled) && !s.primarySurface;
+        // Native enablePlane/scaler can flush WM before enabling scanout.
+        // Reconnect may retain a nonzero SURF from the previous path, so a
+        // surface address alone cannot distinguish this from initial setup.
+        // A disabled primary has no live latch to prove, even if the cursor
+        // is already active. Keep WM/DDB pending and the shared clock
+        // unqualified until a later enabled plane passes the full proof.
+        const bool preparing=plane!=UINT32_MAX && !(plane&Enabled);
         if(pipe==UINT32_MAX || plane==UINT32_MAX || cursor==UINT32_MAX || (pipe&0xC0000000)!=0xC0000000 ||
            (!preparing && (!(plane&Enabled) || !supportedRGBControl(plane) || (((plane>>10)&7)==4)!=s.primary->yTiled)) ||
            bool(cursor&0x27)!=s.cursorActive || (s.cursorActive && !cursorMatches(cursor,s.cursor->width))) {r.status=Status::Conflict;return r;}
