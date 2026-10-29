@@ -5460,6 +5460,7 @@ bool XE::processDisplay13Framebuffer(KernelPatcher &patcher,size_t index,mach_vm
 	IORegistryEntry::getRegistryRoot()->setProperty("N97FBGTTHooksReady",display13FBGTTHooksReady);
 	display13FBTopologyHooksReady=processDisplay13FramebufferTopology(patcher,index,address,size);
     display13DSIModeHooksReady=processDisplay13DSIModes(patcher,index,address,size);
+    dsiBootProbeReady=processDisplay13DSIBoot(patcher,index,address,size);
 	IORegistryEntry::getRegistryRoot()->setProperty("N97FBTopologyHooksReady",display13FBTopologyHooksReady);
  using C=XELP::DisplayContract;const auto installed=display13Available();
  display13FBPowerBackendReady=C{C::Power13,installed}.ready();
@@ -6679,6 +6680,49 @@ bool XE::wrapAlderLakeNGetOSInformation(IOService *controller) {
 	controller->setProperty("N97FBConnectorPolicy",copy+0x20,24*Display13FBTopology::Ports);
 	controller->setProperty("N97FBDMCPolicy",dcPolicy,sizeof(dcPolicy));
 	return true;
+}
+
+bool XE::processDisplay13DSIBoot(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
+    const char *symbol="__ZN31AppleIntelFramebufferController13probeBootPipeEPbPN17AppleIntelPortHAL3DDIE";
+    const uint8_t entry[]={0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x50,0x49,0x89};
+    // setupBootDisplay consumes the returned pipe, builtin bool and DDI before
+    // allocating the real native path. Do not replace that allocation with a
+    // fabricated path. Its DSI cache/stop adapters remain separate prerequisites.
+    const uint8_t call[]={0xE8,0xA7,0x1D,0x00,0x00};
+    if(!display13FramebufferRequested || size<=0x455E8)return false;
+    const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,symbol,address,size);patcher.clearError();
+    if(fn!=address+0x453D6 || memcmp(reinterpret_cast<void *>(fn),entry,sizeof(entry)) ||
+       memcmp(reinterpret_cast<void *>(address+0x4362A),call,sizeof(call)))return false;
+    KernelPatcher::RouteRequest route(symbol,wrapDSIBootProbe,orgDSIBootProbe);
+    const bool ready=patcher.routeMultiple(index,&route,1,address,size);patcher.clearError();return ready;
+}
+
+uint32_t XE::wrapDSIBootProbe(IOService *controller,bool *builtin,uint32_t *ddi) {
+    auto self=callbackXE;
+    if(!self->adlnOutputWiring.dsi)
+        return FunctionCast(wrapDSIBootProbe,self->orgDSIBootProbe)(controller,builtin,ddi);
+    // Failure must not leak an old builtin/DDI result to setupBootDisplay.
+    if(builtin)*builtin=false;if(ddi)*ddi=UINT32_MAX;
+    auto &c=display13FBPower;
+    if(!self->dsiBootProbeReady || display13Offline || !c.lock || !controller ||
+       controller->getMetaClass()->getClassSize()<0x1C20 ||
+       !__atomic_load_n(&self->dsiResourcesReady,__ATOMIC_ACQUIRE))return 0xFFFF;
+    IOLockLock(c.lock);Display13FBBootIO io{c.map};
+    auto port=c.dsiPort;
+    const auto config=port && port->getMetaClass()->getClassSize()>=0x6B0 ?
+        Display13FBMemory::field<uint32_t *>(port,0x548) : nullptr;
+    const bool valid=c.map && self->adlnOutputWiring.dsi==1 && controller==c.controller &&
+        controller==self->adlnTopologyController && c.transcoders.dsi0Pipe==0 &&
+        !c.memoryFaulted && !c.clockFaulted && !c.bridge.state.faulted && !c.bridge.state.suspended &&
+        c.access && Display13FBTopology::bound(self->adlnPlatform,config,0) &&
+        self->adlnOutputWiring.matches(config) && config[0]==0 &&
+        Display13FBMemory::field<uint32_t>(port,0x120)==0 &&
+        Display13FBMemory::field<uint32_t>(port,0x550)==1 &&
+        Display13FBMemory::field<void *>(port,0x578)==c.access &&
+        self->dsiBoot.complete() && c.bootDSI.sameSource(self->dsiBoot.source) &&
+        c.bridge.outputHeld(io,0,0) && XELP::DSI::bootUnchanged(io,self->dsiBoot,xelpMemory);
+    if(valid){if(builtin)*builtin=true;if(ddi)*ddi=0;}
+    IOLockUnlock(c.lock);return valid?0U:0xFFFFU;
 }
 
 uint32_t XE::wrapDisplay13ProbeMode(OSObject *port) {

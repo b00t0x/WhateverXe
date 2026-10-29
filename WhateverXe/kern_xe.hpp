@@ -139,6 +139,10 @@ private:
     bool dsiResourcesReady {};
     bool bindDSIResources(IOService *);
     static uint32_t wrapDisplay13ProbeMode(OSObject *);
+    bool dsiBootProbeReady {};
+    mach_vm_address_t orgDSIBootProbe {};
+    bool processDisplay13DSIBoot(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    static uint32_t wrapDSIBootProbe(IOService *,bool *,uint32_t *);
     // Render additionally requires the native GT resource certificate.
     bool adlnNativeReady {false};
 	bool display13FramebufferRequested {false};
