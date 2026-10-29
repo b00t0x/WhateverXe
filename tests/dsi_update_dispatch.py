@@ -68,6 +68,7 @@ struct XE {
  struct {unsigned dsi=1;}adlnOutputWiring;bool dsiStopAttempted=false,dsiResourcesReady=true;
  bool dsiNativeWriterHooksReady=true;uintptr_t orgDSICursor[2]{};
  uintptr_t orgDSIMode[6]{};
+ static void recordDSIClient(IOService*,unsigned,uint64_t,uint32_t){};
  uintptr_t orgDSIAttributes[4]{};
  static uint32_t wrapDSISetStream(IOService*,IOService*,OSObject*,const void*);
  static uint32_t wrapDSISetAttribute(IOService*,uint32_t,uintptr_t);

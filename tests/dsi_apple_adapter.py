@@ -6,9 +6,9 @@ import hashlib, re, subprocess, sys, tempfile
 root = Path(__file__).resolve().parents[1]
 source = (root/'WhateverXe/kern_xe.cpp').read_text()
 owner = source[source.index('struct DSIFixedModeOwner {'):source.index('// AlderLakeN start bypasses')]
-names = ['releaseDSIFixedMode', 'bindDSIFixedMode', 'wrapDSISetDetailedTimings', 'wrapDSIValidateMode',
+names = ['recordDSIClient', 'releaseDSIFixedMode', 'bindDSIFixedMode', 'wrapDSISetDetailedTimings', 'wrapDSIValidateMode',
          'wrapDSIGetModes', 'wrapDSIGetModeCount', 'wrapDSIGetModeInformation']
-functions = '\n'.join(re.search(r'(?:bool|uint32_t) XE::'+name+r'\(.*?\n\}', source, re.S)[0] for name in names)
+functions = '\n'.join(re.search(r'(?:void|bool|uint32_t) XE::'+name+r'\(.*?\n\}', source, re.S)[0] for name in names)
 if len(sys.argv) == 2:
     binary = Path(sys.argv[1]).read_bytes()
     assert hashlib.sha256(binary).hexdigest() == 'c004fc1ac9ee4157e2e12736f40fa6639bde025a279326beeb9dd48c9b445731'
@@ -60,6 +60,8 @@ struct IOService:OSObject {
  void removeProperty(const char *k){auto i=properties.find(k);if(i!=properties.end()){i->second->release();properties.erase(i);}}
  ~IOService(){for(auto i:properties)i.second->release();}
 };
+struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}
+ void setProperty(const char *,const void *p,unsigned n){assert(n==128);const auto w=static_cast<const uint64_t *>(p);assert(w[0]==1 && w[1]<10 && w[2]);}};
 struct IORecursiveLock {unsigned depth=0;};struct IOLock {unsigned depth=0;};
 void IORecursiveLockLock(IORecursiveLock *l){++l->depth;}void IORecursiveLockUnlock(IORecursiveLock *l){assert(l->depth);--l->depth;}
 void IOLockLock(IOLock *l){++l->depth;}void IOLockUnlock(IOLock *l){assert(l->depth);--l->depth;}
@@ -79,6 +81,7 @@ struct {IOLock *lock;void *controller;Display13Transcoder::Bindings transcoders;
 struct XE {
  bool display13DSIModeHooksReady=true;Display13OutputWiring adlnOutputWiring;void *adlnTopologyController=nullptr;
  uint8_t adlnPlatform[0x1c0]{};uintptr_t orgDSIMode[5]{};
+ static void recordDSIClient(IOService *,unsigned,uint64_t,uint32_t);
  bool releaseDSIFixedMode(IOService *);
  bool bindDSIFixedMode(IOService *,const XELP::DSI::Profile &);
  static uint32_t wrapDSISetDetailedTimings(IOService *,OSArray *);
