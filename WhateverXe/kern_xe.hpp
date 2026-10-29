@@ -9,6 +9,7 @@
 #define kern_xe_hpp
 
 #include "kern_tgl_tc_boot.hpp"
+#include "kern_dsi_boot.hpp"
 #include "kern_tgl_tc_native.hpp"
 #include "kern_tgl_native_fia.hpp"
 #include "kern_tgl_hdmi_wiring.hpp"
@@ -131,6 +132,10 @@ private:
     // Display handoff needs GOP/GGTT, mapper and aperture qualification,
     // independently of GT fuses or an accelerator being allowed to start.
     bool display13BootReady {false};
+    OSData *dsiFirmware {}; // Private immutable copy backing profile/sequence spans.
+    XELP::DSI::Profile dsiProfile;
+    XELP::DSI::Boot dsiBoot;
+    bool prepareDSIFirmware(IOService *);
     // Render additionally requires the native GT resource certificate.
     bool adlnNativeReady {false};
 	bool display13FramebufferRequested {false};

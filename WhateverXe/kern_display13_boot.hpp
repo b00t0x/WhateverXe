@@ -3,6 +3,7 @@
 #ifndef KERN_DISPLAY13_BOOT_HPP
 #define KERN_DISPLAY13_BOOT_HPP
 #include "kern_alderlake_n.hpp"
+#include "kern_dsi_readout.hpp"
 #include "kern_xelp_gop_stop.hpp"
 #include "kern_display13_fb_irq.hpp"
 #include "kern_display13_fb_topology.hpp"
@@ -56,17 +57,19 @@ struct UnusedTCResult {
     uint32_t cleared {},writes {},ddi {},buffer {},ready {},clock {},pll {},gate {};
 };
 template<class IO> UnusedTCResult releaseUnusedTC(IO &io,const AlderLakeN::DisplayReadout &boot,
-                                                bool admitted,const Display13HDMIWiring &w) {
+                                                bool admitted,const Display13HDMIWiring &w,const XELP::DSI::Readout *dsi=nullptr) {
     UnusedTCResult r;
     if(!admitted)return r;
     r.status=Status::Topology;
-    if(boot.status!=AlderLakeN::ReadoutStatus::Complete || boot.activePipes!=1 ||
+    if((w.dsi && !dsi) || boot.status!=AlderLakeN::ReadoutStatus::Complete || boot.activePipes!=(dsi?0U:1U) ||
+       (dsi && (w.dsi!=1 || dsi->identity.pipe!=0 || !XELP::DSI::sourceUnchanged(io,*dsi))) ||
        !(boot.poweredPipes&1) || !Display13FBTopology::multiOutputWiring(w))return r;
     uint32_t power=0,auxPower=0;
     if(!AlderLakeN::value(boot,0x45404,power) || (power&5)!=5 ||
        !AlderLakeN::value(boot,0x45444,auxPower))return r;
     uint32_t gated=0;
     const auto stable=[&] {
+        if(dsi && !XELP::DSI::sourceUnchanged(io,*dsi))return false;
         for(unsigned i=0;i<boot.count;++i) {
             const auto x=boot.registers[i];
             if(x.offset==0x4500C || x.offset==0x70040 || x.offset==0x71040 || x.offset==0x72040)continue;

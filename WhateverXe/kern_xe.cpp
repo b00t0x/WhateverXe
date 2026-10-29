@@ -3860,6 +3860,18 @@ Display13OutputWiring XE::display13BoardWiring(IOService *provider) {
         wiring?wiring->getLength():0,firmwarePorts,3);
 }
 
+bool XE::prepareDSIFirmware(IOService *provider) {
+    auto source=provider ? OSDynamicCast(OSData,provider->getProperty("TGLVBT")) : nullptr;
+    if(!source || !source->getLength() || source->getLength()>65536)return false;
+    if(dsiFirmware)return dsiProfile.valid() && dsiFirmware->getLength()==source->getLength() &&
+        !memcmp(dsiFirmware->getBytesNoCopy(),source->getBytesNoCopy(),source->getLength());
+    auto copy=OSData::withBytes(source->getBytesNoCopy(),source->getLength());
+    if(!copy)return false;
+    auto parsed=XELP::DSI::parseProfile({static_cast<const uint8_t *>(copy->getBytesNoCopy()),copy->getLength()},true);
+    if(!parsed.valid()){copy->release();return false;}
+    dsiProfile=parsed;dsiFirmware=copy;return true;
+}
+
 void XE::adlnBootstrap(IOPCIDevice *pci) {
 	pci->setProperty("N97BringupVersion", 1ULL, 32);
 	pci->setProperty("N97NativeStartAllowed", false);
@@ -3881,6 +3893,7 @@ void XE::adlnBootstrap(IOPCIDevice *pci) {
     if(displayRequested && !Display13FBTopology::supportedWiring(board,xeProfile.display==XELP::Display::XeLPD)) {
         pci->setProperty("N97NativeRoutingUnavailable",true);return;
     }
+    if(board.dsi && !prepareDSIFirmware(pci))return;
 	auto bootDDI=displayRequested ? UINT32_MAX : 1U;
 	uint64_t connector[] {1,displayRequested,pci->getProperty("xelp-hdmi-wiring")!=nullptr,board.valid,board.hdmi,bootDDI};
 	pci->setProperty("N97NativeBootConnector",connector,sizeof(connector));
@@ -3989,8 +4002,10 @@ void XE::adlnBootstrap(IOPCIDevice *pci) {
         pci->setProperty("WEXDisplay13TCBootPorts",bootTC,sizeof(bootTC));
     }
 
-	bool bootstrapReady=true;
-	if(displayRequested && linearTest && (result.activePipes&(result.activePipes-1))) {
+    if(displayRequested && board.dsi)
+        XELP::DSI::captureBoot(io,result,dsiProfile,xelpMemory,barReady && reservationReady,dsiBoot);
+	bool bootstrapReady=!board.dsi || dsiBoot.usable();
+	if(!board.dsi && displayRequested && linearTest && (result.activePipes&(result.activePipes-1))) {
 		auto parked=Display13Boot::normalize(io,result,barReady && Display13FBTopology::multiOutputWiring(board) && xelpMemoryMatches(pci),board,xelpMemory,snapshot->normalize);
 		pci->setProperty("N97DualGOPNormalize",&parked,sizeof(parked));
 		AlderLakeN::readDisplay(io,barReady,result);
@@ -3998,13 +4013,15 @@ void XE::adlnBootstrap(IOPCIDevice *pci) {
 		bootstrapReady=parked.status==Display13Boot::Status::Complete;
 	}
     if(displayRequested && linearTest && bootstrapReady && Display13FBTopology::multiOutputWiring(board)) {
-        auto unused=Display13Boot::releaseUnusedTC(io,result,barReady && xelpMemoryMatches(pci),board);
+        auto unused=Display13Boot::releaseUnusedTC(io,result,barReady && xelpMemoryMatches(pci),board,
+            board.dsi ? &dsiBoot.source : nullptr);
         pci->setProperty("WEXDisplay13UnusedTC",&unused,sizeof(unused));
         bootstrapReady=unused.status==Display13Boot::Status::Complete;
     }
 	if(displayRequested && bootstrapReady) {
 		uint32_t trans=UINT32_MAX;
-		if(AlderLakeN::value(result,0x60400,trans))bootDDI=Display13FBTopology::bootstrapDDI(board,
+        if(board.dsi)bootDDI=0;
+		else if(AlderLakeN::value(result,0x60400,trans))bootDDI=Display13FBTopology::bootstrapDDI(board,
 			result.status==AlderLakeN::ReadoutStatus::Complete,result.poweredPipes,result.activePipes,trans,true);
 		connector[5]=bootDDI;pci->setProperty("N97NativeBootConnector",connector,sizeof(connector));
 	}
@@ -4150,9 +4167,11 @@ void XE::adlnBootstrap(IOPCIDevice *pci) {
         AlderLakeN::LinearPlan bootPlan;
         uint32_t sourceProof[]={1,bootDDI,uint32_t(protocol),uint32_t(AlderLakeN::linearPlan(
             result,bootPlan,bootDDI,protocol,bootDDI>=3?&tc:nullptr)),tc.valid()};
-        pci->setProperty("N97NativeBootSource",sourceProof,sizeof(sourceProof));
-        const bool prefix=Display13Boot::reservedPrefix(io,result,bootstrapReady,bootDDI,xelpMemory,
-            bootDDI>=3 ? &tc : nullptr,protocol);
+        if(!board.dsi)pci->setProperty("N97NativeBootSource",sourceProof,sizeof(sourceProof));
+        const bool prefix=board.dsi ? bootstrapReady && XELP::DSI::verifyBootPrefix(io,dsiBoot,xelpMemory) :
+            Display13Boot::reservedPrefix(io,result,bootstrapReady,bootDDI,xelpMemory,
+                bootDDI>=3 ? &tc : nullptr,protocol);
+        if(board.dsi)pci->setProperty("WEXDSIBootPrefix",&dsiBoot,sizeof(dsiBoot));
         auto aperture=pci->getDeviceMemoryWithRegister(0x18);
         const bool memoryReady=
             aperture && aperture->getLength()==0x10000000 && page_size==4096 &&
@@ -8271,6 +8290,13 @@ bool XE::prepareDisplay13BootScanout(IOPCIDevice *pci) {
         void delay(){IODelay(100);}
     } io{reinterpret_cast<volatile uint8_t *>(map->getVirtualAddress()),map->getLength()};
     const bool mapped=io.base && io.bytes==0x1000000;
+    if(adlnOutputWiring.dsi) {
+        // Preserve the DSI GOP exactly. Native power/path adoption follows;
+        // normal-plane reinitialization would destroy the inherited source.
+        const bool ready=mapped && dsiBoot.complete() && XELP::DSI::verifyBootPrefix(io,dsiBoot,xelpMemory);
+        pci->setProperty("WEXDSIBootHandoff",&dsiBoot,sizeof(dsiBoot));
+        map->release();return ready;
+    }
     const auto boot=AlderLakeN::readDisplay(io,mapped);
     uint32_t trans=UINT32_MAX;AlderLakeN::value(boot,0x60400,trans);
     const auto ddi=Display13FBTopology::bootstrapDDI(adlnOutputWiring,
