@@ -25,7 +25,8 @@ code=r'''
 #include <initializer_list>
 struct OSObject {alignas(8) uint8_t bytes[0x4B90]{};unsigned size=sizeof(bytes);
  OSObject *getMetaClass(){return this;}unsigned getClassSize(){return size;}};
-using IOService=OSObject;using IOLock=int;
+using IOService=OSObject;
+IOService *pendingFB=nullptr;bool dsiPendingTarget(IOService *fb){return fb && pendingFB==fb;}using IOLock=int;
 struct IORecursiveLock {unsigned depth=0;};
 unsigned owner=0,modeCalls=0,armCalls=0;IORecursiveLock fbLock;bool expectDSI=false,endingWriter=false;
 void IOLockLock(IOLock*){assert((fbLock.depth || endingWriter) && !owner);++owner;}void IOLockUnlock(IOLock*){assert(owner==1);--owner;}
@@ -216,6 +217,7 @@ int main(){
  {Case c;xe.dsiResourcesReady=false;c.refuseCursor();}
  {Case c;xe.dsiNativeWriterHooksReady=false;c.refuseCursor();}
  {Case c;display13FBPower.memoryFaulted=true;c.refuseCursor();}
+ {Case c;pendingFB=&c.fb;c.refuseCursor();pendingFB=nullptr;}
  {Case c;display13FBPower.dsiNativeWriters=UINT32_MAX;c.refuseCursor();
   assert(display13FBPower.dsiNativeWriters==UINT32_MAX);}
  {Case c;auto i=imageCalls;assert(XE::wrapDSICursorImage(&c.peer,&c.fb,&imageCalls)==kIOReturnNotReady);

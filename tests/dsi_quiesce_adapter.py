@@ -33,6 +33,7 @@ struct OSObject {alignas(8) uint8_t bytes[0x4B90]{};unsigned refs=1,size=sizeof(
  void setProperty(const char*,bool value){assert(locks==std::vector<unsigned>{1} && !value);}
  void retain(){++refs;}void release(){assert(refs>1);--refs;}};
 using IOService=OSObject;
+IOService *pendingFB=nullptr;bool dsiPendingTarget(IOService *fb){return fb && pendingFB==fb;}
 struct IOWorkLoop:OSObject {bool gate=false,busy=false;unsigned closes=0,opens=0;};
 bool inGate(const IOWorkLoop *p){assert(locks==std::vector<unsigned>{1});return p->gate;}
 bool tryClose(IOWorkLoop *p){assert(locks==std::vector<unsigned>{1});++p->closes;if(p->busy)return false;return p->gate=true;}
@@ -184,6 +185,7 @@ int main(){
   assert(reused.valid && reused.pll==1 && !reused.keepPLL);
   c.retained(true);const auto before=c.map.bar;assert(!c.run() && c.map.bar==before && c.xe.dsiIRQParked); // one-shot journal
  }
+ {Case c;pendingFB=&c.fb;const auto before=c.map.bar;assert(!c.run() && c.map.bar==before);pendingFB=nullptr;}
  {Case c;display13FBPower.dsiNativeWriters=1;const auto before=c.map.bar;
   assert(!c.run() && c.map.bar==before && !c.xe.dsiStopAttempted && !memoryFrees);
   display13FBPower.dsiNativeWriters=0;assert(c.run() && c.xe.dsiMemoryReleased);}

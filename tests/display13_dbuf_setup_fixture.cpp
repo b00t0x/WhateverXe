@@ -96,6 +96,8 @@ void XE::wrapDisplay13WMArmUpdate(IOService *fb){
   c.pipe[p].wmPending=0;c.pipe[p].watermarkClockHz=614400000;
  }
 }
+IOService *pendingBackingFB=nullptr;
+bool dsiPendingTarget(IOService *fb){return fb && fb==pendingBackingFB;}
 // PRODUCTION_SETUP
 alignas(16) static uint8_t ctl[0x1c20],fb[3][0x4b90],paths[3][0x3730],planes[3][0x1c8];
 static int ownerMutex,frameMutex;
@@ -130,8 +132,9 @@ int main(){
  }
  // A late callback after DSI stop does not touch MMIO, revive the engine,
  // allocate a DDB range, or turn an ordinary stop into a shared fault.
- for(bool cold:{false,true}) {
-  Map map;setup(map);auto &c=display13FBPower;state.adlnOutputWiring.dsi=1;state.dsiStopAttempted=true;
+ for(bool pending:{false,true})for(bool cold:{false,true}) {
+  Map map;setup(map);auto &c=display13FBPower;state.adlnOutputWiring.dsi=1;state.dsiStopAttempted=!pending;
+  pendingBackingFB=pending?(IOService*)fb[0]:nullptr;
   dsiFB=(IOService*)fb[0];
   if(cold){c.engineEnabled=false;c.clockStopped=true;c.bridge.bootAdopted=c.bridge.begun=true;}
   const auto registers=map.r;const auto reads=map.reads;const auto dbuf=c.dbuf;
@@ -149,6 +152,7 @@ int main(){
    IORecursiveLockLock(&frameMutex);XE::wrapAlderLakeNPipeWMSetup(c.controller,(IOService*)fb[1],(OSObject*)paths[1],nullptr);IORecursiveLockUnlock(&frameMutex);
    assert(c.watermarkFaulted); // Peer malformed association still reports its real fault.
   }
+  pendingBackingFB=nullptr;
  }
  // Generic unavailable results, mismatches, timeouts and allocation failures
  // must not be turned into deferred success by the new branch.

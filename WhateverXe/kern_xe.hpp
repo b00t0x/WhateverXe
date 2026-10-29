@@ -239,6 +239,14 @@ private:
     static uint32_t wrapDSIPlaneGammaTransaction(IOService *,void *,bool);
     static uint32_t wrapDSISetGammaTable(IOService *,uint32_t,uint32_t,uint32_t,void *,bool);
     bool dsiNativeWriterHooksReady {};
+    bool dsiBackingHooksReady {};
+    mach_vm_address_t orgDSIBacking[2] {};
+    bool processDSIBackingHooks(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    bool prepareDSINativeBacking(IOService *);
+    bool discardDSINativeBacking(IOService *);
+    static uint32_t wrapDSIBackingAllocate(OSObject *,void *,uint32_t);
+    static uint32_t wrapDSIBackingFree(OSObject *,void *,uint32_t);
+
     mach_vm_address_t orgDSICursor[2] {};
     static int beginDSINativeWriter(IOService *,IOService *);
     static void endDSINativeWriter(int);
