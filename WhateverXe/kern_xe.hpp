@@ -139,6 +139,12 @@ private:
     bool dsiResourcesReady {};
     bool bindDSIResources(IOService *);
     static uint32_t wrapDisplay13ProbeMode(OSObject *);
+    bool dsiCacheHooksReady {};
+    mach_vm_address_t orgDSICache[2] {};
+    bool processDisplay13DSICache(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    bool updateDSIBootCache(IOService *,IOService *,OSObject *);
+    static void wrapDSIUpdateCache(IOService *,IOService *,OSObject *);
+    static void wrapDSIGetCRTC(IOService *,IOService *,OSObject *);
     bool dsiBootProbeReady {};
     mach_vm_address_t orgDSIBootProbe {};
     bool processDisplay13DSIBoot(KernelPatcher &,size_t,mach_vm_address_t,size_t);

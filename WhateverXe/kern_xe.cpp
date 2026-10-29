@@ -7,6 +7,7 @@
 //  Copyright © 2018 vit9696. All rights reserved.
 //
 
+#include "kern_dsi_native_cache.hpp"
 #include "kern_xe.hpp"
 #include "kern_framebuffer_donor.hpp"
 #include "kern_xelp_os.hpp"
@@ -5461,6 +5462,7 @@ bool XE::processDisplay13Framebuffer(KernelPatcher &patcher,size_t index,mach_vm
 	display13FBTopologyHooksReady=processDisplay13FramebufferTopology(patcher,index,address,size);
     display13DSIModeHooksReady=processDisplay13DSIModes(patcher,index,address,size);
     dsiBootProbeReady=processDisplay13DSIBoot(patcher,index,address,size);
+    dsiCacheHooksReady=processDisplay13DSICache(patcher,index,address,size);
 	IORegistryEntry::getRegistryRoot()->setProperty("N97FBTopologyHooksReady",display13FBTopologyHooksReady);
  using C=XELP::DisplayContract;const auto installed=display13Available();
  display13FBPowerBackendReady=C{C::Power13,installed}.ready();
@@ -6680,6 +6682,93 @@ bool XE::wrapAlderLakeNGetOSInformation(IOService *controller) {
 	controller->setProperty("N97FBConnectorPolicy",copy+0x20,24*Display13FBTopology::Ports);
 	controller->setProperty("N97FBDMCPolicy",dcPolicy,sizeof(dcPolicy));
 	return true;
+}
+
+bool XE::processDisplay13DSICache(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
+    const char *symbols[]={
+        "__ZN31AppleIntelFramebufferController16hwUpdateRegCacheEP21AppleIntelFramebufferP21AppleIntelDisplayPath",
+        "__ZN31AppleIntelFramebufferController9hwGetCRTCEP21AppleIntelFramebufferP21AppleIntelDisplayPath"};
+    const uint32_t offsets[]={0x4C4E2,0x4C79A};
+    const uint8_t entries[][16]={
+        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x54,0x53,0x48,0xFF,0x05,0x94,0x2A},
+        {0x55,0x48,0x89,0xE5,0x41,0x56,0x53,0x48,0x89,0xF3,0x49,0x89,0xFE,0x48,0xFF,0x05}};
+    if(!display13FramebufferRequested || size<=0x4C866)return false;
+    for(unsigned i=0;i<2;++i) {
+        const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,symbols[i],address,size);patcher.clearError();
+        if(fn!=address+offsets[i] || memcmp(reinterpret_cast<void *>(fn),entries[i],16))return false;
+    }
+    KernelPatcher::RouteRequest routes[]={
+        {symbols[0],wrapDSIUpdateCache,orgDSICache[0]}, {symbols[1],wrapDSIGetCRTC,orgDSICache[1]}};
+    const bool ready=patcher.routeMultiple(index,routes,2,address,size);patcher.clearError();return ready;
+}
+
+// Pipe A belongs to DSI for this adoption phase. Malformed/ambiguous objects
+// must not fall into a normal-transcoder read or the donor PWM calculation.
+static bool dsiCachePath(OSObject *path) {
+    if(!path || path->getMetaClass()->getClassSize()<0x3730)return true;
+    if(Display13FBMemory::field<uint32_t>(path,0x3640)==0)return true;
+    const auto port=Display13FBMemory::field<OSObject *>(path,0x3648);
+    return !port || port->getMetaClass()->getClassSize()<0x580 || Display13FBMemory::field<uint32_t>(port,0x120)==0;
+}
+
+bool XE::updateDSIBootCache(IOService *controller,IOService *fb,OSObject *path) {
+    auto &c=display13FBPower;
+    if(!c.lock || !controller || !fb || !path || fb->getMetaClass()->getClassSize()<0x4B90 ||
+       controller->getMetaClass()->getClassSize()<0x1C20 || path->getMetaClass()->getClassSize()<0x3730)return false;
+    DSIModeScope scope(fb);if(!scope.lock)return false;
+    IOLockLock(c.lock);Display13FBBootIO io{c.map};
+    const auto binding=adlnInspectPathBinding(fb,path,adlnPlatform,adlnOutputWiring,false);
+    const bool bound=dsiCacheHooksReady && !display13Offline && dsiResourcesReady && c.map &&
+        adlnOutputWiring.dsi==1 && controller==c.controller && controller==adlnTopologyController &&
+        binding.status==TGLFBBinding::Status::Complete && binding.pipe==0 && binding.ddi==0 &&
+        c.transcoders.dsi0Pipe==0 && !c.memoryFaulted && !c.clockFaulted &&
+        !c.bridge.state.faulted && !c.bridge.state.suspended &&
+        Display13FBMemory::field<OSObject *>(path,0x3648)==c.dsiPort && c.dsiPort &&
+        Display13FBMemory::field<uint32_t>(c.dsiPort,0x550)==1 &&
+        Display13FBMemory::field<uint32_t>(path,0x34)==0x4A480 &&
+        c.bootDSI.sameSource(dsiBoot.source) && c.bridge.outputHeld(io,0,0);
+    bool ready=false;
+    if(bound) {
+        auto plane=Display13FBMemory::field<OSObject *>(path,0x32C8);
+        auto scaler=Display13FBMemory::field<OSObject *>(path,0x32C0);
+        bool addresses=true;
+        for(unsigned i=0;i<6;++i)addresses=addresses &&
+            Display13FBMemory::field<uint32_t>(plane,XELP::DSI::NativeCache::PlaneAddressFields[i])==XELP::DSI::NativeCache::PlaneRegisters[i];
+        uint32_t scale=0;
+        if(scaler) {
+            addresses=addresses && scaler->getMetaClass()->getClassSize()>=0x50;
+            if(addresses) {
+                scale=Display13FBMemory::field<uint32_t>(scaler,0x30);
+                addresses=Display13FBMemory::field<void *>(scaler,0x28)==c.access &&
+                    Display13FBMemory::field<uint32_t>(scaler,0x18)==0 && (scale==0x68180 || scale==0x68280) &&
+                    Display13FBMemory::field<uint32_t>(scaler,0x34)==scale-0x10 &&
+                    Display13FBMemory::field<uint32_t>(scaler,0x38)==scale-0xC;
+            }
+        }
+        XELP::DSI::NativeCache::View view;
+        ready=addresses && XELP::DSI::NativeCache::read(io,dsiBoot,xelpMemory,scale,view);
+        if(ready)XELP::DSI::NativeCache::publish(view,path,plane,scaler);
+    }
+    IOLockUnlock(c.lock);return ready;
+}
+
+void XE::wrapDSIUpdateCache(IOService *controller,IOService *fb,OSObject *path) {
+    if(callbackXE->adlnOutputWiring.dsi && dsiCachePath(path)) {
+        if(!callbackXE->updateDSIBootCache(controller,fb,path)) {
+            auto &c=display13FBPower;
+            if(c.lock){IOLockLock(c.lock);adlnFault(c.memoryFaulted,__LINE__);IOLockUnlock(c.lock);}
+        }
+        return;
+    }
+    FunctionCast(wrapDSIUpdateCache,callbackXE->orgDSICache[0])(controller,fb,path);
+}
+void XE::wrapDSIGetCRTC(IOService *controller,IOService *fb,OSObject *path) {
+    if(callbackXE->adlnOutputWiring.dsi && dsiCachePath(path)) {
+        // DSI brightness belongs to its panel backend. The donor's internal
+        // FB branch divides by an ordinary PWM period that may be zero here.
+        wrapDSIUpdateCache(controller,fb,path);return;
+    }
+    FunctionCast(wrapDSIGetCRTC,callbackXE->orgDSICache[1])(controller,fb,path);
 }
 
 bool XE::processDisplay13DSIBoot(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
