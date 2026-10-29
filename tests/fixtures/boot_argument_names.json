@@ -1,4 +1,5 @@
 {
+  "-wex-dsi-audit": [],
   "-wex-adln-config-stage": [
     "-adlnconfigstage",
     "-n97configstage"

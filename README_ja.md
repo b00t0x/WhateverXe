@@ -104,6 +104,8 @@ ADL-P/RPL-Pは物理IDと検出したGPU資源を自動で使用します。devi
 
 試験用の `-wex-dsi-hdmi-test` は、限定したDisplay13のDSI-A GOPからCombo-Bへ1080p60で移す開発用経路です。内蔵表示を停止し、policyが別の接続済み出力へ切り替える際は暫定HDMI資源を解放します。既定では無効で、DSI対応や汎用のcold起動を提供するものではありません。
 
+任意の `-wex-dsi-audit` は、対応するMIPI DSI firmware形式を検査し、診断結果を公開します。既定では無効で、この検査はディスプレイへの設定書込みやDSI出力の有効化を行いません。
+
 ### 内蔵パネルの輝度
 
 内蔵ディスプレイの輝度調整には、OpenCoreへ`SSDT-PNLF`を追加してください。
