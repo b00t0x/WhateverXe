@@ -15,12 +15,12 @@ inline bool selectedWiring(const Display13OutputWiring &w) {
 inline bool adlnWiring(const Display13OutputWiring &w) {return selectedWiring(w) && !(w.selected()&~3U);}
 // DP topology is composable, but runtime admission stays closed until its
 // complete signal/training/bootstrap operation contract is installed.
-inline bool supportedWiring(const Display13OutputWiring &w,bool fixedTC=false) {
+inline bool supportedWiring(const Display13OutputWiring &w,bool fixedTC=false,bool dsiAdoption=false) {
     // Fixed HDMI is composable across the physical Combo A/B and TC1..4.
     // TC provider capability, legacy mode and clock hooks are checked separately.
-    // DSI can describe native objects offline, but must not reach the donor's
-    // eDP implementation before the complete DSI operation contract exists.
-    return !w.dsi && !(w.dp&~0x78U) && w.described() && !(w.selected()&~(fixedTC ? Display13OutputWiring::Physical : 3U));
+    // DSI requires explicit GOP adoption selection. Native start separately
+    // checks its mode, writer, probe, cache and disposal hooks.
+    return (!w.dsi || dsiAdoption) && !(w.dp&~0x78U) && w.described() && !(w.selected()&~(fixedTC ? Display13OutputWiring::Physical : 3U));
 }
 // A TC route uses the same validated handoff regardless of the GT family.
 // Keep the established Combo-only ADL-N startup ordering unchanged.

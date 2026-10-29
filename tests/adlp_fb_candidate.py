@@ -12,6 +12,8 @@ code=r'''
 #include "kern_display13_firmware.hpp"
 #include "kern_display13_fb_topology.hpp"
 #include "kern_alderlake_s.hpp"
+bool adopt=false,hdmiTrial=false;
+bool checkKernelArgument(const char *s){return !strcmp(s,"-wex-dsi-adopt")?adopt:!strcmp(s,"-wex-dsi-hdmi-test")?hdmiTrial:false;}
 struct OSData {void *data=nullptr;unsigned bytes=0;void *getBytesNoCopy(){return data;}unsigned getLength(){return bytes;}};
 #define OSDynamicCast(T,p) static_cast<T *>(p)
 struct IOService {OSData *property=nullptr;OSData *getProperty(const char *){return property;}};
@@ -23,7 +25,8 @@ struct XE {
  XELP::VBT::Ports firmwarePorts;
  bool adlpDisplaySelected=true,adlsDisplaySelected=false,tglHDMIWiringApplied=false,tglTCWiringLoaded=false;
  bool display13PanelProbeReady=true,display13PanelPowerReady=true;
- bool dsiResourcesReady=false;
+ bool dsiResourcesReady=false,profileReady=true;
+ bool prepareDSIFirmware(IOService *){return profileReady;}
  bool display13FBTopologyHooksReady=true,display13TCProbeReady=true,display13FBTCHooksReady=true;
  bool display13DPAltProbeReady=true,display13TCDPProbeReady=true,display13DPProbeReady=false,display13FBSSTHooksReady=true,display13FBAUXHooksReady=true;
  uintptr_t xelpProviderProbe=1,xelpProviderConfigureProbe=reinterpret_cast<uintptr_t>(configure);
@@ -44,6 +47,14 @@ int main(){
  for(unsigned d=3;d<=5;++d){auto &p=x.firmwarePorts.port[d];p.type=d==5?4:0x12;p.ddc=d;p.capabilities=3;p.hdmiPreset=7;}
  auto w=x.display13BoardWiring(&pci);assert(w.described() && w.hdmi==0x18 && w.ddc[3]==9 && w.ddc[4]==10 && !w.dp);
  assert(!Display13FBTopology::supportedWiring(w) && Display13FBTopology::supportedWiring(w,true));
+ adopt=true;
+ auto dw=x.display13BoardWiring(&pci);assert(dw.described() && dw.dsi==1 && dw.hdmi==w.hdmi);
+ assert(!Display13FBTopology::supportedWiring(dw,true) && Display13FBTopology::supportedWiring(dw,true,true));
+ hdmiTrial=true;assert(!x.display13BoardWiring(&pci).described());hdmiTrial=false;
+ x.profileReady=false;assert(!x.display13BoardWiring(&pci).described());x.profileReady=true;
+ x.firmwarePorts.present|=1;x.firmwarePorts.port[0].type=0x12;x.firmwarePorts.port[0].ddc=1;
+ assert(!x.display13BoardWiring(&pci).described());x.firmwarePorts.present&=~1U;
+ adopt=false;assert(!x.display13BoardWiring(&pci).dsi);
  x.adlnOutputWiring=w;assert(x.xelpBindProbe((void*)1));
  assert(seen.valid() && !seen.combo && seen.comboBackend==3 && seen.legacy==0x18 && seen.legacyBackend==0x78);
  assert(seen.profile.family==XELP::Family::AlderLakeP && seen.profile.admitted());

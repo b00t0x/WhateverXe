@@ -3854,12 +3854,24 @@ Display13OutputWiring XE::display13BoardWiring(IOService *provider) {
     if(!xeProfile.displayAdmitted() || xeProfile.display!=XELP::Display::XeLPD)return {};
     // Display13 physical capacity is shared by ADL-N and mobile ADL/RPL.
     // VBT chooses board routing; a family name must not exclude TC PHYs.
-    if(!property)return XELP::VBT::display13Fixed(firmwarePorts,Display13OutputWiring::Physical,xeProfile.family);
-    // Preserve the older ADL-N Combo property contract. It cannot select TC.
-    if(adlpDisplaySelected)return {};
-    auto wiring=OSDynamicCast(OSData,property);
-    return XELP::VBT::selectHDMI(true,wiring?wiring->getBytesNoCopy():nullptr,
-        wiring?wiring->getLength():0,firmwarePorts,3);
+    Display13OutputWiring board;
+    if(!property)board=XELP::VBT::display13Fixed(firmwarePorts,Display13OutputWiring::Physical,xeProfile.family);
+    else {
+        // Preserve the older ADL-N Combo property contract. It cannot select TC.
+        if(adlpDisplaySelected)return {};
+        auto wiring=OSDynamicCast(OSData,property);
+        board=XELP::VBT::selectHDMI(true,wiring?wiring->getBytesNoCopy():nullptr,
+            wiring?wiring->getLength():0,firmwarePorts,3);
+    }
+    if(checkKernelArgument("-wex-dsi-adopt")) {
+        // The old HDMI experiment tears down the firmware DSI link. Never
+        // combine that handoff with adoption, or replace an existing A route.
+        if(checkKernelArgument("-wex-dsi-hdmi-test") || !board.valid || board.panel ||
+           (board.selected()&1) || !prepareDSIFirmware(provider))return {};
+        board.dsi=1;
+        if(!board.described())return {};
+    }
+    return board;
 }
 
 bool XE::prepareDSIFirmware(IOService *provider) {
@@ -3914,7 +3926,7 @@ void XE::adlnBootstrap(IOPCIDevice *pci) {
 	// Bootstrap runs before framebuffer start loads its board policy. Native
 	// GOP qualification must already use that physical port, not assume B.
     const auto board=display13BoardWiring(pci);adlnOutputWiring=board;
-    if(displayRequested && !Display13FBTopology::supportedWiring(board,xeProfile.display==XELP::Display::XeLPD)) {
+    if(displayRequested && !Display13FBTopology::supportedWiring(board,xeProfile.display==XELP::Display::XeLPD,checkKernelArgument("-wex-dsi-adopt"))) {
         pci->setProperty("N97NativeRoutingUnavailable",true);return;
     }
     if(board.dsi && !prepareDSIFirmware(pci))return;
@@ -6874,7 +6886,7 @@ bool XE::processDisplay13FramebufferTopology(KernelPatcher &patcher,size_t index
 bool XE::wrapAlderLakeNGetOSInformation(IOService *controller) {
 	auto s=callbackXE;
 	if(!s->display13FBTopologyHooksReady || !controller || controller->getMetaClass()->getClassSize()<0x1C20 ||
-		!Display13FBTopology::supportedWiring(s->adlnOutputWiring,s->xeProfile.display==XELP::Display::XeLPD) || !checkKernelArgument("-disablegfxfirmware"))return false;
+		!Display13FBTopology::supportedWiring(s->adlnOutputWiring,s->xeProfile.display==XELP::Display::XeLPD,checkKernelArgument("-wex-dsi-adopt")) || !checkKernelArgument("-disablegfxfirmware"))return false;
 	if(!FunctionCast(wrapAlderLakeNGetOSInformation,s->orgAlderLakeNGetOSInformation)(controller))return false;
 	auto platform=Display13FBMemory::field<void *>(controller,0xD40);
 	if(!Display13FBTopology::apply(s->adlnPlatform,sizeof(s->adlnPlatform),platform,s->adlnOutputWiring))return false;
@@ -6945,7 +6957,16 @@ uint32_t XE::wrapDSISetDisplayMode(IOService *fb,int32_t mode,int32_t depth) {
     if(callbackXE->adlnOutputWiring.dsi) {
         if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
         DSIModeScope scope(fb);if(!scope.lock)return kIOReturnNotReady;
-        if(dsiLifecycleTarget(fb,Display13FBMemory::singlePath<OSObject *>(fb)))return kIOReturnNotReady;
+        if(dsiLifecycleTarget(fb,Display13FBMemory::singlePath<OSObject *>(fb))) {
+            // A bounded receipt of the real request. Keep the donor's mode
+            // reallocation path closed until the DSI surface transaction owns it.
+            uint64_t record[] {1,Display13FBMemory::field<uint32_t>(fb,0x1DC),
+                Display13FBMemory::field<uint8_t>(fb,0x1E0),static_cast<uint32_t>(mode),
+                static_cast<uint32_t>(depth),dsiModeTarget(fb),callbackXE->dsiResourcesReady,
+                Display13FBMemory::field<uint32_t>(fb,0x420C)};
+            IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIModeRequest",record,sizeof(record));
+            return kIOReturnNotReady;
+        }
     }
     return FunctionCast(wrapDSISetDisplayMode,callbackXE->orgDSIMode[5])(fb,mode,depth);
 }
@@ -8943,8 +8964,17 @@ bool XE::wrapDisplay13FramebufferStart(IOService *that,IOService *provider) {
 	if(s->tglObservationController==that)s->tglObservationController=nullptr;
 	if(!pci)return false;
     const auto board=s->display13BoardWiring(provider);
-    if(!Display13FBTopology::supportedWiring(board,s->xeProfile.display==XELP::Display::XeLPD) ||
+    if(!Display13FBTopology::supportedWiring(board,s->xeProfile.display==XELP::Display::XeLPD,checkKernelArgument("-wex-dsi-adopt")) ||
        board.selected()!=s->adlnOutputWiring.selected())return false;
+    if(board.dsi) {
+        const bool disposal=s->dsiFreePlane && s->dsiFreeScaler && s->dsiDetachPath && s->dsiRemovePath && s->dsiPipeMap;
+        const bool ready=s->display13DSIModeHooksReady && s->dsiNativeWriterHooksReady &&
+            s->dsiBootProbeReady && s->dsiCacheHooksReady && disposal;
+        uint64_t record[] {1,ready,s->display13DSIModeHooksReady,s->dsiNativeWriterHooksReady,
+            s->dsiBootProbeReady,s->dsiCacheHooksReady,disposal};
+        IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIStartupHooks",record,sizeof(record));
+        if(!ready)return false;
+    }
     if((board.selected()&0x78) && (!s->display13FBTCHooksReady || !s->display13TCProbeReady)) {
         IORegistryEntry::getRegistryRoot()->setProperty("ADLPFBTCUnavailable",true);return false;
     }

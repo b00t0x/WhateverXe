@@ -26,6 +26,11 @@ code=r'''
 struct OSObject {alignas(8) uint8_t bytes[0x4B90]{};unsigned size=sizeof(bytes);
  OSObject *getMetaClass(){return this;}unsigned getClassSize(){return size;}};
 using IOService=OSObject;
+struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}
+ void setProperty(const char *name,const void *data,unsigned bytes){
+  assert(!strcmp(name,"WEXDSIModeRequest") && bytes==64);
+  const auto words=static_cast<const uint64_t *>(data);assert(words[0]==1);
+ }};
 IOService *pendingFB=nullptr;bool dsiPendingTarget(IOService *fb){return fb && pendingFB==fb;}using IOLock=int;
 struct IORecursiveLock {unsigned depth=0;};
 unsigned owner=0,modeCalls=0,armCalls=0;IORecursiveLock fbLock;bool expectDSI=false,endingWriter=false;
