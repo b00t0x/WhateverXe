@@ -15,7 +15,7 @@ code=r'''
 struct OSObject {alignas(8) uint8_t bytes[0x4B90]{};unsigned size=sizeof(bytes);
  OSObject *getMetaClass(){return this;}unsigned getClassSize(){return size;}};
 using IOService=OSObject;using IOLock=int;
-unsigned depth=0,bindingCalls=0,modeCalls=0,stopCalls=0,notifications=0,modeResult=0;
+unsigned depth=0,bindingCalls=0,modeCalls=0,stopCalls=0,notifications=0,modeResult=0,hostStops=0;
 void IOLockLock(IOLock*){assert(!depth);++depth;}void IOLockUnlock(IOLock*){assert(depth==1);--depth;}
 void adlnFault(bool &v,unsigned){assert(depth==1);v=true;}
 void IOSleep(unsigned){assert(false);}
@@ -38,6 +38,7 @@ struct XE {
  struct Wiring{unsigned dsi=0;operator unsigned()const{return dsi;}}adlnOutputWiring;void *adlnPlatform=nullptr;
  uintptr_t orgDisplay13TCSetMode=reinterpret_cast<uintptr_t>(nativeMode),display13TCNotify=reinterpret_cast<uintptr_t>(notify);
  uintptr_t orgAlderLakeNDisableDisplay=reinterpret_cast<uintptr_t>(nativeStop);
+ bool quiesceDSIPath(IOService*,IOService*,OSObject*){++hostStops;return false;}
  static uint32_t wrapDisplay13TCSetMode(void*,void*,const void*);
  static void wrapAlderLakeNDisableDisplay(IOService*,IOService*,OSObject*,uint8_t);
 }xe,*callbackXE=&xe;
@@ -48,11 +49,11 @@ int main(){
  auto &c=display13FBPower;c.lock=&lock;c.controller=&controller;
  put(&fb,0x4A00,1U);put(&fb,0x4A08,&path);put(&path,0x3648,&port);
  const auto reject=[&](IOService *f,OSObject *p){
-  const auto m=modeCalls,n=notifications,d=stopCalls,b=bindingCalls;
+  const auto m=modeCalls,n=notifications,d=stopCalls,b=bindingCalls,h=hostStops;
   assert(XE::wrapDisplay13TCSetMode(&controller,f,nullptr)==kIOReturnNotReady);
   assert(modeCalls==m && notifications==n);
   c.memoryFaulted=false;XE::wrapAlderLakeNDisableDisplay(&controller,f,p,0);
-  assert(c.memoryFaulted && stopCalls==d && bindingCalls==b && !depth);
+  assert(c.memoryFaulted && stopCalls==d && bindingCalls==b && hostStops==h+1 && !depth);
  };
  xe.adlnOutputWiring.dsi=1;reject(&fb,&path); // actual pipe A / port A
  put(&path,0x3640,1U);put(&port,0x120,3U);

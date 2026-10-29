@@ -142,6 +142,9 @@ private:
     bool prepareDSIFirmware(IOService *);
     bool dsiResourcesReady {};
     bool bindDSIResources(IOService *);
+    XELP::DSI::Quiesce::Result dsiStop;
+    bool dsiStopAttempted {},dsiIRQParked {};
+    bool quiesceDSIPath(IOService *,IOService *,OSObject *);
     static uint32_t wrapDisplay13ProbeMode(OSObject *);
     bool dsiCacheHooksReady {};
     mach_vm_address_t orgDSICache[2] {};

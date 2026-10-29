@@ -9684,11 +9684,130 @@ static bool adlnWriterMappingBound() {
 			native->getPhysicalAddress(),native->getLength(),c.map->getPhysicalAddress(),c.map->getLength());
 }
 
+// Host stop and actual native IRQ retirement. This is deliberately separate
+// from allocator, PLL-owner and power release: a hardware stop is not a full
+// Session StopProof. The one-shot journal retains a partial stop for diagnosis.
+bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
+    auto &c=display13FBPower;auto &clock=comboClockTransaction;auto &irq=display13FBIRQ;
+    if(!c.lock || !clock.lock || !controller || controller->getMetaClass()->getClassSize()<0x1C20 ||
+       !fb || fb->getMetaClass()->getClassSize()<0x4B90 || !path || path->getMetaClass()->getClassSize()<0x3730 ||
+       !adlnWorkLoopInGate || !adlnWorkLoopTryClose || !adlnWorkLoopOpen)return false;
+    auto mutex=Display13FBMemory::field<IORecursiveLock *>(fb,0x4220);if(!mutex)return false;
+    IORecursiveLockLock(mutex);
+    IOLockLock(c.lock);
+    auto loop=controller==c.controller ? c.workLoop : nullptr;
+    if(loop)loop->retain();
+    IOLockUnlock(c.lock);
+    const bool boundLoop=loop && Display13FBMemory::field<IOWorkLoop *>(controller,0xE00)==loop;
+    const bool inGate=boundLoop && reinterpret_cast<bool (*)(const IOWorkLoop *)>(adlnWorkLoopInGate)(loop);
+    const bool acquired=boundLoop && !inGate && reinterpret_cast<bool (*)(IOWorkLoop *)>(adlnWorkLoopTryClose)(loop);
+    if(!inGate && !acquired) {if(loop)loop->release();IORecursiveLockUnlock(mutex);return false;}
+    IORecursiveLockLock(clock.lock);IOLockLock(c.lock);
+    uint64_t record[24] {1};bool masked=false,maskOK=false,parked=false,restored=false,enabled=false;uint32_t master=0;
+    const auto qualified=[&]() {
+        if(adlnOutputWiring.dsi!=1 || !dsiResourcesReady || !dsiProfile.valid() ||
+           controller!=c.controller || controller!=adlnTopologyController || c.workLoop!=loop ||
+           Display13FBMemory::field<IOWorkLoop *>(controller,0xE00)!=loop ||
+           c.pipe[0].memoryFramebuffer!=fb || Display13FBMemory::singlePath<OSObject *>(fb)!=path ||
+           c.transcoders.dsi0Pipe!=0 || c.bridge.state.faulted || c.bridge.state.suspended || c.clockFaulted ||
+           c.pipe[0].destroyingPath || c.dbuf.updating || c.pipe[0].wmProgramming || c.pipe[0].wmCommitting ||
+           Display13FBMemory::field<uint32_t>(path,0x35F0) || !adlnWriterMappingBound() ||
+           !c.dsiPort || Display13FBMemory::field<OSObject *>(path,0x3648)!=c.dsiPort ||
+           Display13FBMemory::field<uint32_t>(c.dsiPort,0x550)!=1 ||
+           Display13FBMemory::field<uint32_t>(path,0x3644)!=2 ||
+           clock.thread || clock.allocation.external[0]!=reinterpret_cast<uintptr_t>(controller) ||
+           clock.allocation.binding[0]!=dsiBoot.source.identity.pll+1 ||
+           !c.bootDSI.sameSource(dsiBoot.source))return false;
+        const auto binding=adlnInspectPathBinding(fb,path,adlnPlatform,adlnOutputWiring);
+        Display13FBBootIO io{c.map};
+        return binding.status==TGLFBBinding::Status::Complete && binding.pipe==0 && binding.ddi==0 &&
+            c.bridge.outputHeld(io,0,0);
+    };
+    struct IO : Display13FBBootIO {
+        decltype(qualified) &owns;
+        IO(IOMemoryMap *m,decltype(qualified) &q):Display13FBBootIO{m},owns(q) {}
+        bool ready(){return owns();}
+        void write(uint32_t reg,uint32_t value) {
+            if(readable(reg) && (reg==0x70080 || reg==0x70084 || reg==0x70088 || reg==0x70180 || reg==0x7019C ||
+               reg==0x7B008 || reg==0x6B0D8 || reg==0x6B400 || reg==0x164280 || reg==0x64000))
+                *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg)=value;
+        }
+        void delayUs(unsigned us){if(us>=1000)IOSleep((us+999)/1000);else IODelay(us);}
+    } io{c.map,qualified};
+    record[1]=qualified();
+    if(record[1] && !dsiStopAttempted && adlnIRQOwner(controller) && irq.lock &&
+       irq.lock==Display13FBMemory::field<IOSimpleLock *>(controller,0x90) && irq.base==c.map->getVirtualAddress()) {
+        Display13FBIRQIO irqIO{irq.base};
+        auto saved=IOSimpleLockLockDisableInterrupt(irq.lock);
+        const auto queued=[&](unsigned offset) {
+            return __atomic_load_n(reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(controller)+offset),__ATOMIC_ACQUIRE);
+        };
+        master=irqIO.read(Display13FBIRQ::Master);enabled=irq.state.enabled;
+        record[2]=irq.handlers;record[3]=irq.scopes.display;record[4]=irq.softwareHandlers;
+        record[5]=queued(0xE08);record[6]=queued(0xE0C);record[7]=queued(0xE10);
+        const bool quiet=irq.scopes.total==irq.handlers && !irq.scopes.display && !irq.softwareHandlers &&
+            !(record[5]&Display13FBIRQ::pipeEvents(0)) && !record[6] && !(record[7]&3);
+        const bool ready=quiet && !irq.quiescing && !irq.blockedPipes && !irq.state.faulted &&
+            irq.state.begun && (irq.state.configured&1) && (irq.admittedPipes&1) && irq.state.transcoders.dsi0Pipe==0 &&
+            master!=UINT32_MAX && bool(master&Display13FBIRQ::Enable)==enabled;
+        if(ready) {
+            // DE permission is assigned on actual HW-handler entry. New shared
+            // GT-only handlers can still run but cannot consume display banks.
+            irq.quiescing=true;irq.blockedPipes=1;irq.state.enabled=false;masked=true;
+            irqIO.write(Display13FBIRQ::Master,0);
+            const auto after=irqIO.read(Display13FBIRQ::Master);
+            maskOK=after!=UINT32_MAX && !(after&Display13FBIRQ::Enable);
+            if(!maskOK)irq.state.faulted=true;
+        }
+        IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
+        if(maskOK) {
+            dsiStopAttempted=true;dsiStop=XELP::DSI::Quiesce::run(io,c.bootDSI,dsiProfile);
+        }
+        if(masked) {
+            saved=IOSimpleLockLockDisableInterrupt(irq.lock);
+            record[8]=irq.handlers;record[9]=irq.scopes.display;record[10]=irq.softwareHandlers;
+            record[11]=queued(0xE08);record[12]=queued(0xE0C);record[13]=queued(0xE10);
+            if(dsiStop.complete() && irq.scopes.total==irq.handlers && !irq.scopes.display &&
+               !irq.softwareHandlers && !record[12] && !(record[13]&3)) {
+                // Pass the real DE-permitted scope count. A GT-only stack does
+                // not own a display consumer, even when it spans this stop.
+                const auto status=Display13FBIRQ::parkStoppedPipe(irqIO,irq.state,0,irq.scopes.display,
+                    irq.softwareHandlers,static_cast<uint32_t>(record[11]));
+                record[14]=static_cast<uint32_t>(status);parked=status==Display13FBIRQ::Status::Complete;
+            }
+            irq.quiescing=false;irq.blockedPipes=0;
+            if(!irq.state.faulted) {
+                irqIO.write(Display13FBIRQ::Master,master&Display13FBIRQ::Enable);
+                const auto after=irqIO.read(Display13FBIRQ::Master);
+                restored=after!=UINT32_MAX && bool(after&Display13FBIRQ::Enable)==enabled;
+                irq.state.enabled=restored && enabled;
+                if(!restored) {irq.state.faulted=true;irqIO.write(Display13FBIRQ::Master,0);}
+            }
+            adlnIRQCache(controller,irqIO);IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
+        }
+    }
+    if(masked)dsiIRQParked=parked && restored;
+    record[15]=masked;record[16]=parked;record[17]=restored;record[18]=dsiStopAttempted;
+    record[19]=static_cast<uint32_t>(dsiStop.stage);record[20]=static_cast<uint32_t>(dsiStop.error);
+    record[21]=dsiStop.writes;record[22]=dsiStop.waitUs;record[23]=dsiIRQParked;
+    const bool complete=parked && restored;
+    // Close the existing native writer/free gate before dropping the FB mutex,
+    // even after host success. Remove this conservative guard only with the
+    // separate Session/allocator/clock/power retirement transaction in place.
+    if(masked)adlnFault(c.memoryFaulted,__LINE__);
+    IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
+    if(acquired)reinterpret_cast<void (*)(IOWorkLoop *)>(adlnWorkLoopOpen)(loop);
+    loop->release();IORecursiveLockUnlock(mutex);
+    adlnPublishMemory("N97FBDSIHostStop",0,record,sizeof(record));
+    return complete;
+}
+
 void XE::wrapAlderLakeNDisableDisplay(IOService *controller,IOService *fb,OSObject *path,uint8_t mode) {
 	if(callbackXE->adlnOutputWiring.dsi && dsiLifecycleTarget(fb,path)) {
-		// This void callback cannot report an unsupported stop. Latch failure so
-		// resource retirement retains the live backing/leases. Do not run even
-		// the cursor prefix until the DSI stop transaction owns its rollback.
+		callbackXE->quiesceDSIPath(controller,fb,path);
+		// Host/IRQ completion alone does not authorize allocator/PLL/power
+		// release. Keep the retention guard until the full retirement adapter
+		// supplies a real Session StopProof; this void donor ABI has no error.
 		auto &c=display13FBPower;
 		if(c.lock){IOLockLock(c.lock);adlnFault(c.memoryFaulted,__LINE__);IOLockUnlock(c.lock);}
 		return;
