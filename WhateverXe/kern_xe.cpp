@@ -6706,7 +6706,8 @@ bool XE::processDisplay13DSICache(KernelPatcher &patcher,size_t index,mach_vm_ad
 // must not fall into a normal-transcoder read or the donor PWM calculation.
 static bool dsiCachePath(OSObject *path) {
     if(!path || path->getMetaClass()->getClassSize()<0x3730)return true;
-    if(Display13FBMemory::field<uint32_t>(path,0x3640)==0)return true;
+    const auto pipe=Display13FBMemory::field<uint32_t>(path,0x3640);
+    if(pipe==0 || pipe>=3)return true;
     const auto port=Display13FBMemory::field<OSObject *>(path,0x3648);
     return !port || port->getMetaClass()->getClassSize()<0x580 || Display13FBMemory::field<uint32_t>(port,0x120)==0;
 }

@@ -111,7 +111,11 @@ int main(){
  XE::wrapDSIGetCRTC(&controller,&fb,&path);assert(!nativeCache && !nativeCRTC && !faults);
  b.ddiRefs[0]=0;XE::wrapDSIGetCRTC(&controller,&fb,&path);assert(faults==1 && c.memoryFaulted);b.ddiRefs[0]=1;c.memoryFaulted=false;
  put(&path,0x3640,1U);put(&port,0x120,1U);XE::wrapDSIGetCRTC(&controller,&fb,&path);XE::wrapDSIUpdateCache(&controller,&fb,&path);
- assert(nativeCRTC==1 && nativeCache==1);xe.adlnOutputWiring.dsi=0;
+ assert(nativeCRTC==1 && nativeCache==1);
+ put(&path,0x3640,3U);XE::wrapDSIGetCRTC(&controller,&fb,&path);
+ assert(nativeCRTC==1 && c.memoryFaulted && faults==2);c.memoryFaulted=false;
+ XE::wrapDSIUpdateCache(&controller,&fb,nullptr);assert(nativeCache==1 && c.memoryFaulted && faults==3);
+ xe.adlnOutputWiring.dsi=0;
  XE::wrapDSIGetCRTC(&controller,&fb,nullptr);assert(nativeCRTC==2);
  assert(io.writes.empty() && !level);for(auto reg:io.reads)assert(reg<0xC7200 || reg>0xC8258);
  puts("PASS production DSI cache: native object binding, split timing/pipe fields, coherent snapshots, no partial publication, no PWM, failure latch and external fallback");
