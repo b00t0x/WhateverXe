@@ -4,6 +4,7 @@
   "-wex-dsi-panel-only": [],
   "-wex-dsi-command-test": [],
   "-wex-dsi-panel-test": [],
+  "-wex-dsi-host-test": [],
   "-wex-adln-config-stage": [
     "-adlnconfigstage",
     "-n97configstage"

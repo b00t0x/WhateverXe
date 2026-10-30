@@ -12,6 +12,7 @@ enum class ProfileStatus : uint32_t {Bounds, Version, Duplicate, Missing, Child,
 struct Mode {
     uint32_t clockKHz {};
     uint16_t width {},hblank {},hfront {},hsync {},height {},vblank {},vfront {},vsync {},widthMM {},heightMM {};
+    bool hsyncPositive {},vsyncPositive {};
     uint32_t htotal() const {return uint32_t(width)+hblank;}
     uint32_t vtotal() const {return uint32_t(height)+vblank;}
     bool valid() const {
@@ -116,6 +117,7 @@ inline Profile parseProfile(Span input,bool allowFinalEndQuirk=false) {
     m.hfront=profileU16(t+8);m.hsync=profileU16(t+10);m.height=profileU16(t+12);
     m.vblank=profileU16(t+14);m.vfront=profileU16(t+16);m.vsync=profileU16(t+18);
     m.widthMM=profileU16(t+20);m.heightMM=profileU16(t+22);
+    m.hsyncPositive=t[24]&0x80;m.vsyncPositive=t[24]&0x40;
     if(!m.valid())return failure;
     failure.status=ProfileStatus::Backlight;
     if(backlight.size<273 || backlight.data[0]!=6)return failure;

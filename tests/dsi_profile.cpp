@@ -22,7 +22,7 @@ Bytes fixture() {
     add(b,52,config);
     Bytes dtd(30);put(dtd,0,28);put(dtd,2,135255,4);
     const unsigned fields[]={1080,46,22,2,1920,82,40,2,86,154};
-    for(unsigned i=0;i<10;++i)put(dtd,6+2*i,fields[i]);add(b,58,dtd);
+    for(unsigned i=0;i<10;++i)put(dtd,6+2*i,fields[i]);dtd[26]=0xC0;add(b,58,dtd);
     Bytes bl(273);bl[0]=6;bl[1]=2;put(bl,2,40000);bl[113]=2;put(bl,129,255);put(bl,193,6);bl[257]=8;add(b,43,bl);
     Bytes seq(10);seq[0]=3;seq[5]=0;
     // Empty, terminated sequences prove structure without firmware commands.
@@ -38,6 +38,7 @@ int main(int argc,char **argv) {
     auto b=fixture();auto r=parse(b);
     if(!r.valid())printf("status %u\n",unsigned(r.status));
     assert(r.valid()&&r.mode.htotal()==1126&&r.mode.vtotal()==2002&&r.pwmHz==40000);
+    assert(r.mode.hsyncPositive && r.mode.vsyncPositive);
     assert(r.clockPrepare==50&&r.clockPrepareZero==310&&r.hsPrepareZero==200&&r.ppsUs[4]==500000);
     const auto link=linkPlan(r);assert(link.valid&&link.afeKHz==811530&&link.portKHz==162306);
     assert(link.escapeDivider==56&&link.phyEscapeDivider==3);

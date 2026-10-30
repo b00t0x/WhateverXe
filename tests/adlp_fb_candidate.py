@@ -21,7 +21,7 @@ struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegis
 XELP::ProbeConfig seen;unsigned calls=0;
 bool configure(void *c,const XELP::ProbeConfig *p){assert(c==(void*)1);seen=*p;++calls;return p->valid();}
 struct XE {
- bool dsiPanelOnly=false,dsiCommandTest=false,dsiPanelTest=false;
+ bool dsiPanelOnly=false,dsiCommandTest=false,dsiPanelTest=false,dsiHostTest=false;
  XELP::Profile xeProfile=XELP::identify(0x46A68086,12,0x9A498086);
  XELP::VBT::Ports firmwarePorts;
  bool adlpDisplaySelected=true,adlsDisplaySelected=false,tglHDMIWiringApplied=false,tglTCWiringLoaded=false;

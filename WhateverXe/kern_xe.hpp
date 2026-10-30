@@ -16,6 +16,7 @@
 #include "kern_dsi_clock.hpp"
 #include "kern_dsi_commands.hpp"
 #include "kern_dsi_panel.hpp"
+#include "kern_dsi_restart.hpp"
 #include "kern_tgl_tc_native.hpp"
 #include "kern_tgl_native_fia.hpp"
 #include "kern_tgl_hdmi_wiring.hpp"
@@ -250,6 +251,8 @@ private:
     bool dsiPanelOnly {};
     bool dsiCommandTest {};
     bool dsiPanelTest {};
+    bool dsiHostTest {};
+    XELP::DSI::Restart::State dsiHostRestart;
     XELP::DSI::Panel::Result dsiPanelTrial;
     bool probeDSIPanel(IOService *);
     XELP::DSI::Host dsiCommandHost;

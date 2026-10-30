@@ -24,23 +24,25 @@ template<class IO> GPIOResult gpio(IO &io,unsigned role,unsigned value) {
 }
 enum class Stage : uint32_t {
     Input,BacklightOff,PlaneOff,TranscoderOff,DisplayOff,AssertReset,PowerOff,
-    PowerCycle,PowerOn,DeassertReset,Init,TranscoderOn,PlaneOn,BacklightOn,Complete
+    PowerCycle,PowerOn,DeassertReset,Init,TranscoderOn,PlaneOn,BacklightOn,Complete,HostOff,HostOn
 };
-enum class Error : uint32_t {None,Input,Ownership,Readback,Timeout,Sequence};
+enum class Error : uint32_t {None,Input,Ownership,Readback,Timeout,Sequence,Host};
 struct Result {
     Stage stage {Stage::Input};Error error {Error::Input};
     uint32_t reg {},value {},writes {},waitUs {},frameBefore {},frameAfter {};
-    Host host;bool attempted {};
+    Host host;Readout source;bool attempted {};
     bool complete() const {return stage==Stage::Complete && error==Error::None;}
 };
-// Bounded bootstrap panel experiment. Keep PLL/PHY/host and existing scanout
-// backing pinned. Stop pixel transfer, execute the complete panel off/reset/on
-// sequences, and restart the same scanout. This is NOT a cold host restart or
-// a runtime DPMS implementation. No allocation, PLL or shared power release.
+// Bounded bootstrap panel experiment. Keep existing scanout backing pinned.
+// Stop pixel transfer, execute the complete panel off/reset/on sequences, and
+// restart the same scanout. Lifecycle may stop/rebuild the host between panel
+// operations; RetainedHost leaves its settings intact. Neither variant is a
+// runtime DPMS implementation or releases allocation/shared power ownership.
 // IO::gpio serializes HPD writes; no delays may run under that IRQ lock.
 // A failed transaction is never retried and must retain all resources.
-template<class IO> void cycle(IO &io,const Readout &link,const Profile &profile,
-                             uint32_t planeControl,uint32_t surface,Result &r) {
+template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const Profile &profile,
+                             uint32_t planeControl,uint32_t surface,Result &r,Lifecycle &lifecycle) {
+    Readout current=link;
     if(r.attempted)return;
     r.attempted=true;
     if(!profile.valid() || !link.matches(profile) || link.identity.pipe!=0 ||
@@ -110,11 +112,13 @@ template<class IO> void cycle(IO &io,const Readout &link,const Profile &profile,
     r.stage=Stage::TranscoderOff;
     if(!write(0x7B008,link.conf&~(1U<<31)) || !wait(0x7B008,0xC0000000U,0,50000))return;
     r.stage=Stage::DisplayOff;if(!sequence(4))return;
+    r.stage=Stage::HostOff;if(!lifecycle.stop(io,link,profile)){r.error=Error::Host;return;}
     r.stage=Stage::AssertReset;if(!sequence(5) || !delay(3))return;
     r.stage=Stage::PowerOff;if(!sequence(11))return;
     r.stage=Stage::PowerCycle;if(!delay(4))return;
     r.stage=Stage::PowerOn;if(!sequence(10) || !delay(0))return;
     r.stage=Stage::DeassertReset;if(!sequence(1))return;
+    r.stage=Stage::HostOn;if(!lifecycle.start(io,current)){r.error=Error::Host;return;}
     r.stage=Stage::Init;if(!sequence(2))return;
     // Sequences drain before returning; never enable video over queued data.
     if(port.failed || r.host.pending || !held())return;
@@ -126,10 +130,18 @@ template<class IO> void cycle(IO &io,const Readout &link,const Profile &profile,
        !wait(0x70180,UINT32_MAX,planeControl,0) || !frame() ||
        !wait(0x701AC,UINT32_MAX,surface,0))return;
     r.stage=Stage::BacklightOn;if(!delay(1) || !sequence(6))return;
-    if(!held() || !Surface::source(io,link) || port.failed || r.host.pending ||
+    if(!held() || !Surface::source(io,current) || port.failed || r.host.pending ||
        !read(0x6B0D0,credits) || !read(0x6B0D8,lp) ||
        (credits&0x1FFF)!=0x1040 || (lp&0x30001))return;
-    r.stage=Stage::Complete;r.error=Error::None;
+    r.source=current;r.stage=Stage::Complete;r.error=Error::None;
+}
+struct RetainedHost {
+    template<class IO> bool stop(IO &,const Readout &,const Profile &){return true;}
+    template<class IO> bool start(IO &,Readout &){return true;}
+};
+template<class IO> void cycle(IO &io,const Readout &link,const Profile &profile,
+                             uint32_t planeControl,uint32_t surface,Result &r) {
+    RetainedHost retained;cycle(io,link,profile,planeControl,surface,r,retained);
 }
 }}}
 #endif

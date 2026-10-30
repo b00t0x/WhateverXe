@@ -3873,7 +3873,8 @@ Display13OutputWiring XE::display13BoardWiring(IOService *provider) {
         board.dsi=1;
         dsiPanelOnly=checkKernelArgument("-wex-dsi-panel-only");
         dsiCommandTest=checkKernelArgument("-wex-dsi-command-test");
-        dsiPanelTest=checkKernelArgument("-wex-dsi-panel-test");
+        dsiHostTest=checkKernelArgument("-wex-dsi-host-test");
+        dsiPanelTest=checkKernelArgument("-wex-dsi-panel-test") || dsiHostTest;
         IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPanelOnly",dsiPanelOnly);
         if(!board.described())return {};
     }
@@ -12129,8 +12130,9 @@ bool XE::probeDSICommands(IOService *controller) {
     return complete;
 }
 
-// Bootstrap-only panel sequence experiment. Keep the host/PHY/PLL alive so
-// GPIO and long-packet failures are distinguishable from cold host startup.
+// Bootstrap-only panel sequence experiment. By default retain host/PHY/PLL;
+// the optional host trial rebuilds them before panel INIT_OTP. Neither path
+// releases shared resources or enables runtime power transitions.
 bool XE::probeDSIPanel(IOService *controller) {
     auto &c=display13FBPower;auto &clock=comboClockTransaction;auto &irq=display13FBIRQ;
     if(!controller || !c.lock || !clock.lock || !irq.lock)return false;
@@ -12147,13 +12149,16 @@ bool XE::probeDSIPanel(IOService *controller) {
     };
     struct IO : Display13FBBootIO {
         decltype(owned) &owns;IOSimpleLock *irqLock;
-        uint32_t writes {},gpios {};XELP::DSI::Panel::GPIOResult lastGPIO;
-        IO(IOMemoryMap *m,decltype(owned) &q,IOSimpleLock *l):Display13FBBootIO{m},owns(q),irqLock(l) {}
+        bool restart {};unsigned pll {};uint32_t writes {},gpios {};XELP::DSI::Panel::GPIOResult lastGPIO;
+        IO(IOMemoryMap *m,decltype(owned) &q,IOSimpleLock *l,bool cold,unsigned id):Display13FBBootIO{m},owns(q),irqLock(l),restart(cold),pll(id) {}
         bool ready() {
             if(!owns() || !readable(0x45404))return false;
             const auto wells=read(0x45404);return wells!=UINT32_MAX && (wells&0x403)==0x403;
         }
         void write(uint32_t reg,uint32_t value) {
+            if(restart && XELP::DSI::Restart::writable(reg,pll)) {
+                *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg)=value;++writes;return;
+            }
             switch(reg) {
                 case 0x6B100:case 0x6B104:case 0xC4030:case 0xC7204:
                 case 0x70180:case 0x7019C:case 0x7B008:
@@ -12170,7 +12175,18 @@ bool XE::probeDSIPanel(IOService *controller) {
             return lastGPIO.complete;
         }
         void delayUs(unsigned us){IODelay(us);}
-    } io{c.map,owned,irq.lock};
+    } io{c.map,owned,irq.lock,dsiHostTest,dsiBoot.source.identity.pll};
+    struct Lifecycle {
+        bool enabled;XELPComboClock::ClockAllocation &allocation;uintptr_t owner;XELP::DSI::Restart::State &state;
+        bool stop(IO &io,const XELP::DSI::Readout &source,const XELP::DSI::Profile &profile) {
+            return !enabled || XELP::DSI::Restart::stop(io,source,profile,allocation,owner,state);
+        }
+        bool start(IO &io,XELP::DSI::Readout &source) {
+            if(!enabled)return true;
+            if(!XELP::DSI::Restart::start(io,allocation,owner,state))return false;
+            source=XELP::DSI::Restart::expected(source,state);return source.complete();
+        }
+    } lifecycle{dsiHostTest,clock.allocation,reinterpret_cast<uintptr_t>(controller),dsiHostRestart};
     uint64_t record[32] {1};
     record[1]=io.ready() && !dsiPanelTrial.attempted && dsiProfile.valid() &&
         !dsiCommandHost.faulted && !dsiCommandHost.pending &&
@@ -12178,14 +12194,19 @@ bool XE::probeDSIPanel(IOService *controller) {
     if(record[1]) {
         record[20]=io.read(0xC7204);record[22]=io.read(0xC4030);
         record[24]=io.read(0xC7200);record[28]=io.read(0x70040);
-        XELP::DSI::Panel::cycle(io,dsiBoot.source,dsiProfile,dsiBoot.control,dsiBoot.surface,dsiPanelTrial);
+        XELP::DSI::Panel::cycle(io,dsiBoot.source,dsiProfile,dsiBoot.control,dsiBoot.surface,dsiPanelTrial,lifecycle);
         record[21]=io.ready()?io.read(0xC7204):UINT32_MAX;
         record[23]=io.ready()?io.read(0xC4030):UINT32_MAX;
         record[25]=io.ready()?io.read(0xC7200):UINT32_MAX;
         record[26]=io.ready()?io.read(0x6B0D0):UINT32_MAX;
         record[27]=io.ready()?io.read(0x6B0D8):UINT32_MAX;
         record[29]=io.ready()?io.read(0x70040):UINT32_MAX;
-        record[30]=io.ready() && XELP::DSI::bootUnchanged(io,dsiBoot,xelpMemory);
+        // Publish the new clock/transport witness only after the complete
+        // cycle and old backing/geometry have been revalidated together.
+        auto nextBoot=dsiBoot;
+        if(dsiPanelTrial.complete())nextBoot.source=dsiPanelTrial.source;
+        record[30]=io.ready() && dsiPanelTrial.complete() && XELP::DSI::bootUnchanged(io,nextBoot,xelpMemory);
+        if(record[30]){dsiBoot=nextBoot;c.bootDSI=nextBoot.source;}
     }
     const auto &r=dsiPanelTrial;const auto &h=r.host;
     record[2]=static_cast<uint32_t>(r.stage);record[3]=static_cast<uint32_t>(r.error);
@@ -12195,8 +12216,14 @@ bool XE::probeDSIPanel(IOService *controller) {
     record[14]=h.waitedUs;record[15]=h.completedOperations;record[16]=io.gpios;
     record[17]=io.lastGPIO.role;record[18]=io.lastGPIO.value;record[19]=io.lastGPIO.complete;
     const bool complete=record[1] && r.complete() && record[30];record[31]=complete;
+    const auto &host=dsiHostRestart;const auto &p=host.config;
+    uint64_t hostRecord[20] {1,dsiHostTest,static_cast<uint32_t>(host.stage),static_cast<uint32_t>(host.error),
+        host.reg,host.value,host.writes,host.waitUs,host.stopped,host.started,host.pll,
+        p.pll.cfg0(),p.pll.cfg1(),p.link.clockTiming,p.link.dataTiming,p.hsTimeout,p.lpTimeout,p.taTimeout,
+        record[30],complete};
     IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPanelTrial",record,sizeof(record));
+    if(dsiHostTest)IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIHostRestart",hostRecord,sizeof(hostRecord));
     return complete;
 }
 
