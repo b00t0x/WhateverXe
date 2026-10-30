@@ -11083,9 +11083,12 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path,bool 
         p.control=io.read(0x70180);p.surface=io.read(0x7019C);p.stride=io.read(0x70188);p.size=io.read(0x70190);
         p.position=io.read(0x7018C);p.offset=io.read(0x701A4);p.color=io.read(0x701CC);
         power.cursorControl=io.read(0x70080);power.cursorPosition=io.read(0x70088);power.cursorBase=io.read(0x70084);
-        const auto &proof=dsiPendingBacking.proof;
-        const XELP::DSI::Surface::Backing backing{reinterpret_cast<uintptr_t>(dsiPendingBacking.record),proof.gpu,proof.bytes,proof.pitch};
-        snapshot=XELP::DSI::Surface::target(p,dsiProfile,backing) && XELP::DSI::Surface::matches(io,p,true) &&
+        // The published aperture is not the current native flip surface.
+        // As in NativeCache::readActive, retain the native mode/display pipe
+        // and its transaction ownership; do not free/rebind it or substitute
+        // the initial backing. Writers are excluded through wake. Restore only
+        // the latched native plane image, with the supported fixed geometry.
+        snapshot=XELP::DSI::Surface::shape(p,dsiProfile) && XELP::DSI::Surface::matches(io,p,true) &&
             power.cursorControl!=UINT32_MAX && power.cursorBase!=UINT32_MAX && power.cursorPosition!=UINT32_MAX &&
             Display13Cursor::controlWrite(0x70080,power.cursorControl)==power.cursorControl;
         if(snapshot){power.host=XELP::DSI::Restart::State{};power.panel=XELP::DSI::Panel::Result{};dsiPanelStop={};dsiStop={};}

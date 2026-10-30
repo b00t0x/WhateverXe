@@ -90,7 +90,7 @@ void panelCycle(Fixture &f,bool fail=false){
  assert(f.allocation.external[0]==1 && f.allocation.binding[0]==2);
 }
 void retainedCycle(Fixture &f,unsigned fault=0){
- f.io.regs[0x7B008]=0xC0000000;f.io.regs[0x70180]=0x94000008;
+ f.io.regs[0x7B008]=0xC0000000;f.io.regs[0x70180]=0x94001000;f.io.regs[0x7019C]=f.io.regs[0x701AC]=0x44E00000;
  f.io.regs[0x42084]=1U<<30;f.io.regs[0x6001C]=0x0437077F;f.io.regs[0x6B010]=f.io.regs[0x6B00C];
  f.io.regs[0xC7204]=15;f.io.regs[0xC4030]=0x84;f.source.mux=f.io.regs[0x164280];
  Panel::Shutdown shutdown;
@@ -105,10 +105,10 @@ void retainedCycle(Fixture &f,unsigned fault=0){
  assert(Restart::stopQuiesced(f.io,f.source,f.p,stopped,f.allocation,1,f.state));
  assert(f.state.stopped && !f.io.regs[0x46014] && f.allocation.external[0]==1 && f.allocation.binding[0]==2);
  Panel::Result panel;Lifecycle lifecycle{f.allocation,f.state};
- Panel::cycle(f.io,f.source,f.p,0x94000008,0,panel,lifecycle,&shutdown);
+ Panel::cycle(f.io,f.source,f.p,0x94001000,0x44E00000,panel,lifecycle,&shutdown);
  if(!panel.complete())fprintf(stderr,"resume stage=%u error=%u reg=%x host=%u restart=%u/%u\n",unsigned(panel.stage),unsigned(panel.error),panel.reg,unsigned(panel.host.error),unsigned(f.state.stage),unsigned(f.state.error));
  assert(panel.complete() && f.state.started && Surface::source(f.io,panel.source));
- assert(f.io.regs[0x70180]==0x94000008 && f.io.regs[0x46014]==0xCC000000);
+ assert(f.io.regs[0x70180]==0x94001000 && f.io.regs[0x7019C]==0x44E00000 && f.io.regs[0x701AC]==0x44E00000 && f.io.regs[0x46014]==0xCC000000);
  assert(f.allocation.external[0]==1 && f.allocation.binding[0]==2);
  assert(f.io.regs[0x71180]==0x94000000 && f.io.regs[0x64100]==0x80000000);
 }
