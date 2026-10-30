@@ -12,6 +12,7 @@ using namespace XELP::DSI;
 using Display13FBMemory::field;
 template<class T>void put(void *p,unsigned offset,T value){memcpy(static_cast<uint8_t*>(p)+offset,&value,sizeof(value));}
 unsigned notifications=0;
+bool noPanelFitter(void *,uint32_t,uint32_t,uint32_t,uint32_t,uint64_t,uint32_t,bool){return false;}
 void notify(void *){++notifications;}
 void zero(void *p,size_t n){memset(p,0,n);}
 unsigned logicalAllocations=0,logicalFrees=0,recordAllocations=0,recordFrees=0;
@@ -131,13 +132,24 @@ int main(int argc,char **argv) {
             assert(field<uintptr_t>(fb,0x4348)==0x12345000); // Logical allocation preserves the scanout.
             releaseLogical(fb);assert(!field<uintptr_t>(fb,0x4340));
         }
+        // Replay the native GPU fallback for a portrait HiDPI source. Only
+        // hardware-scaler admission is declined, as for the adopted DSI owner.
+        patchCall(image,0x32909,reinterpret_cast<uintptr_t>(noPanelFitter));
+        auto portrait=t;portrait.horizontalScaled=1620;portrait.verticalScaled=2880;
+        assert(AppleAdapter::prepareGeometry(fb,path,p,portrait,compute,true));
+        assert(field<uint32_t>(fb,0x4338)==0x20 && field<uint32_t>(fb,0x4334)==6528);
+        assert(field<uint32_t>(path,0xF8)==1080 && field<uint32_t>(path,0xFC)==1920);
+        assert(allocateLogical(fb)==0);
+        auto portraitRecord=field<NativeBacking::Record *>(fb,0x4340);
+        assert(portraitRecord && portraitRecord->bytes==6528U*2880);
+        releaseLogical(fb);assert(!field<uintptr_t>(fb,0x4340));
         // A failing accelerator callback still publishes the heap record.
         // A future mode adapter must explicitly retire it before rollback.
         logicalResult=0xE00002BD;assert(allocateLogical(fb)==logicalResult);
         assert(field<uintptr_t>(fb,0x4340));releaseLogical(fb);
         logicalResult=0;failRecord=true;assert(allocateLogical(fb)==0xE00002BD);
         assert(!field<uintptr_t>(fb,0x4340));
-        assert(logicalAllocations==5 && logicalFrees==5 && recordAllocations==5 && recordFrees==5);
+        assert(logicalAllocations==6 && logicalFrees==6 && recordAllocations==6 && recordFrees==6);
         munmap(image,0x400000);puts("DSI native geometry: fixed scanout, quarter-turn logical buffers, HiDPI and failure cleanup replay passed");
     }
     puts("DSI native mode preparation rollback and admission passed");

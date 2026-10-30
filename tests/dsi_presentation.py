@@ -51,7 +51,7 @@ void compute(void *f,const Timing *t){
  for(unsigned off:{0x430CU,0x4320U,0x4328U})put(f,off,t->horizontalActive);
  for(unsigned off:{0x4310U,0x4324U,0x432CU})put(f,off,t->verticalActive);
  put(f,0x430C,width);put(f,0x4310,height);
- put(f,0x4314,pitch*t->verticalActive);put(f,0x4334,pitch);put(f,0x4338,t->scalerFlags?0x30U:1U);
+ put(f,0x4314,pitch*t->verticalActive);put(f,0x4334,pitch);put(f,0x4338,t->scalerFlags?0x30U:((width!=t->horizontalActive || height!=t->verticalActive)?0x20U:1U));
  put(path,0xF0,uint64_t(0));put(path,0x100,uint64_t(0));
  for(unsigned off:{0xF8U,0x108U})put(path,off,t->horizontalActive);
  for(unsigned off:{0xFCU,0x10CU})put(path,off,t->verticalActive);
@@ -59,7 +59,7 @@ void compute(void *f,const Timing *t){
 uint32_t allocate(IOService *f){
  assert(dsiFixedMode.changingThread && !field<uintptr_t>(f,0x4340));
  assert(field<uint32_t>(f,0x4250)==dsiFixedMode.activeMode);
- if(!dsiFixedMode.presentation.scalerFlags)return 0;
+ if(!(field<uint32_t>(f,0x4338)&0x30))return 0;
  ++allocations;auto r=new Record;r->kind=2;r->columns=(field<uint32_t>(f,0x430C)*4+127)/128;r->rows=(field<uint32_t>(f,0x4310)+31)/32;
  r->pitch=field<uint32_t>(f,0x4334);r->bytes=r->pitch*field<uint32_t>(f,0x4310);
  r->memory=0x200000;r->map=0x300000;
@@ -94,7 +94,13 @@ int main(){
  failAllocation=true;assert(xe.setDSIPresentation(&fb,5,turn)==kIOReturnNotReady);
  assert(o.activeMode==4 && !o.logical && !o.presentationFault && !o.changingThread && allocations==5 && frees==5);
  assert(field<uint32_t>(&fb,0x4338)==1 && dsiPublishedTarget(&fb) && receiptCopy[10]==1);
- failAllocation=false;assert(!xe.setDSIPresentation(&fb,6,turn));failRelease=true;
+ failAllocation=false;
+ auto portrait=o.timing;portrait.horizontalScaled=1620;portrait.verticalScaled=2880;
+ assert(!xe.setDSIPresentation(&fb,10,portrait) && o.logical);
+ assert(field<uint32_t>(&fb,0x4338)==0x20 && field<Record *>(&fb,0x4340)->bytes==18800640);
+ assert(!xe.setDSIPresentation(&fb,11,portrait) && allocations==6 && frees==5);
+ assert(!xe.setDSIPresentation(&fb,4,o.timing) && !o.logical && allocations==frees);
+ assert(!xe.setDSIPresentation(&fb,6,turn));failRelease=true;
  assert(xe.setDSIPresentation(&fb,7,o.timing)==kIOReturnNotReady && o.presentationFault && !o.changingThread);
  assert(allocations==frees && !lock.depth && dsiPublishedTarget(&fb));
  puts("PASS production presentation: quarter-turns, native restore, partial allocation cleanup and failed-release admission closure");

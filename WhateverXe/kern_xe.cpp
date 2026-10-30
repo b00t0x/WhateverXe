@@ -7277,7 +7277,13 @@ bool XE::processDisplay13DSIModes(KernelPatcher &patcher,size_t index,mach_vm_ad
         if(fn!=address+modeOffsets[i] || memcmp(reinterpret_cast<void *>(fn),entry,4))return false;
         dsiModeCPU[i]=fn;
     }
+    const char *scaler="__ZN16AppleIntelScaler19isSupportedByScalerEjjjjyjb";
+    const auto scalerFn=patcher.solveSymbol<mach_vm_address_t>(index,scaler,address,size);patcher.clearError();
+    const uint8_t scalerEntry[]={0x55,0x48,0x89,0xE5,0x48,0xFF,0x05,0xD7,0xD7,0x07,0x00,0x48,0x8B,0x47,0x10};
+    if(size<=0x6686D || scalerFn!=address+0x6685E ||
+       memcmp(reinterpret_cast<void *>(scalerFn),scalerEntry,sizeof(scalerEntry)))return false;
     KernelPatcher::RouteRequest routes[]={
+        {scaler,wrapDSIScalerSupport,orgDSIScalerSupport},
         {symbols[0],wrapDSISetDetailedTimings,orgDSIMode[0]},
         {symbols[1],wrapDSIValidateMode,orgDSIMode[1]},
         {symbols[2],wrapDSIGetModes,orgDSIMode[2]},
@@ -7504,7 +7510,7 @@ uint32_t XE::wrapDSIValidateMode(IOService *fb,int32_t mode,const void **descrip
             fb,XELP::DSI::AppleAdapter::FixedModeID,description,timing);
         if(!result && timing) {
             if(*timing!=dsiFixedMode.data->getBytesNoCopy())return kIOReturnNotReady;
-            if(selected->scalerFlags)*timing=selected;
+            if(selected->scalerFlags || selected->horizontalScaled || selected->verticalScaled)*timing=selected;
         }
         return result;
     }();
@@ -7532,6 +7538,17 @@ uint32_t XE::wrapDSIGetModeCount(IOService *fb) {
     recordDSIClient(fb,4,0,result);
     return result;
 }
+// The adopted DSI scanout is fixed-size. It has no panel-fitter resource
+// transaction, so let the donor select its existing GPU scaling path. Preserve
+// the real OS timing and transform; other framebuffer owners keep native policy.
+bool XE::wrapDSIScalerSupport(void *scaler,uint32_t outputW,uint32_t outputH,
+    uint32_t sourceW,uint32_t sourceH,uint64_t clock,uint32_t flags,bool format) {
+    auto fb=scaler ? Display13FBMemory::field<IOService *>(scaler,0x10) : nullptr;
+    if(dsiModeTarget(fb))return false;
+    return FunctionCast(wrapDSIScalerSupport,callbackXE->orgDSIScalerSupport)(
+        scaler,outputW,outputH,sourceW,sourceH,clock,flags,format);
+}
+
 uint32_t XE::wrapDSIGetModeInformation(IOService *fb,int32_t mode,void *raw) {
     recordDSIClient(fb,5,static_cast<uint32_t>(mode),UINT32_MAX);
     const auto result=[&]() -> uint32_t {
@@ -7699,7 +7716,7 @@ uint32_t XE::setDSIPresentation(IOService *fb,uint32_t mode,const XELP::DSI::App
         __atomic_store_n(&o.logical,field<uintptr_t>(fb,0x4340),__ATOMIC_RELEASE);
         receipt[5]=result;receipt[6]=o.logical;receipt[7]=field<uintptr_t>(pipe,0x12B8);receipt[8]=field<uintptr_t>(pipe,0x12C0);
         if(result)return false; // native failure can still leave a record to release
-        if(timing.scalerFlags) {
+        if(field<uint32_t>(fb,0x4338)&0x30) {
             auto record=reinterpret_cast<const XELP::DSI::NativeBacking::Record *>(o.logical);
             if(!record || record->kind!=2 || record->columns!=(field<uint32_t>(fb,0x430C)*4+127)/128 || record->rows!=(field<uint32_t>(fb,0x4310)+31)/32 ||
                record->pitch!=field<uint32_t>(fb,0x4334) || record->bytes!=uint64_t(record->pitch)*field<uint32_t>(fb,0x4310) || !record->memory || !record->map ||

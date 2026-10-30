@@ -6,7 +6,7 @@
 #include "kern_display13_fb_memory.hpp"
 namespace XELP { namespace DSI { namespace AppleAdapter {
 // The caller holds the FB mutex and validates object classes/ownership. No
-// wire timing changes are admitted. Quarter-turn preparation retains the physical
+// wire timing changes are admitted. GPU presentation preparation retains the physical
 // scanout; its separate logical buffer must be retired by the caller first.
 template<class Compute> bool prepareGeometry(void *fb,void *path,const Profile &profile,
                                              const Timing &timing,Compute compute,bool presentation=false) {
@@ -14,7 +14,10 @@ template<class Compute> bool prepareGeometry(void *fb,void *path,const Profile &
     Timing expected;
     if(!makeTiming(profile,expected))return false;
     const bool rotated=presentation && (timing.scalerFlags==0x30 || timing.scalerFlags==0x50);
-    if(rotated) {expected.scalerFlags=timing.scalerFlags;
+    const bool scaled=presentation && (timing.horizontalScaled || timing.verticalScaled);
+    if(rotated || scaled) {
+        if(timing.scalerFlags && !rotated)return false;
+        expected.scalerFlags=timing.scalerFlags;
         if(!validPresentationSize(timing.horizontalScaled,timing.verticalScaled))return false;
         expected.horizontalScaled=timing.horizontalScaled;expected.verticalScaled=timing.verticalScaled;}
     if(!fb || !path || memcmp(&expected,&timing,sizeof(timing)) ||
@@ -29,13 +32,13 @@ template<class Compute> bool prepareGeometry(void *fb,void *path,const Profile &
     const auto put=[](void *o,unsigned offset,uint32_t v){memcpy(static_cast<uint8_t *>(o)+offset,&v,4);};
     put(fb,0x4350,4);*(static_cast<uint8_t *>(fb)+0x4A18)=1;
     compute(fb,&timing);
-    const auto &m=profile.mode;const uint32_t width=rotated?timing.horizontalScaled:m.width,height=rotated?timing.verticalScaled:m.height;
+    const auto &m=profile.mode;const uint32_t width=scaled?timing.horizontalScaled:m.width,height=scaled?timing.verticalScaled:m.height;
     const uint32_t pitch=((width*4+127)/128)*128;
     const bool valid=field<uint32_t>(fb,0x430C)==width && field<uint32_t>(fb,0x4310)==height &&
         field<uint32_t>(fb,0x4314)==pitch*m.height && field<uint32_t>(fb,0x4320)==m.width &&
         field<uint32_t>(fb,0x4324)==m.height && field<uint32_t>(fb,0x4328)==m.width &&
         field<uint32_t>(fb,0x432C)==m.height && field<uint32_t>(fb,0x4334)==pitch &&
-        field<uint32_t>(fb,0x4338)==(rotated ? 0x30U : 1U) && !field<uint64_t>(path,0xF0) &&
+        field<uint32_t>(fb,0x4338)==(rotated ? 0x30U : (scaled && (width!=m.width || height!=m.height) ? 0x20U : 1U)) && !field<uint64_t>(path,0xF0) &&
         field<uint32_t>(path,0xF8)==m.width && field<uint32_t>(path,0xFC)==m.height &&
         !field<uint64_t>(path,0x100) && field<uint32_t>(path,0x108)==m.width &&
         field<uint32_t>(path,0x10C)==m.height;

@@ -45,6 +45,9 @@ int main() {
         r=offered;r.scalerFlags=rotation;r.horizontalActive=1920;r.verticalActive=1080;
         assert(!AppleAdapter::presentationTiming(t,r,1));
     }
+    auto portrait=offered;portrait.horizontalScaled=1620;portrait.verticalScaled=2880;
+    assert(AppleAdapter::presentationTiming(t,portrait,0));
+    portrait.scalerFlags=1;assert(!AppleAdapter::presentationTiming(t,portrait,0));
     assert(!AppleAdapter::acceptsMode(0x80001002,0x80001001));
     uint8_t edid[128];assert(AppleAdapter::makePanelEDID(p.mode,edid));
     unsigned sum=0;for(auto b:edid)sum+=b;assert(!(sum&255));

@@ -226,7 +226,7 @@ private:
     bool xelpBindProbe(void *controller);
 	bool display13FBTopologyHooksReady {false};
     bool display13DSIModeHooksReady {};
-    mach_vm_address_t orgDSIMode[9] {};
+    mach_vm_address_t orgDSIMode[9] {},orgDSIScalerSupport {};
     bool processDisplay13DSIModes(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     static void recordDSIClient(IOService *,unsigned,uint64_t,uint32_t);
     bool releaseDSIFixedMode(IOService *);
@@ -307,6 +307,7 @@ private:
     static uint32_t wrapDSIGetModes(IOService *,int32_t *);
     static uint32_t wrapDSIGetModeCount(IOService *);
     static uint32_t wrapDSIGetModeInformation(IOService *,int32_t,void *);
+    static bool wrapDSIScalerSupport(void *,uint32_t,uint32_t,uint32_t,uint32_t,uint64_t,uint32_t,bool);
 	Display13OutputWiring adlnOutputWiring;
  mach_vm_address_t adlnComboPLLFractionCaller {};
 	uint64_t adlnPlatform[0x1C0/8] {};

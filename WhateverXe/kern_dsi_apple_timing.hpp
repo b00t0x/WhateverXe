@@ -61,7 +61,7 @@ inline bool validPresentationSize(uint32_t width,uint32_t height) {
     return width && height && width<=8191 && height<=8191;
 }
 inline bool presentationTiming(const Timing &fixed,const Timing &offered,unsigned index) {
-    if(offered.scalerFlags!=0x30 && offered.scalerFlags!=0x50)return false;
+    if(offered.scalerFlags!=0 && offered.scalerFlags!=0x30 && offered.scalerFlags!=0x50)return false;
     if(!validPresentationSize(offered.horizontalScaled,offered.verticalScaled))return false;
     auto native=offered;native.scalerFlags=0;native.horizontalScaled=0;native.verticalScaled=0;
     return clientTiming(fixed,native,index);
