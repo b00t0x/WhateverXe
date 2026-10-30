@@ -20,6 +20,7 @@ if len(sys.argv)==2:
 code=r'''
 #include "kern_display13_fb_memory.hpp"
 #include "kern_dsi_apple_timing.hpp"
+#include "kern_dsi_flip.hpp"
 #include "kern_display13_transcoder.hpp"
 #include <cassert>
 #include <cstdio>
@@ -29,6 +30,7 @@ struct OSObject {alignas(8) uint8_t bytes[0x4B90]{};unsigned size=sizeof(bytes);
 using IOService=OSObject;
 struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}
  void setProperty(const char *name,const void *data,unsigned bytes){
+  if(!strncmp(name,"WEXDSIFlipGeometry",18)){assert(bytes==128);return;}
   assert(!strcmp(name,"WEXDSIModeRequest") && bytes==64);
   const auto words=static_cast<const uint64_t *>(data);assert(words[0]==1);
  }};
@@ -58,6 +60,7 @@ unsigned imageCalls=0,stateCalls=0,expectedWriters=1;bool nestedCursor=false;
 uint32_t nativeImage(IOService*,IOService*,void*);
 uint32_t nativeState(IOService*,IOService*,int32_t,int32_t,bool,bool);
 unsigned txCalls[5]{},txAnchor=0,paramAnchor=0;bool nestedTx=false;
+uint8_t flipInput[0xB8]{},flipExpected[0xB8]{};bool adaptedFlip=false;
 constexpr uint64_t txOptions=0xFEDCBA9876543210ULL;
 uint32_t nativeFlip(IOService*,void*,uint64_t,void*);
 uint32_t nativeGamma(IOService*,void*,void*);
@@ -142,7 +145,10 @@ uint32_t txLeaf(unsigned i,IOService *fb,void *tx){
  assert(display13FBPower.dsiNativeWriters==expectedWriters);++txCalls[i];return txResult(i);
 }
 uint32_t nativeFlip(IOService *fb,void *tx,uint64_t options,void *params){
- assert(options==txOptions && params==&paramAnchor);const auto result=txLeaf(0,fb,tx);
+ assert(options==txOptions);
+ if(adaptedFlip){assert(params!=flipInput && !memcmp(params,flipExpected,sizeof(flipExpected)));}
+ else assert(params==&paramAnchor);
+ const auto result=txLeaf(0,fb,tx);
  if(nestedTx){++expectedWriters;assert(XE::wrapDSICscTransaction(fb,tx,params,options,true)==txResult(2));--expectedWriters;
   assert(display13FBPower.dsiNativeWriters==expectedWriters);}
  return result;
@@ -207,6 +213,16 @@ struct Case {
  void refuse(){const auto calls=armCalls;XE::wrapDisplay13WMArmUpdate(&fb);assert(calls==armCalls && !fbLock.depth && !owner);}
 };
 int main(){
+ {Case c;put(&c.fb,0x4338,0x30U);put(&c.fb,0x4320,1080U);put(&c.fb,0x4324,1920U);
+  flipInput[0]=1;
+  const float rects[]={0,0,1080,1920,0,0,1920,1080};
+  memcpy(flipInput+0x14,rects,sizeof(rects));memcpy(flipExpected,flipInput,sizeof(flipInput));
+  memcpy(flipExpected+0x2C,flipInput+0x1C,8);adaptedFlip=true;
+  assert(XE::wrapDSIFlipTransaction(&c.fb,&txAnchor,txOptions,flipInput)==txResult(0));
+  assert(!memcmp(flipInput+0x14,rects,sizeof(rects)) && !display13FBPower.dsiNativeWriters);
+  adaptedFlip=false;
+ }
+
  for(unsigned attr:{0x706F7772U,0x70777273U}){Case c;xe.dsiPowerTest=true;put(&c.fb,0x4284,2U);
   assert(XE::wrapDSISetAttribute(&c.fb,attr,1)==kIOReturnNotReady && xe.stopCalls==1);
   assert(Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==2);
