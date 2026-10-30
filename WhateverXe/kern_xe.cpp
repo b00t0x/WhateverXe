@@ -3874,6 +3874,7 @@ Display13OutputWiring XE::display13BoardWiring(IOService *provider) {
         dsiPanelOnly=checkKernelArgument("-wex-dsi-panel-only");
         dsiCommandTest=checkKernelArgument("-wex-dsi-command-test");
         dsiHostTest=checkKernelArgument("-wex-dsi-host-test");
+        dsiStopTest=checkKernelArgument("-wex-dsi-stop-test");
         dsiPanelTest=checkKernelArgument("-wex-dsi-panel-test") || dsiHostTest;
         IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPanelOnly",dsiPanelOnly);
         if(!board.described())return {};
@@ -7762,6 +7763,19 @@ uint32_t XE::wrapDSISetPowerState(IOService *fb,uint32_t state) {
             if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
             DSIModeScope scope(fb);if(!scope.lock)return kIOReturnNotReady;
             if(dsiLifecycleTarget(fb,Display13FBMemory::singlePath<OSObject *>(fb))) {
+                // One-way runtime stop experiment through the real power callback.
+                // Recovery is a reboot; state 2 never replays the donor's DDI path.
+                if(callbackXE->dsiStopTest && state<2 && dsiModeTarget(fb)) {
+                    const bool stopped=callbackXE->dsiMemoryReleased && callbackXE->dsiDDIReleased &&
+                        callbackXE->dsiClockStop.complete() && callbackXE->dsiPanelStop.complete;
+                    if(stopped)return kIOReturnSuccess;
+                    if(!callbackXE->dsiNativeWriterHooksReady || !dsiNativeUpdateAllowed(fb))return kIOReturnNotReady;
+                    auto controller=Display13FBMemory::field<IOService *>(fb,0x1D0);
+                    auto path=Display13FBMemory::singlePath<OSObject *>(fb);
+                    if(!callbackXE->quiesceDSIPath(controller,fb,path))return kIOReturnNotReady;
+                    *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(fb)+0x4284)=state;
+                    return kIOReturnSuccess;
+                }
                 // Match only the donor's already-Wake no-op. Do not publish a new
                 // native power state without executing a DSI power transaction.
                 if(state!=2 || Display13FBMemory::field<uint32_t>(fb,0x4284)!=2)return kIOReturnUnsupported;
@@ -11009,7 +11023,7 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     const bool acquired=boundLoop && !inGate && reinterpret_cast<bool (*)(IOWorkLoop *)>(adlnWorkLoopTryClose)(loop);
     if(!inGate && !acquired) {if(loop)loop->release();IORecursiveLockUnlock(mutex);return false;}
     IORecursiveLockLock(clock.lock);IOLockLock(c.lock);
-    uint64_t record[39] {5};record[38]=c.dsiNativeWriters;bool masked=false,maskOK=false,parked=false,restored=false,enabled=false,modeWithdrawn=false;uint32_t master=0;
+    uint64_t record[51] {6};record[38]=c.dsiNativeWriters;bool masked=false,maskOK=false,parked=false,restored=false,enabled=false,modeWithdrawn=false;uint32_t master=0;
     const auto qualified=[&]() {
         if(adlnOutputWiring.dsi!=1 || !dsiResourcesReady || !dsiNativeWriterHooksReady || c.dsiNativeWriters || (dsiPendingTarget(fb) && !dsiArmedBackingOwned(fb,path)) || !dsiProfile.valid() ||
            controller!=c.controller || controller!=adlnTopologyController || c.workLoop!=loop ||
@@ -11030,17 +11044,24 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
             c.bridge.outputHeld(io,0,0);
     };
     struct IO : Display13FBBootIO {
-        decltype(qualified) &owns;
-        IO(IOMemoryMap *m,decltype(qualified) &q):Display13FBBootIO{m},owns(q) {}
+        decltype(qualified) &owns;IOSimpleLock *irqLock;bool panel;
+        IO(IOMemoryMap *m,decltype(qualified) &q,IOSimpleLock *l,bool p):Display13FBBootIO{m},owns(q),irqLock(l),panel(p) {}
         bool ready(){return owns();}
         void write(uint32_t reg,uint32_t value) {
             if(readable(reg) && (reg==0x70080 || reg==0x70084 || reg==0x70088 || reg==0x70180 || reg==0x7019C ||
                reg==0x7B008 || reg==0x6B0D8 || reg==0x6B400 || reg==0x164280 || reg==0x64000 ||
-               reg==0x46010+4*display13FBPower.bootDSI.identity.pll))
+               reg==0x46010+4*display13FBPower.bootDSI.identity.pll ||
+               (panel && (reg==0x6B100 || reg==0x6B104 || reg==0xC4030 || reg==0xC7204))))
                 *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg)=value;
         }
+        bool gpio(unsigned role,unsigned value) {
+            if(!panel || !irqLock)return false;
+            const auto saved=IOSimpleLockLockDisableInterrupt(irqLock);
+            const auto r=XELP::DSI::Panel::gpio(*this,role,value);
+            IOSimpleLockUnlockEnableInterrupt(irqLock,saved);return r.complete;
+        }
         void delayUs(unsigned us){if(us>=1000)IOSleep((us+999)/1000);else IODelay(us);}
-    } io{c.map,qualified};
+    } io{c.map,qualified,irq.lock,dsiStopTest};
     record[1]=qualified();
     if(record[1] && !dsiStopAttempted && adlnIRQOwner(controller) && irq.lock &&
        irq.lock==Display13FBMemory::field<IOSimpleLock *>(controller,0x90) && irq.base==c.map->getVirtualAddress()) {
@@ -11068,7 +11089,9 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         }
         IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
         if(maskOK) {
-            dsiStopAttempted=true;dsiStop=XELP::DSI::Quiesce::run(io,c.bootDSI,dsiProfile);
+            dsiStopAttempted=true;
+            if(dsiStopTest)dsiStop=XELP::DSI::Quiesce::run(io,c.bootDSI,dsiProfile,dsiPanelStop);
+            else dsiStop=XELP::DSI::Quiesce::run(io,c.bootDSI,dsiProfile);
         }
         if(masked) {
             saved=IOSimpleLockLockDisableInterrupt(irq.lock);
@@ -11160,6 +11183,12 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
             !c.pipe[0].scanout.record && !__atomic_load_n(&c.pipe[0].publishedScanout,__ATOMIC_ACQUIRE) &&
             !c.dbuf.pipe[0].consumers && !c.dbuf.pipe[0].unretired;
     }
+    record[39]=dsiStop.reg;record[40]=dsiStop.value;
+    record[41]=dsiPanelStop.stage;record[42]=dsiPanelStop.complete;
+    record[43]=static_cast<uint32_t>(dsiPanelStop.host.error);record[44]=dsiPanelStop.host.sequenceId;
+    record[45]=dsiPanelStop.host.operationOffset;record[46]=dsiPanelStop.host.headers;
+    record[47]=dsiPanelStop.host.payloadWords;record[48]=dsiPanelStop.host.completedOperations;
+    record[49]=dsiPanelStop.host.waitedUs;record[50]=dsiPanelStop.host.pending;
     record[33]=dsiMemoryReleased;record[34]=c.memoryFaulted;
     const bool complete=stoppedPath && dsiMemoryReleased;
     if(complete) {

@@ -252,6 +252,8 @@ private:
     bool dsiCommandTest {};
     bool dsiPanelTest {};
     bool dsiHostTest {};
+    bool dsiStopTest {};
+    XELP::DSI::Panel::Shutdown dsiPanelStop;
     XELP::DSI::Restart::State dsiHostRestart;
     XELP::DSI::Panel::Result dsiPanelTrial;
     bool probeDSIPanel(IOService *);

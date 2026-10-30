@@ -16,12 +16,12 @@ IO_FIXTURE
 struct Sim:IO {
  uint32_t drop=UINT32_MAX,elapsed=0,failStage=0;bool frozen=false,unbound=false,losePower=false,pendingAfterStop=false;
  bool ready(){return !unbound;}
- void write(uint32_t reg,uint32_t value){writes.push_back(reg);if(reg!=drop)regs[reg]=value;}
+ void write(uint32_t reg,uint32_t value){writes.push_back(reg);if(reg!=drop){regs[reg]=value;if(reg==0x6B400 && !(value&(1U<<31)))regs[0x6B0D8]=0;}}
  void delayUs(unsigned us){elapsed+=us;
   if(losePower){regs[0x45404]=0;return;}
   if(!frozen && us>=1000)++regs[0x70040];
   if(!(regs[0x7B008]&(1U<<31)) && failStage!=1){regs[0x7B008]&=~(1U<<30);if(pendingAfterStop)regs[0x6B0D0]=0;}
-  if((regs[0x6B0D8]&1) && failStage!=2)regs[0x6B0D8]|=1U<<16;
+  if((regs[0x6B0D8]&1) && failStage!=2)regs[0x6B0D8]=(regs[0x6B0D8]&~1U)|(1U<<16);
   if(!(regs[0x64000]&(1U<<31)) && failStage!=3)regs[0x64000]|=0x80;
  }
 };

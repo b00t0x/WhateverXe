@@ -32,9 +32,10 @@ template<class IO> Result retire(IO &io,const Readout &link,const Quiesce::Resul
     };
     const auto stopped=[&]() {
         Display13Transcoder::Bindings bindings;bindings.dsi0Pipe=0;
-        uint32_t lp=0,buffer=0,secondary=0,mux=0;
-        return Display13FBIRQ::consumersStopped(io,1,bindings) && value(0x6B0D8,lp) &&
-            (lp&((1U<<17)|(1U<<16)|1))==((1U<<16)|1) && value(0x64000,buffer) &&
+        uint32_t buffer=0,secondary=0,mux=0;
+        // host.complete() witnessed ULPS before disabling the function. The
+        // request self-clears and host disable may reset its status.
+        return Display13FBIRQ::consumersStopped(io,1,bindings) && value(0x64000,buffer) &&
             (buffer&0x80000080U)==0x80 && value(0x7B808,secondary) && !(secondary&0xC0000000U) &&
             value(0x6BC00,secondary) && !(secondary&(1U<<31)) &&
             value(0x164280,mux) && (mux&0x403U)==(0x400U|link.identity.pll);

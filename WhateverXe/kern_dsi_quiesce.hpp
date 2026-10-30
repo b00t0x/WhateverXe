@@ -1,13 +1,13 @@
-// Minimum P2 host shutdown, following Linux v7.0 gen11_dsi_post_disable:
+// Host shutdown, following Linux v7.0 gen11_dsi_post_disable:
 // stop plane/cursor, transcoder, ULPS, function, then ungate/stop/gate buffer.
-// Panel DCS/GPIO/PWM and cold restart remain separate panel/backend operations.
+// Optional panel lifecycle supplies backlight, DISPLAY_OFF and reset/power-off.
 #ifndef KERN_DSI_QUIESCE_HPP
 #define KERN_DSI_QUIESCE_HPP
 #include "kern_dsi_surface.hpp"
 #include "kern_display13_cursor.hpp"
 namespace XELP { namespace DSI { namespace Quiesce {
-enum class Stage : uint32_t {Source,Cursor,Plane,Transcoder,Commands,ULPS,Function,PortClock,Buffer,Gate,Complete};
-enum class Error : uint32_t {None,Input,Ownership,Readback,Timeout,Commands,Cursor};
+enum class Stage : uint32_t {Source,Cursor,Plane,Transcoder,Commands,ULPS,Function,PortClock,Buffer,Gate,Complete,Panel};
+enum class Error : uint32_t {None,Input,Ownership,Readback,Timeout,Commands,Cursor,Panel};
 struct Result {
     Stage stage {Stage::Source};Error error {Error::Input};uint32_t writes {},waitUs {},reg {},value {};
     uint32_t frameBefore {},frameAfter {};Display13Cursor::Result cursor;
@@ -22,9 +22,13 @@ struct Result {
 // P2 has no command producer. Require empty hardware command FIFOs and LP idle
 // both before shutdown and before ULPS; a pending panel sequence needs the
 // later Host/panel drain backend. Never silently discard such a command.
-template<class IO> Result run(IO &io,const Readout &link,const Profile &profile) {
+struct RetainedPanel {
+    bool preflight(const Profile &){return true;}
+    template<class IO> bool step(IO &,const Profile &,unsigned){return true;}
+};
+template<class IO,class Panel> Result run(IO &io,const Readout &link,const Profile &profile,Panel &panel) {
     Result r;
-    if(!link.matches(profile) || link.identity.pipe!=0 || !profile.mode.valid())return r;
+    if(!link.matches(profile) || link.identity.pipe!=0 || !profile.mode.valid() || !panel.preflight(profile))return r;
     const auto period=(uint64_t(profile.mode.htotal())*profile.mode.vtotal()*1000+profile.mode.clockKHz-1)/profile.mode.clockKHz;
     if(period<1000 || period>100000)return r;
     const auto held=[&]() {
@@ -60,6 +64,7 @@ template<class IO> Result run(IO &io,const Readout &link,const Profile &profile)
     const uint32_t registers[]={0x70080,0x70084,0x70088,0x700AC,0x70040,0x70180,0x7019C,
         0x7B008,0x6B0D8,0x6B400,0x164280,0x64000};
     for(auto reg:registers)if(!io.readable(reg))return r;
+    r.stage=Stage::Panel;if(!panel.step(io,profile,1)){r.error=Error::Panel;return r;}
     r.stage=Stage::Cursor;
     Display13Transcoder::Bindings bindings;bindings.dsi0Pipe=0;
     r.cursor=Display13Cursor::stop(io,0,bindings);r.writes+=r.cursor.writes;r.waitUs+=r.cursor.waitUs;
@@ -83,6 +88,7 @@ template<class IO> Result run(IO &io,const Readout &link,const Profile &profile)
     if(!held() || !Surface::source(io,link) || !wait(0x70180,1U<<31,0,0,1))return r;
     r.stage=Stage::Transcoder;
     if(!write(0x7B008,link.conf&~(1U<<31)) || !wait(0x7B008,0xC0000000U,0,50000,1000))return r;
+    r.stage=Stage::Panel;if(!panel.step(io,profile,2)){r.error=Error::Panel;return r;}
     r.stage=Stage::Commands;if(!empty())return r;
     r.stage=Stage::ULPS;uint32_t lp=0;
     if(!read(0x6B0D8,lp) || !write(0x6B0D8,(lp&~(1U<<8))|1) || !wait(0x6B0D8,1U<<16,1U<<16,10,1))return r;
@@ -96,12 +102,18 @@ template<class IO> Result run(IO &io,const Readout &link,const Profile &profile)
     r.stage=Stage::Gate;
     if(!read(0x164280,mux) || (mux&3)!=link.identity.pll ||
        !write(0x164280,mux|(1U<<10)) || !wait(0x164280,UINT32_MAX,mux|(1U<<10),0,1))return r;
+    r.stage=Stage::Panel;if(!panel.step(io,profile,3)){r.error=Error::Panel;return r;}
+    // ULPS was witnessed before function disable; its status may reset when
+    // the host is disabled. Do not require a disabled host to retain it.
     // Hardware-only proof. The caller must separately drain actual native IRQ
     // handlers/events and detach the shared clock owner before releasing memory.
     if(!wait(0x70180,1U<<31,0,0,1) || !wait(0x70080,63,0,0,1) ||
        !wait(0x7B008,0xC0000000U,0,0,1) || !wait(0x6B400,1U<<31,0,0,1) ||
-       !wait(0x64000,0x80000080U,0x80,0,1) || !wait(0x6B0D8,1U<<16,1U<<16,0,1))return r;
+       !wait(0x64000,0x80000080U,0x80,0,1))return r;
     r.stage=Stage::Complete;r.error=Error::None;return r;
+}
+template<class IO> Result run(IO &io,const Readout &link,const Profile &profile) {
+    RetainedPanel panel;return run(io,link,profile,panel);
 }
 }}}
 #endif

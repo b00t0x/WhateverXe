@@ -69,6 +69,15 @@ unsigned streamCalls=0;OSObject *expectedPath=nullptr;
 uint32_t nativeStream(IOService*,IOService*,OSObject*,const void*);
 struct XE {
  struct {unsigned dsi=1;}adlnOutputWiring;bool dsiStopAttempted=false,dsiResourcesReady=true;
+ bool dsiStopTest=false,dsiMemoryReleased=false,dsiDDIReleased=false,stopOK=false;unsigned stopCalls=0;
+ struct {bool done=false;bool complete(){return done;}}dsiClockStop;
+ struct {bool complete=false;}dsiPanelStop;
+ bool quiesceDSIPath(IOService *ctl,IOService *fb,OSObject *path){
+  assert(fbLock.depth && !owner && ctl==display13FBPower.controller && fb==panel);
+  assert(path==Display13FBMemory::singlePath<OSObject *>(fb));++stopCalls;
+  if(stopOK){dsiStopAttempted=true;dsiMemoryReleased=dsiDDIReleased=dsiPanelStop.complete=dsiClockStop.done=true;}
+  return stopOK;
+ }
  bool dsiPanelOnly=false,publicationReady=false;bool publishDSINativeMode(IOService*){return publicationReady;}
  bool dsiNativeWriterHooksReady=true;uintptr_t orgDSICursor[2]{};
  uintptr_t orgDSIMode[6]{};
@@ -181,6 +190,15 @@ struct Case {
  void refuse(){const auto calls=armCalls;XE::wrapDisplay13WMArmUpdate(&fb);assert(calls==armCalls && !fbLock.depth && !owner);}
 };
 int main(){
+ for(unsigned state:{0U,1U}){Case c;xe.dsiStopTest=true;put(&c.fb,0x4284,2U);
+  assert(XE::wrapDSISetPowerState(&c.fb,state)==kIOReturnNotReady && xe.stopCalls==1);
+  assert(Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==2);
+  xe.stopOK=true;assert(XE::wrapDSISetPowerState(&c.fb,state)==kIOReturnSuccess && xe.stopCalls==2);
+  assert(Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==state);
+  assert(XE::wrapDSISetPowerState(&c.fb,state)==kIOReturnSuccess && xe.stopCalls==2);
+  assert(XE::wrapDSISetPowerState(&c.fb,2)==kIOReturnUnsupported && xe.stopCalls==2);
+ }
+
  {Case c;auto before=backingCalls;
   assert(XE::wrapDSISetDisplayMode(&c.fb,0x10000,0)==kIOReturnNotReady && backingCalls==before+1);
   assert(XE::wrapDSISetDisplayMode(&c.fb,0x10000,2)==kIOReturnNotReady && backingCalls==before+1);

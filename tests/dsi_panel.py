@@ -9,6 +9,7 @@ profile=(root/'tests/dsi_profile.cpp').read_text()
 fixture=profile[profile.index('using Bytes='):profile.index('int main(')]
 code=r'''
 #include "kern_dsi_panel.hpp"
+#include "kern_dsi_clock.hpp"
 #include "kern_xelp_memory_layout.hpp"
 #include <cassert>
 #include <cstdio>
@@ -36,10 +37,15 @@ struct Sim:IO {
   if(reg==0x6B100){++headers;packets.push_back(value);return;}
   if(reg==0x6B104){++payload;return;}
   if(reg==0x7B008){regs[reg]=(value&~(1U<<30))|(regs[reg]&(1U<<30));return;}
+  if(reg==0x6B400 && !(value&(1U<<31)))regs[0x6B0D8]=0;
   regs[reg]=value;
  }
  void delayUs(unsigned us){
   assert(!irqDepth);elapsed+=us;
+  if(regs[0x6B0D8]&1)regs[0x6B0D8]=(1U<<16);
+  if(!(regs[0x64000]&(1U<<31)))regs[0x64000]|=0x80;
+  if(!(regs[0x46014]&(1U<<31)))regs[0x46014]&=~(1U<<30);
+  if(!(regs[0x46014]&(1U<<27)))regs[0x46014]&=~(1U<<26);
   auto &conf=regs[0x7B008];
   if(!(conf&(1U<<31)) && !stuckStop)conf&=~(1U<<30);
   if((conf&(1U<<31)) && !stuckStart)conf|=1U<<30;
@@ -65,7 +71,23 @@ struct Fixture {
  }
  void run(){Panel::cycle(io,link,p,0x94000008,0,result);}
 };
+void stop(Fixture &f,bool success=true) {
+ Panel::Shutdown panel;
+ const auto host=Quiesce::run(f.io,f.link,f.p,panel);
+ if(!success){assert(!host.complete() && !panel.complete);return;}
+ assert(host.complete() && panel.complete && !panel.host.pending && !panel.host.faulted);
+ assert(f.io.gpioTrace==std::vector<uint32_t>({4,0,2}));
+ assert(!(f.io.regs[0x70180]&(1U<<31)) && !f.io.regs[0x7B008] && !f.io.regs[0x6B0D8]);
+ XELPComboClock::ClockAllocation allocation;allocation.external[0]=123;allocation.binding[0]=2;
+ assert(Clock::retire(f.io,f.link,host,true,allocation,123).complete());
+ assert(!allocation.external[0] && !allocation.binding[0] && !f.io.regs[0x46014]);
+ assert(f.io.regs[0x71180]==0x94000000 && f.io.regs[0x64100]==0x80000000);
+}
 int main(int argc,char **argv){
+ {Fixture f;stop(f);}
+ {Fixture f;f.io.stuckCommand=true;stop(f,false);assert(f.io.gpioTrace==std::vector<uint32_t>({4}));}
+ {Fixture f;f.p.sequences.sequence[11]=f.p.sequences.sequence[4];stop(f,false);assert(f.io.writes.empty());}
+
  {Fixture f;f.run();assert(f.result.complete());
   assert(f.io.gpioTrace==std::vector<uint32_t>({4,0,2,3,1,5}));
   assert(f.io.packets==std::vector<uint32_t>({0x40001005,0x40002805,0x40000005,0xC0000539,0x40001105,0x40000005}));
@@ -93,6 +115,7 @@ int main(int argc,char **argv){
  }
  if(argc==2){Fixture f;std::ifstream in(argv[1],std::ios::binary);assert(in);
   f.vbt=Bytes{std::istreambuf_iterator<char>(in),{}};f.p=parseProfile({f.vbt.data(),f.vbt.size()},true);assert(f.p.valid());
+  {Fixture stopped;stopped.vbt=f.vbt;stopped.p=parseProfile({stopped.vbt.data(),stopped.vbt.size()},true);stop(stopped);}
   f.run();assert(f.result.complete() && f.result.host.completedOperations==f.p.sequences.packets+f.p.sequences.delays+f.p.sequences.gpios);
   assert(f.io.gpioTrace==std::vector<uint32_t>({4,0,2,3,1,0,1,5}));
   printf("saved VBT replay: packets=%u payloadWords=%u operations=%u gpio=%zu delayUs=%llu; simulation only\n",f.result.host.headers,f.result.host.payloadWords,f.result.host.completedOperations,f.io.gpioTrace.size(),static_cast<unsigned long long>(f.result.host.waitedUs));

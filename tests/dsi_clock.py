@@ -16,11 +16,11 @@ FIXTURE
 struct Sim:IO {
  unsigned dropped=0,pllWrites=0,ackFailure=0;bool held=true;
  bool ready(){return held;}
- void write(uint32_t reg,uint32_t value){writes.push_back(reg);if(reg==0x46014 && ++pllWrites==dropped)return;regs[reg]=value;}
+ void write(uint32_t reg,uint32_t value){writes.push_back(reg);if(reg==0x46014 && ++pllWrites==dropped)return;regs[reg]=value;if(reg==0x6B400 && !(value&(1U<<31)))regs[0x6B0D8]=0;}
  void delayUs(unsigned us){
   if(us>=1000)++regs[0x70040];
   if(!(regs[0x7B008]&(1U<<31)))regs[0x7B008]&=~(1U<<30);
-  if(regs[0x6B0D8]&1)regs[0x6B0D8]|=1U<<16;
+  if(regs[0x6B0D8]&1)regs[0x6B0D8]=(regs[0x6B0D8]&~1U)|(1U<<16);
   if(!(regs[0x64000]&(1U<<31)))regs[0x64000]|=0x80;
   if(!(regs[0x46014]&(1U<<31)) && ackFailure!=1)regs[0x46014]&=~(1U<<30);
   if(!(regs[0x46014]&(1U<<27)) && ackFailure!=2)regs[0x46014]&=~(1U<<26);
@@ -48,7 +48,7 @@ int main(){
  }
  for(unsigned drop:{1U,2U}){Case c;c.io.dropped=drop;const auto r=c.run();assert(!r.complete() && r.writes==drop && r.waitUs>=1000);c.retained();}
  for(unsigned ack:{1U,2U}){Case c;c.io.ackFailure=ack;const auto r=c.run();assert(!r.complete() && r.writes==ack && r.waitUs>=1000);c.retained();}
- for(auto reg:{0x45404U,0x7B008U,0x6B400U,0x70180U,0x70080U,0x6B0D8U,0x64000U,0x7B808U,0x6BC00U,0x164280U,0x16428CU,0x164290U}){
+ for(auto reg:{0x45404U,0x7B008U,0x6B400U,0x70180U,0x70080U,0x64000U,0x7B808U,0x6BC00U,0x164280U,0x16428CU,0x164290U}){
   Case c;c.io.regs[reg]^=(reg==0x7B008 || reg==0x7B808 || reg==0x6B400 || reg==0x6BC00 || reg==0x64000 || reg==0x70180)?1U<<31:1;
   assert(!c.run().complete() && c.io.writes.empty());c.retained();
  }

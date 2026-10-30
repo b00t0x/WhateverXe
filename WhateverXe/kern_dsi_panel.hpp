@@ -33,6 +33,37 @@ struct Result {
     Host host;Readout source;bool attempted {};
     bool complete() const {return stage==Stage::Complete && error==Error::None;}
 };
+// Panel half of a serialized runtime shutdown. Host/IRQ/clock/memory remain
+// owned by the caller. Reset/power-off must contain no packets after ULPS.
+struct Shutdown {
+    Host host {true};unsigned stage {};bool complete {};
+    bool preflight(const Profile &p) {
+        if(!p.valid())return false;
+        constexpr unsigned ids[]={7,4,5,11};
+        for(auto id:ids) {
+            Sequences n;
+            if(validateSequence(p.sequences.sequence[id],n)!=SequenceStatus::Valid ||
+               n.delayUs>5000000 || ((id==5 || id==11) && n.packets))return false;
+        }
+        return p.ppsUs[2]<=5000000 && p.ppsUs[3]<=5000000;
+    }
+    template<class IO> bool step(IO &io,const Profile &p,unsigned next) {
+        if(next!=stage+1 || complete)return false;
+        stage=next;
+        struct Port:CommandPort<IO> {
+            explicit Port(IO &q):CommandPort<IO>{q} {}
+            bool gpio(unsigned role,unsigned value){return this->io.gpio(role,value);}
+        } port{io};
+        if(next==1)return host.run(port,p.sequences,7) && host.delay(port,p.ppsUs[2]);
+        if(next==2)return host.run(port,p.sequences,4);
+        if(next==3) {
+            complete=host.run(port,p.sequences,5) && host.delay(port,p.ppsUs[3]) &&
+                host.run(port,p.sequences,11) && !host.pending && !port.failed;
+            return complete;
+        }
+        return false;
+    }
+};
 // Bounded bootstrap panel experiment. Keep existing scanout backing pinned.
 // Stop pixel transfer, execute the complete panel off/reset/on sequences, and
 // restart the same scanout. Lifecycle may stop/rebuild the host between panel
