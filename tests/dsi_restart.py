@@ -21,6 +21,7 @@ IO_FIXTURE
 PROFILE_FIXTURE
 struct Sim:IO {
  bool owned=true,dropPLLDisable=false,dropPLLPower=false,dropPLLLock=false,dropBuffer=false,dropLink=false;
+ bool ulpsRequest=false;
  uint32_t drop=UINT32_MAX,elapsed=0;
  std::vector<uint32_t> gpioTrace;
  bool gpio(unsigned role,unsigned value){const auto r=Panel::gpio(*this,role,value);if(r.complete)gpioTrace.push_back(role*2+value);return r.complete;}
@@ -30,8 +31,8 @@ struct Sim:IO {
   if(reg==0x7B008){regs[reg]=(value&~(1U<<30))|(regs[reg]&(1U<<30));return;}
   if(reg==0x46014){regs[reg]=(value&~0x44000000U)|(regs[reg]&0x44000000U);return;}
   if(reg==0x64000){regs[reg]=(value&~0x80U)|(regs[reg]&0x80);return;}
-  if(reg==0x6B0D8){regs[reg]=(value&~0x30000U)|(regs[reg]&0x30000);return;}
-  if(reg==0x6B400 && !(value&(1U<<31))){regs[0x6B0D8]=0;regs[0x6B030]&=~(1U<<20);}
+  if(reg==0x6B0D8){ulpsRequest=value&1;regs[reg]=(value&~0x30001U)|(regs[reg]&0x30000);return;}
+  if(reg==0x6B400 && !(value&(1U<<31))){ulpsRequest=false;regs[0x6B0D8]=0;regs[0x6B030]&=~(1U<<20);}
   if(reg==0x6B030){regs[reg]=(value&~(1U<<20))|(regs[reg]&(1U<<20));return;}
   if(reg==0x162604 || reg==0x162688 || reg==0x162694){
    for(unsigned lane=0;lane<4;++lane)regs[reg+0x200+0x100*lane]=value;
@@ -47,7 +48,7 @@ struct Sim:IO {
   if(pll&(1U<<27)){if(!dropPLLPower)pll|=1U<<26;}else if(!dropPLLPower)pll&=~(1U<<26);
   if(pll&(1U<<31)){if(!dropPLLLock)pll|=1U<<30;}else if(!dropPLLDisable)pll&=~(1U<<30);
   if(!dropBuffer){if(regs[0x64000]&(1U<<31))regs[0x64000]&=~0x80U;else regs[0x64000]|=0x80;}
-  if(regs[0x6B0D8]&1)regs[0x6B0D8]|=1U<<16;
+  if(ulpsRequest)regs[0x6B0D8]|=1U<<16;
   if(!dropLink && (regs[0x6B400]&(1U<<31)))regs[0x6B030]|=1U<<20;
  }
 };

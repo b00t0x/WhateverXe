@@ -137,7 +137,12 @@ template<class IO> bool stop(IO &io,const Readout &source,const Profile &profile
        !a.wait(0x6B400,UINT32_MAX,source.function,0) ||
        !a.wait(0x6B0D0,0x1FFF,0x1040,0) || !a.wait(0x6B0D8,0x30001,0,0))return false;
     s.stage=Stage::ULPS;
-    if(!a.rmw(0x6B0D8,1U<<8,1) || !a.wait(0x6B0D8,1U<<16,1U<<16,10))return false;
+    // LINK_ENTER_ULPS is a self-clearing request on the live Display13 host.
+    // Completion is LINK_IN_ULPS, not an echoed request bit. Do not reject a
+    // transition which already completed before the first posting read.
+    uint32_t lp=0;
+    if(!a.read(0x6B0D8,lp) || !a.write(0x6B0D8,(lp&~(1U<<8))|1U) ||
+       !a.wait(0x6B0D8,1U<<16,1U<<16,10))return false;
     s.stage=Stage::FunctionOff;if(!a.rmw(0x6B400,1U<<31,0))return false;
     s.stage=Stage::BufferOff;
     if(!a.rmw(0x164280,1U<<10,0) || !a.rmw(0x64000,1U<<31,0) ||
