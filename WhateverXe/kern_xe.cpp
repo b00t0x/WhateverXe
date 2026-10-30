@@ -4847,7 +4847,7 @@ static TGLFBBinding::Readout adlnInspectPathBinding(IOService *fb,OSObject *path
 	const TGLFBBinding::Objects objects {
 		{controller,controller->getMetaClass()->getClassSize()}, {fb,fb->getMetaClass()->getClassSize()},
 		{path,path->getMetaClass()->getClassSize()}, {plane,plane ? plane->getMetaClass()->getClassSize() : 0},
-		{port,port ? port->getMetaClass()->getClassSize() : 0}, display13FBExpectedOwner(controller)
+		{port,port ? port->getMetaClass()->getClassSize() : 0}, display13FBExpectedOwner(controller),dsiLogicalSurface(fb)
 	};
 	return TGLFBBinding::inspect(objects,platform,wiring,attached);
 }
@@ -11065,7 +11065,7 @@ void XE::adlnWMSetup(OSObject *plane,OSObject *path,bool cursor) {
 		{fb,fb ? fb->getMetaClass()->getClassSize() : 0},
 		{path,path ? path->getMetaClass()->getClassSize() : 0},
 		{plane,plane ? plane->getMetaClass()->getClassSize() : 0},
-		{port,port ? port->getMetaClass()->getClassSize() : 0},display13FBExpectedOwner(controller)
+		{port,port ? port->getMetaClass()->getClassSize() : 0},display13FBExpectedOwner(controller),dsiLogicalSurface(fb)
 	};
 	const auto binding=TGLFBBinding::inspect(objects,callbackXE->adlnPlatform,callbackXE->adlnOutputWiring);
 	uint64_t bindingRecord[] {1,static_cast<uint32_t>(binding.status),binding.framebuffer,binding.pipe,binding.ddi,binding.plane,

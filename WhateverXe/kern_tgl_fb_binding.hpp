@@ -6,7 +6,7 @@
 #include "kern_display13_fb_topology.hpp"
 namespace TGLFBBinding {
 struct Object {const void *pointer {};size_t bytes {};};
-struct Objects {Object controller,framebuffer,path,plane,port;uintptr_t accelerator {};};
+struct Objects {Object controller,framebuffer,path,plane,port;uintptr_t accelerator {},logicalSurface {};};
 enum class Status : uint32_t {Unavailable,Association,Path,Port,Plane,Complete};
 struct Readout {
     Status status {Status::Unavailable};
@@ -58,7 +58,7 @@ inline Readout inspect(const Objects &o,const XELP::NativePorts &ports,bool atta
         plane=o.plane.pointer,port=o.port.pointer;
     if(!c || !fb || !path || !plane || !port || o.controller.bytes<0x1C20 || o.framebuffer.bytes<0x4B90 ||
        o.path.bytes<0x3730 || o.plane.bytes<0x1C8 || o.port.bytes<0x580)return r;
-    if(!Display13FBMemory::associations(c,o.controller.bytes,fb,o.framebuffer.bytes,o.accelerator,true)) {
+    if(!Display13FBMemory::associations(c,o.controller.bytes,fb,o.framebuffer.bytes,o.accelerator,true,o.logicalSurface)) {
         r.status=Status::Association;return r;
     }
     r.framebuffer=field<uint32_t>(fb,0x1DC);r.pipe=field<uint32_t>(path,0x3640);

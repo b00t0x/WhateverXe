@@ -113,6 +113,18 @@ int main() {
     {Fixture x(2,1,0);put(x.ctl,0xD60+8*2,static_cast<const void *>(x.plane));assert(x.inspect().status==Status::Association);}
     {Fixture x(2,1,0);put(x.ctl,0xC0,uintptr_t(0x123400));put(x.fb,0x4348,uintptr_t(0x41300000));
      assert(x.inspect().status==Status::Association && x.inspect(false,0x123400).status==Status::Complete);}
+    // A rotation surface is valid only with the separately retained handle
+    // and the matching accelerator owner. Non-DSI callers retain zero.
+    {Fixture x(2,1,0);x.attach();put(x.ctl,0xC0,uintptr_t(0x123400));
+     put(x.fb,0x4348,uintptr_t(0x41300000));put(x.fb,0x4340,uintptr_t(0x41400000));
+     auto o=x.objects(0x123400);
+     const auto inspect=[&]{return TGLFBBinding::inspect(o,x.platform,x.wiring,true).status;};
+     assert(inspect()==Status::Association);
+     o.logicalSurface=0x41400000;assert(inspect()==Status::Complete);
+     o.logicalSurface^=8;assert(inspect()==Status::Association);o.logicalSurface^=8;
+     o.accelerator^=8;assert(inspect()==Status::Association);o.accelerator^=8;
+     put(x.ctl,0xC0,uintptr_t(0));o.accelerator=0;assert(inspect()==Status::Association);
+    }
     {Fixture x(2,1,0);auto objects=x.objects();objects.plane.bytes=0x1C7;assert(TGLFBBinding::inspect(objects,x.platform,x.wiring).status==Status::Unavailable);}
     puts("PASS native FB binding: independent FB/pipe/DDI/slot identities, attached versus pending paths, native primary table/registers, foreign config and malformed owner rejection. CPU only.");
 }

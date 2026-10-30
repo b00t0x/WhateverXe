@@ -50,6 +50,7 @@ struct {IOLock *lock;IOService *controller;OSObject *access,*dsiPort;IO *map;
  Display13Transcoder::Bindings transcoders;Readout bootDSI;Display13Power::NativeBridge bridge;
  bool memoryFaulted=false,clockFaulted=false;} display13FBPower;
 uintptr_t display13FBExpectedOwner(IOService*){return 0;}
+uintptr_t dsiLogicalSurface(const void*){return 0;}
 BINDING
 XELPMemory::Layout xelpMemory;bool display13Offline=false;
 void originalCache(IOService*,IOService*,OSObject*){++nativeCache;}

@@ -73,6 +73,7 @@ struct XE {
  static uint32_t wrapDisplay13SignalLevels(void*,uint32_t,uint32_t,void*);
  static uint32_t wrapDisplay13TrainingPattern(void*,uint32_t);
 }state,*callbackXE=&state;
+uintptr_t dsiLogicalSurface(const void*){return 0;}
 // BINDING
 // FUNCTIONS
 unsigned nativeSignal(void*,unsigned,unsigned,void*){assert(!locked);++calls;return nativeResult;}
