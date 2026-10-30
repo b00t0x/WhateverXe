@@ -11861,6 +11861,31 @@ void XE::display13WMArmUpdate(IOService *fb) {
 			result.pipeControl,result.planeControl,result.cursorControl,result.checkRegister,result.checkValue,
 			result.clockHz,actualHz,result.frameBefore,result.frameAfter,result.lastReg,result.expected,result.observed};
 		adlnPublishMemory("N97FBWMLatchFailure",pipe,proof,sizeof(proof),true);
+		// Retain the software source/destination geometry with the first
+		// failed latch. OS orientation is independent of DSI wire timing;
+		// distinguish a native scaling request from a link/stride mismatch.
+		uint64_t geometry[48] {1,pipe,c.pipe[pipe].wm[0].width,c.pipe[pipe].wm[0].height,
+			c.pipe[pipe].wm[0].htotal,c.pipe[pipe].wm[0].pixelHz,actualHz};
+		const unsigned fbOffsets[]={0x430C,0x4310,0x4314,0x4320,0x4324,0x4328,0x432C,0x4334,0x4338};
+		for(unsigned i=0;i<arrsize(fbOffsets);++i)geometry[7+i]=Display13FBMemory::field<uint32_t>(fb,fbOffsets[i]);
+		if(path && path->getMetaClass()->getClassSize()>=0x3730) {
+			const unsigned pathOffsets[]={0xF8,0xFC,0x108,0x10C,0x138,0x144};
+			for(unsigned i=0;i<arrsize(pathOffsets);++i)geometry[16+i]=Display13FBMemory::field<uint32_t>(path,pathOffsets[i]);
+			auto plane=Display13FBMemory::field<OSObject *>(path,0x32C8);
+			auto scaler=Display13FBMemory::field<OSObject *>(path,0x32C0);
+			if(plane && plane->getMetaClass()->getClassSize()>=0x1C8) {
+				const unsigned planeOffsets[]={0x100,0x104,0x108,0x10C,0x110,0x114,0x118,0x11C,0x120,0x124};
+				for(unsigned i=0;i<arrsize(planeOffsets);++i)geometry[22+i]=Display13FBMemory::field<uint32_t>(plane,planeOffsets[i]);
+			}
+			if(scaler && scaler->getMetaClass()->getClassSize()>=0x58)
+				for(unsigned i=0;i<6;++i)geometry[32+i]=Display13FBMemory::field<uint32_t>(scaler,0x40+4*i);
+		}
+		Display13FBDBUFIO geometryIO {c.map};
+		if(Display13FBIRQ::powered(geometryIO.read(0x45404),pipe)) {
+			const unsigned registers[]={0x70180,0x70188,0x7018C,0x70190,0x7019C,0x701A4,0x701AC,0x6001C};
+			for(unsigned i=0;i<arrsize(registers);++i)geometry[38+i]=geometryIO.read(registers[i]+0x1000*pipe);
+		}
+		adlnPublishMemory("N97FBWMGeometryFailure",pipe,geometry,sizeof(geometry),true);
 		uint64_t cursor[8] {1,pipe};Display13FBDBUFIO readout {c.map};
 		if(Display13FBIRQ::powered(readout.read(0x45404),pipe)) {
 			cursor[2]=readout.read(0x70080+0x1000*pipe);
