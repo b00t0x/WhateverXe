@@ -46,6 +46,8 @@ struct {IOLock *lock;IOService *controller;Map *map;Display13Transcoder::Binding
 struct {uintptr_t base=0;IOSimpleLock *lock=nullptr;IOService *controller=nullptr;Display13FBIRQ::State state;
  unsigned handlers=0,softwareHandlers=0,admittedPipes=0;bool quiescing=false;} display13FBIRQ;
 XELPMemory::Layout xelpMemory;
+unsigned published=0;
+void dsiPublishIRQLive(){assert(lockLevel==0 && display13FBIRQ.controller && display13FBIRQ.lock);++published;}
 struct XE {
  bool display13FBIRQReady=true,dsiNativeWriterHooksReady=true,dsiResourcesReady=false;IOService *adlnTopologyController;
  struct {unsigned dsi=1;} adlnOutputWiring;
@@ -68,7 +70,7 @@ int main(){
  for(unsigned i=0;i<Display13Power::Count;++i)if(s.borrowed&(1U<<i))s.refs[i]=2;
  b.pgRefs[0]=1;b.pgLease[0].owner=&s;b.pgLease[0].domains=pg;
  b.ddiRefs[0]=1;b.ddiLease[0].owner=&s;b.ddiLease[0].domains=ddi;
- const auto rejected=[&]{assert(!xe.bindDSIResources(&controller));assert(!lockLevel && !xe.dsiResourcesReady &&
+ const auto rejected=[&]{assert(!xe.bindDSIResources(&controller));assert(!published && !lockLevel && !xe.dsiResourcesReady &&
   !irq.controller && c.transcoders.dsi0Pipe==UINT32_MAX && !clock.allocation.external[0]);};
  xe.dsiNativeWriterHooksReady=false;rejected();xe.dsiNativeWriterHooksReady=true;
  b.ddiRefs[0]=0;rejected();b.ddiRefs[0]=1;
@@ -84,6 +86,7 @@ int main(){
  map.regs[0x164280]^=1;rejected();map.regs[0x164280]^=1;
  const auto initialBoot=xe.dsiBoot;
  assert(xe.bindDSIResources(&controller) && !lockLevel && xe.dsiResourcesReady);
+ assert(published==1);
  assert(c.transcoders.dsi0Pipe==0 && irq.state.transcoders.dsi0Pipe==0 && c.bootDSI.sameSource(xe.dsiBoot.source));
  assert(irq.controller==&controller && irq.lock==&irqLock && irq.base==map.getVirtualAddress() && irq.admittedPipes==1);
  assert(clock.allocation.external[0]==reinterpret_cast<uintptr_t>(&controller) && clock.allocation.binding[0]==2);

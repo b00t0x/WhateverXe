@@ -4929,6 +4929,27 @@ static void adlnIRQRecord(uint64_t (&r)[32],unsigned event) {
 	r[29]=reinterpret_cast<uintptr_t>(c.lock);r[30]=c.handlers;r[31]=c.quiescing|(c.blockedPipes<<8)|(uint64_t(c.softwareHandlers)<<32);
 }
 
+// PowerInit retains the native controller (including its IRQ lock) until reboot.
+// Read only the counters already collected by the IRQ handler. Never refresh
+// the register cache, power a well, or call a native driver from this serializer.
+static bool dsiIRQLiveSerialize(void *,void *,OSSerialize *serializer) {
+    auto &c=display13FBIRQ;
+    if(!__atomic_load_n(&c.controller,__ATOMIC_ACQUIRE) || !c.lock)return false;
+    uint64_t record[32] {};
+    const auto saved=IOSimpleLockLockDisableInterrupt(c.lock);
+    adlnIRQRecord(record,3);
+    IOSimpleLockUnlockEnableInterrupt(c.lock,saved);
+    auto data=OSData::withBytes(record,sizeof(record));if(!data)return false;
+    const bool ok=data->serialize(serializer);data->release();return ok;
+}
+static void dsiPublishIRQLive() {
+    auto property=OSSerializer::forTarget(nullptr,dsiIRQLiveSerialize);
+    if(property) {
+        IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIIRQLive",property);
+        property->release();
+    }
+}
+
 // These operations run under the display owner lock. AUX power qualification
 // needs the TC bank lock but never enters the native port or power callbacks.
 struct Display13FBTCAuxIO {
@@ -12085,7 +12106,9 @@ bool XE::bindDSIResources(IOService *controller) {
         }
         IOSimpleLockUnlockEnableInterrupt(irqLock,saved);
     }
-    IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);return ready;
+    IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
+    if(ready)dsiPublishIRQLive();
+    return ready;
 }
 
 void XE::wrapAlderLakeNPowerInit(void *power,void *controller) {
