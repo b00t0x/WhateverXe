@@ -5,7 +5,7 @@
 using namespace XELP::DSI;
 struct IO {
     bool owned=true,missingHeader=false,ulps=false,stuckCredits=false,stuckLP=false;
-    unsigned delay=0,creditReads=0,lpReads=0,pending=0;
+    unsigned delay=0,creditReads=0,lpReads=0,pending=0,deliveryUs=10;
     std::vector<uint32_t> regs,values;
     bool ready(){return owned;}
     bool readable(uint32_t r){return !(missingHeader && r==0x6B100);}
@@ -13,7 +13,7 @@ struct IO {
         if(r==0x6B0D0){++creditReads;return stuckCredits || pending?0:0x1040;}
         assert(r==0x6B0D8);++lpReads;return ulps?0x10001:stuckLP?0x20000:0;
     }
-    void write(uint32_t r,uint32_t v){assert(owned);regs.push_back(r);values.push_back(v);if(r==0x6B100)pending=10;}
+    void write(uint32_t r,uint32_t v){assert(owned);regs.push_back(r);values.push_back(v);if(r==0x6B100)pending=deliveryUs;}
     void delayUs(unsigned us){delay+=us;pending=pending>us?pending-us:0;}
 };
 int main(){
@@ -26,6 +26,8 @@ int main(){
  assert(longHost.send(longPort,0x39,{bytes,5}) && longHost.drain(longPort));
  assert(longIO.regs==std::vector<uint32_t>({0x6B104,0x6B104,0x6B100,0x6B100}));
  assert(longIO.values==std::vector<uint32_t>({0x030201B0,4,0xC0000539,0x40000005}));
+ IO video;video.deliveryUs=16000;CommandPort<IO> vp{video};Host vh(true);
+ assert(vh.send(vp,0x05,{&nop,1}) && vh.drain(vp,50010) && vh.waitedUs==32000);
  for(unsigned failure=0;failure<5;++failure){
   IO bad;CommandPort<IO> p{bad};Host h(true);
   if(failure==0)bad.owned=false;

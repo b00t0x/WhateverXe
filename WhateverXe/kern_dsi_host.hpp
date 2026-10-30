@@ -36,7 +36,8 @@ struct Host {
         if(io.cancelled())return fail(HostError::Cancelled);
         return true;
     }
-    template<class IO> bool credits(IO &io,unsigned h,unsigned p) {
+    template<class IO> bool credits(IO &io,unsigned h,unsigned p,unsigned budgetUs=100) {
+        if(budgetUs>100000 || budgetUs%10)return fail(HostError::Invalid);
         for(unsigned us=0;;us+=10) {
             if(!ready(io))return false;
             uint32_t status=0;
@@ -44,7 +45,7 @@ struct Host {
             const auto headers=(status>>8)&31,payload=status&255;
             if(headers>16 || payload>64)return fail(HostError::Unavailable);
             if(headers>=h && payload>=p)return true;
-            if(us==100)return fail(HostError::CreditTimeout);
+            if(us==budgetUs)return fail(HostError::CreditTimeout);
             io.delayUs(10);waitedUs+=10;
         }
     }
@@ -64,12 +65,12 @@ struct Host {
         if(!ready(io))return false;
         pending=true;io.header(p.header);++headers;return true;
     }
-    template<class IO> bool drain(IO &io) {
+    template<class IO> bool drain(IO &io,unsigned creditBudgetUs=100) {
         if(!ready(io))return false;
         if(!pending)return true;
-        if(!credits(io,16,64))return false;
+        if(!credits(io,16,64,creditBudgetUs))return false;
         const uint8_t nop=0;
-        if(!send(io,0x05,{&nop,1}) || !credits(io,16,0))return false;
+        if(!send(io,0x05,{&nop,1}) || !credits(io,16,0,creditBudgetUs))return false;
         for(unsigned us=0;;us+=2) {
             if(!ready(io))return false;
             bool busy=false;

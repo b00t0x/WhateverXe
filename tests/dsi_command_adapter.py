@@ -21,8 +21,8 @@ struct IOMemoryMap {std::vector<uint32_t> bar=std::vector<uint32_t>(0x1000000/4)
  uintptr_t getVirtualAddress(){return reinterpret_cast<uintptr_t>(bar.data());}};
 struct Display13FBBootIO {IOMemoryMap *map;bool readable(uint32_t r){return map && r<0x1000000 && !(r&3);}
  uint32_t read(uint32_t r){assert(level==2 && readable(r));return map->bar[r/4];}};
-struct Profile {bool valid(){return true;}};
-struct Boot {struct {struct {unsigned pll=1;}identity;}source;};
+struct Profile {struct {unsigned clockKHz=135255;unsigned htotal() const {return 1126;}unsigned vtotal() const {return 2002;}}mode;bool valid(){return true;}};
+struct Boot {struct {struct {unsigned pll=1;}identity;unsigned conf=0xC0000000;}source;};
 bool unchanged=true;int xelpMemory;
 namespace XELP {namespace DSI {template<class IO>bool bootUnchanged(IO&,const Boot&,int){return unchanged;}}}
 struct {IORecursiveLock *lock;uintptr_t thread=0;struct {uintptr_t external[3]{};unsigned binding[3]{};}allocation;}comboClockTransaction;
@@ -30,7 +30,7 @@ struct {IOLock *lock;IOService *controller;IOMemoryMap *map;
  bool engineEnabled=false,memoryFaulted=false,clockFaulted=false;
  struct {struct {bool faulted=false,suspended=false;}state;bool held=true;
  template<class IO>bool outputHeld(IO&,unsigned,unsigned){assert(level==2);return held;}}bridge;}display13FBPower;
-uint64_t receipt[16]{};unsigned published=0;
+uint64_t receipt[20]{};unsigned published=0;
 struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}
  void setProperty(const char *key,const void *p,unsigned size){assert(!level && !strcmp(key,"WEXDSICommandTrial") && size==sizeof(receipt));memcpy(receipt,p,size);++published;}};
 struct XE {IOService *adlnTopologyController;bool dsiResourcesReady=true,dsiStopAttempted=false;

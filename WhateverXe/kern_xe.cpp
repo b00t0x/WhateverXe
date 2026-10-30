@@ -12092,18 +12092,26 @@ bool XE::probeDSICommands(IOService *controller) {
         }
         void delayUs(unsigned us){IODelay(us);}
     } io{c.map,owned};
-    XELP::DSI::CommandPort<IO> port{io};uint64_t record[16] {1};
+    XELP::DSI::CommandPort<IO> port{io};uint64_t record[20] {2};
+    // Active video can defer an LP packet until its blanking interval. The
+    // cold panel-sequence engine keeps its Linux 100 us default. Bound this
+    // running-link trial to three frames per credit wait, rounded to 10 us.
+    const auto &mode=dsiProfile.mode;
+    const uint64_t period=mode.clockKHz ? (uint64_t(mode.htotal())*mode.vtotal()*1000+mode.clockKHz-1)/mode.clockKHz : 0;
+    record[16]=period ? ((3*period+9)/10)*10 : 0;
     uint32_t credits=0,lp=0;
-    record[1]=io.ready() && !dsiCommandHost.enabled && dsiProfile.valid() &&
+    record[1]=io.ready() && !dsiCommandHost.enabled && record[16]>=100 && record[16]<=100000 && dsiProfile.valid() &&
         c.bridge.outputHeld(io,0,0) && XELP::DSI::bootUnchanged(io,dsiBoot,xelpMemory);
     if(record[1]) {
         const bool empty=port.credits(credits) && port.read(0x6B0D8,lp) &&
             (credits&0x1FFF)==0x1040 && !(lp&((1U<<17)|(1U<<16)|1U));
         record[2]=credits;record[3]=lp;record[4]=empty;
         if(empty) {
+            record[17]=io.read(0x70040);
             dsiCommandHost.enabled=true;const uint8_t nop=0;
             record[5]=dsiCommandHost.send(port,0x05,{&nop,1});
-            record[6]=record[5] && dsiCommandHost.drain(port);
+            record[6]=record[5] && dsiCommandHost.drain(port,static_cast<unsigned>(record[16]));
+            record[18]=io.read(0x70040);
         }
         record[7]=port.credits(credits)?credits:UINT32_MAX;
         record[8]=port.read(0x6B0D8,lp)?lp:UINT32_MAX;
@@ -12111,7 +12119,7 @@ bool XE::probeDSICommands(IOService *controller) {
     }
     record[10]=static_cast<uint32_t>(dsiCommandHost.error);record[11]=dsiCommandHost.pending;
     record[12]=dsiCommandHost.headers;record[13]=dsiCommandHost.payloadWords;
-    record[14]=dsiCommandHost.waitedUs;record[15]=port.writes;
+    record[14]=dsiCommandHost.waitedUs;record[15]=port.writes;record[19]=dsiBoot.source.conf;
     const bool complete=record[1] && record[4] && record[6] && record[9] &&
         !record[10] && !record[11] && !port.failed && (record[7]&0x1FFF)==0x1040 &&
         record[8]!=UINT32_MAX && !(record[8]&((1U<<17)|(1U<<16)|1U));
