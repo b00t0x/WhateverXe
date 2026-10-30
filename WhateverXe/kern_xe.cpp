@@ -7484,6 +7484,8 @@ uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
                    XELP::DSI::AppleAdapter::presentationTiming(dsiFixedMode.timing,t,i))dsiFixedMode.offered[copied++]=t;
             }
             dsiFixedMode.offerCount=copied;
+            IORegistryEntry::getRegistryRoot()->setProperty("WEXDSITimingList",dsiFixedMode.offered,
+                copied*sizeof(dsiFixedMode.offered[0]));
             if(client)dsiFixedMode.clientMode=client;
         }
         return result;
