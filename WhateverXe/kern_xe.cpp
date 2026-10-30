@@ -7729,7 +7729,27 @@ uint32_t XE::wrapDSISetAttribute(IOService *fb,uint32_t attribute,uintptr_t valu
         endDSINativeWriter(token);return result;
     }();
     recordDSIClient(fb,7,attribute,result);
+    recordDSIAttribute(fb,7,attribute,value,result);
     return result;
+}
+// Bounded CPU-only history: the last attribute alone hides earlier rejected UI
+// requests behind a successful gamma flush. No MMIO or object pointers are exposed.
+void XE::recordDSIAttribute(IOService *fb,unsigned event,uint32_t attribute,uintptr_t value,uint32_t result) {
+    auto s=callbackXE;auto &c=display13FBPower;
+    if(!s->adlnOutputWiring.dsi || !dsiModeTarget(fb) || !c.lock)return;
+    DSIModeScope scope(fb);if(!scope.lock)return;
+    static uint64_t history[2+16*8] {1,0};
+    IOLockLock(c.lock);
+    auto controller=Display13FBMemory::field<IOService *>(fb,0x1D0);
+    if(controller && controller==c.controller && controller==s->adlnTopologyController) {
+        const auto sequence=++history[1];auto row=history+2+((sequence-1)%16)*8;
+        row[0]=sequence;row[1]=event;row[2]=attribute;row[3]=value<=UINT32_MAX?value:UINT64_MAX;row[4]=result;
+        row[5]=Display13FBMemory::field<uint32_t>(controller,0xE58);
+        row[6]=Display13FBMemory::field<uint32_t>(controller,0xE5C);
+        row[7]=Display13FBMemory::field<uint32_t>(fb,0x44E0);
+    }
+    IOLockUnlock(c.lock);
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIAttributeHistory",history,sizeof(history));
 }
 void XE::publishDSIBacklight() {
     auto &c=display13FBPower;if(!c.lock)return;
@@ -7808,6 +7828,7 @@ uint32_t XE::wrapDSISetConnectionAttribute(IOService *fb,int32_t connection,uint
         endDSINativeWriter(token);return result;
     }();
     recordDSIClient(fb,8,attribute,result);
+    recordDSIAttribute(fb,8,attribute,value,result);
     return result;
 }
 uint32_t XE::wrapDSISetPowerState(IOService *fb,uint32_t state) {
