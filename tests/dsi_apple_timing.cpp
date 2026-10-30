@@ -30,6 +30,7 @@ int main() {
     assert(!AppleAdapter::acceptsMode(0x80001002,0x80001001));
     uint8_t edid[128];assert(AppleAdapter::makePanelEDID(p.mode,edid));
     unsigned sum=0;for(auto b:edid)sum+=b;assert(!(sum&255));
+    assert(edid[16]==0xFF && edid[17]>=17); // Model year enables native linear brightness.
     assert(edid[18]==1 && edid[19]==4 && edid[20]==0xA0 && edid[24]==2 && !edid[126]);
     const auto d=edid+54;
     assert((unsigned(d[0])+(unsigned(d[1])<<8))*10==135260);

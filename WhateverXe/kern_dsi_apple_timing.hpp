@@ -50,7 +50,7 @@ inline bool clientTiming(const Timing &fixed,const Timing &offered,unsigned inde
 inline bool acceptsMode(uint32_t mode,uint32_t clientMode) {
     return mode==FixedModeID || mode==clientMode;
 }
-// Synthetic Apple enumeration descriptor derived only from the panel profile.
+// Synthetic Apple enumeration descriptor with timing from the panel profile.
 // EDID wire layout reference: Linux v6.12 include/drm/drm_edid.h. This is not
 // an EDID read from the panel and does not advertise DP/HDMI, HDR or DPMS.
 inline bool makePanelEDID(const Mode &m,uint8_t (&edid)[128]) {
@@ -66,6 +66,9 @@ inline bool makePanelEDID(const Mode &m,uint8_t (&edid)[128]) {
     const uint8_t header[]={0,255,255,255,255,255,255,0};memcpy(edid,header,8);
     edid[8]=0x5C;edid[9]=0xB8; // synthetic WEX identity, no panel serial
     edid[10]=0x10;edid[11]=0xD5;
+    // EDID 1.4 model year of this synthetic descriptor, not panel manufacture.
+    // A zero year selects Apple's pre-2007 non-linear-only backlight path.
+    edid[16]=0xFF;edid[17]=2026-1990;
     edid[18]=1;edid[19]=4;edid[20]=0xA0; // digital RGB8, transport unspecified
     edid[21]=static_cast<uint8_t>((m.widthMM+5)/10);
     edid[22]=static_cast<uint8_t>((m.heightMM+5)/10);
