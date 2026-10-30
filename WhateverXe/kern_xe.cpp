@@ -11228,8 +11228,12 @@ void XE::adlnWMSetup(OSObject *plane,OSObject *path,bool cursor) {
 		inputs[14]=wells;inputs[15]=rangeRaw;inputs[16]=ctl;inputs[17]=ipc;inputs[18]=cursorMode;
 		inputs[19]=width;inputs[20]=htotal;inputs[21]=rgbSupported;inputs[22]=powered;
 		inputs[23]=Display13FBMemory::field<uint32_t>(plane,0x10C);
+		// Native cursor changes prepare watermarks for FB +0x4278 before
+		// writing the new CURCNTR. The live register can still describe the
+		// previous size here. Validate the requested size now; latch() checks
+		// the applied control against the prepared plan after the update.
 		if(powered && rangeRaw!=UINT32_MAX && Display13DBUF::valid(range) && rgbSupported && ipc!=UINT32_MAX &&
-			(!cursor || Display13WM::cursorMatches(cursorMode,width,true)) &&
+			(!cursor || Display13WM::cursorWidthSupported(width)) &&
 			!(Display13DBUF::slices(range)&~Display13DBUF::allowed(c.dbuf,pipe)) &&
 			(cursor || !Display13DBUF::overlap(range,c.dbuf.pipe[pipe].cursor))) {
 			// Audited native pixel/scaling calculation is CPU-only. Preserve its

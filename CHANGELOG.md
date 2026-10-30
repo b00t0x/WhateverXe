@@ -10,6 +10,8 @@ Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphi
 
 ### Fixed
 
+- Fix display freezes during hardware cursor size changes by preparing watermarks for the requested size before the native control update.
+
 - Remove arbitrary MIPI DSI mode-list limits, forward ordinary OS attributes to the native driver, and accept firmware panel orientation metadata without changing physical link timing.
 
 - Fix DEBUG boot freezes and restart loops caused by excessive kernel stack usage.

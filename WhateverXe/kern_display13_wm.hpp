@@ -155,8 +155,11 @@ inline uint32_t cursorWidth(uint32_t control) {
         default:return 0;
     }
 }
+inline bool cursorWidthSupported(uint32_t width) {
+    return width==64 || width==128 || width==256;
+}
 inline bool cursorMatches(uint32_t control,uint32_t width,bool allowDisabled=false) {
-    if(control==UINT32_MAX || (width!=64 && width!=128 && width!=256))return false;
+    if(control==UINT32_MAX || !cursorWidthSupported(width))return false;
     return (!(control&0x27) && allowDisabled) || cursorWidth(control)==width;
 }
 inline Level yTiledLevel(uint32_t width,uint32_t htotal,uint64_t pixelHz,uint32_t latencyUs,uint32_t allocation) {
