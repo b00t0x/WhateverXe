@@ -23,12 +23,12 @@ struct ModeInformation {
     uint32_t reserved[3] {};
 };
 static_assert(sizeof(ModeInformation)==36,"IODisplayModeInformation ABI");
-inline bool annotateMode(const Mode &m,ModeInformation &info) {
-    if(!m.valid() || info.width!=m.width || info.height!=m.height)return false;
+inline bool annotateMode(const Mode &m,ModeInformation &info,bool rotated=false) {
+    if(!m.valid() || info.width!=(rotated?m.height:m.width) || info.height!=(rotated?m.width:m.height))return false;
     info.refresh=static_cast<uint32_t>((uint64_t(m.clockKHz)*1000*65536+m.htotal()*uint64_t(m.vtotal())/2)/
         (m.htotal()*uint64_t(m.vtotal())));
     info.depth=0; // the adopted DSI surface is RGB8 only
-    info.widthMM=static_cast<uint16_t>(m.widthMM);info.heightMM=static_cast<uint16_t>(m.heightMM);
+    info.widthMM=static_cast<uint16_t>(rotated?m.heightMM:m.widthMM);info.heightMM=static_cast<uint16_t>(rotated?m.widthMM:m.heightMM);
     // IOGraphics: valid/safe/default + built-in + native. Acceleration is a
     // separate runtime qualification, never inferred from a fixed mode.
     info.flags|=0x02000407;
@@ -54,8 +54,7 @@ inline bool acceptsMode(uint32_t mode,uint32_t clientMode) {
 // admit only native-size quarter-turns; scaled sources are a separate stage.
 inline bool presentationTiming(const Timing &fixed,const Timing &offered,unsigned index) {
     if(offered.scalerFlags!=0x30 && offered.scalerFlags!=0x50)return false;
-    if((offered.horizontalScaled || offered.verticalScaled) &&
-       (offered.horizontalScaled!=fixed.horizontalActive || offered.verticalScaled!=fixed.verticalActive))return false;
+    if(offered.horizontalScaled!=fixed.verticalActive || offered.verticalScaled!=fixed.horizontalActive)return false;
     auto native=offered;native.scalerFlags=0;native.horizontalScaled=0;native.verticalScaled=0;
     return clientTiming(fixed,native,index);
 }

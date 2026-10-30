@@ -13,7 +13,9 @@ template<class Compute> bool prepareGeometry(void *fb,void *path,const Profile &
     using Display13FBMemory::field;
     Timing expected;
     if(!makeTiming(profile,expected))return false;
-    if(presentation && (timing.scalerFlags==0x30 || timing.scalerFlags==0x50))expected.scalerFlags=timing.scalerFlags;
+    const bool rotated=presentation && (timing.scalerFlags==0x30 || timing.scalerFlags==0x50);
+    if(rotated) {expected.scalerFlags=timing.scalerFlags;
+        expected.horizontalScaled=expected.verticalActive;expected.verticalScaled=expected.horizontalActive;}
     if(!fb || !path || memcmp(&expected,&timing,sizeof(timing)) ||
        Display13FBMemory::singlePath<void *>(fb)!=path || field<uintptr_t>(fb,0x4340) ||
        (!presentation && field<uintptr_t>(fb,0x4348)))return false;
@@ -26,12 +28,13 @@ template<class Compute> bool prepareGeometry(void *fb,void *path,const Profile &
     const auto put=[](void *o,unsigned offset,uint32_t v){memcpy(static_cast<uint8_t *>(o)+offset,&v,4);};
     put(fb,0x4350,4);*(static_cast<uint8_t *>(fb)+0x4A18)=1;
     compute(fb,&timing);
-    const auto &m=profile.mode;const uint32_t pitch=((m.width*4+127)/128)*128;
-    const bool valid=field<uint32_t>(fb,0x430C)==m.width && field<uint32_t>(fb,0x4310)==m.height &&
+    const auto &m=profile.mode;const uint32_t width=rotated?m.height:m.width,height=rotated?m.width:m.height;
+    const uint32_t pitch=((width*4+127)/128)*128;
+    const bool valid=field<uint32_t>(fb,0x430C)==width && field<uint32_t>(fb,0x4310)==height &&
         field<uint32_t>(fb,0x4314)==pitch*m.height && field<uint32_t>(fb,0x4320)==m.width &&
         field<uint32_t>(fb,0x4324)==m.height && field<uint32_t>(fb,0x4328)==m.width &&
         field<uint32_t>(fb,0x432C)==m.height && field<uint32_t>(fb,0x4334)==pitch &&
-        field<uint32_t>(fb,0x4338)==(timing.scalerFlags ? 0x10U : 1U) && !field<uint64_t>(path,0xF0) &&
+        field<uint32_t>(fb,0x4338)==(rotated ? 0x30U : 1U) && !field<uint64_t>(path,0xF0) &&
         field<uint32_t>(path,0xF8)==m.width && field<uint32_t>(path,0xFC)==m.height &&
         !field<uint64_t>(path,0x100) && field<uint32_t>(path,0x108)==m.width &&
         field<uint32_t>(path,0x10C)==m.height;

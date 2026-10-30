@@ -113,7 +113,7 @@ uint32_t information(IOService *fb,int32_t mode,void *p){++calls[4];const void *
  auto r=XE::wrapDSIValidateMode(fb,mode,nullptr,&t);if(r)return r;
  auto timing=static_cast<const XELP::DSI::AppleAdapter::Timing*>(t);
  auto info=static_cast<XELP::DSI::AppleAdapter::ModeInformation*>(p);*info={};
- info->width=geometryOK?timing->horizontalActive:1;info->height=timing->verticalActive;info->depth=2;return 0;}
+ info->width=geometryOK?(timing->horizontalScaled?timing->horizontalScaled:timing->horizontalActive):1;info->height=timing->verticalScaled?timing->verticalScaled:timing->verticalActive;info->depth=2;return 0;}
 unsigned nativeCurrentCalls=0,nativeOnlineCalls=0,nativeDDCCalls=0;
 uint32_t nativeDDC(IOService *,uint32_t block,uint8_t *data,uint64_t *length,uint32_t flags,OSObject *path){
  assert(block==2 && flags==1 && path==testPath);++nativeDDCCalls;*length=128;data[0]=42;return 9;}
@@ -220,7 +220,7 @@ int main(){
  assert(!XE::wrapDSIGetModes(fb,&mode) && static_cast<uint32_t>(mode)==0x80003000);
  assert(!XE::wrapDSIGetCurrentMode(fb,&current,&depth) && static_cast<uint32_t>(current)==0x80003000);
  // Rotation offers must survive validation without changing the retained wire mode.
- auto rotated=offered;rotated.reservedA[0]=0x80005000;rotated.scalerFlags=0x30;
+ auto rotated=offered;rotated.reservedA[0]=0x80005000;rotated.scalerFlags=0x30;rotated.horizontalScaled=1920;rotated.verticalScaled=1080;
  auto rotationList=OSArray::withCapacity(2);auto rotationData=OSData::withBytes(&rotated,sizeof(rotated));
  rotationList->setObject(renewedData);rotationList->setObject(rotationData);
  assert(!XE::wrapDSISetDetailedTimings(fb,rotationList));
@@ -228,7 +228,7 @@ int main(){
  assert(static_cast<uint32_t>(pair[1])==rotated.reservedA[0]);
  assert(!XE::wrapDSIValidateMode(fb,pair[1],nullptr,&timing));
  assert(static_cast<const Timing *>(timing)->scalerFlags==0x30 && !dsiFixedMode.timing.scalerFlags);
- assert(!XE::wrapDSIGetModeInformation(fb,pair[1],&info) && info.width==1080 && info.height==1920);
+ assert(!XE::wrapDSIGetModeInformation(fb,pair[1],&info) && info.width==1920 && info.height==1080);
  rotationData->release();rotationList->release();
  // Big Sur keeps timing flags zero and publishes UI rotation separately.
  auto orientation=new OSNumber;fb->setProperty("IOFBTransform",orientation);
@@ -236,6 +236,8 @@ int main(){
   orientation->value=transform;
   assert(!XE::wrapDSIValidateMode(fb,static_cast<int32_t>(offered.reservedA[0]),nullptr,&timing));
   assert(static_cast<const Timing *>(timing)->scalerFlags==transform*16);
+  assert(static_cast<const Timing *>(timing)->horizontalScaled==(transform?1920U:0U));
+  assert(static_cast<const Timing *>(timing)->verticalScaled==(transform?1080U:0U));
   assert(!dsiFixedMode.timing.scalerFlags && static_cast<const Timing *>(timing)->horizontalActive==1080);
  }
  orientation->value=7;

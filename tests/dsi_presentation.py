@@ -44,10 +44,13 @@ FUNCTIONS
 unsigned allocations=0,frees=0,caps=0;bool failAllocation=false,failRelease=false;
 void compute(void *f,const Timing *t){
  auto path=Display13FBMemory::singlePath<void *>(f);
- const unsigned pitch=(t->horizontalActive*4+127)&~127U;
+ const unsigned width=t->horizontalScaled?t->horizontalScaled:t->horizontalActive;
+ const unsigned height=t->verticalScaled?t->verticalScaled:t->verticalActive;
+ const unsigned pitch=(width*4+127)&~127U;
  for(unsigned off:{0x430CU,0x4320U,0x4328U})put(f,off,t->horizontalActive);
  for(unsigned off:{0x4310U,0x4324U,0x432CU})put(f,off,t->verticalActive);
- put(f,0x4314,pitch*t->verticalActive);put(f,0x4334,pitch);put(f,0x4338,t->scalerFlags?0x10U:1U);
+ put(f,0x430C,width);put(f,0x4310,height);
+ put(f,0x4314,pitch*t->verticalActive);put(f,0x4334,pitch);put(f,0x4338,t->scalerFlags?0x30U:1U);
  put(path,0xF0,uint64_t(0));put(path,0x100,uint64_t(0));
  for(unsigned off:{0xF8U,0x108U})put(path,off,t->horizontalActive);
  for(unsigned off:{0xFCU,0x10CU})put(path,off,t->verticalActive);
@@ -56,7 +59,7 @@ uint32_t allocate(IOService *f){
  assert(dsiFixedMode.changingThread && !field<uintptr_t>(f,0x4340));
  assert(field<uint32_t>(f,0x4250)==dsiFixedMode.activeMode);
  if(!dsiFixedMode.presentation.scalerFlags)return 0;
- ++allocations;auto r=new Record;r->kind=2;r->columns=34;r->rows=60;r->pitch=4352;r->bytes=8355840;
+ ++allocations;auto r=new Record;r->kind=2;r->columns=60;r->rows=34;r->pitch=7680;r->bytes=8294400;
  r->memory=0x200000;r->map=0x300000;
  put(f,0x4340,r);put(dsiPendingBacking.pipe,0x12B8,r->memory);put(dsiPendingBacking.pipe,0x12C0,r->map);
  return failAllocation?0xE00002BD:0;
@@ -73,12 +76,12 @@ int main(){
  compute(&fb,&o.timing);xe.dsiComputeGeometry=reinterpret_cast<uintptr_t>(compute);
  xe.dsiModeCPU[0]=reinterpret_cast<uintptr_t>(allocate);xe.dsiModeCPU[1]=reinterpret_cast<uintptr_t>(initial);
  xe.dsiModeCPU[2]=reinterpret_cast<uintptr_t>(capabilities);xe.dsiModeCPU[3]=reinterpret_cast<uintptr_t>(release);
- auto turn=o.timing;turn.scalerFlags=0x30;
+ auto turn=o.timing;turn.scalerFlags=0x30;turn.horizontalScaled=1920;turn.verticalScaled=1080;
  assert(xe.setDSIPresentation(&other,2,turn)==kIOReturnNotReady && !allocations);
  display13FBPower.pipe[0].wmPending=1;assert(xe.setDSIPresentation(&fb,2,turn)==kIOReturnNotReady && !allocations);
  display13FBPower.pipe[0].wmPending=0;
  assert(!xe.setDSIPresentation(&fb,2,turn) && o.logical && o.activeMode==2 && !o.changingThread);
- assert(field<uint32_t>(&fb,0x4338)==0x10 && dsiPublishedTarget(&fb));
+ assert(field<uint32_t>(&fb,0x4338)==0x30 && dsiPublishedTarget(&fb));
  turn.scalerFlags=0x50;assert(!xe.setDSIPresentation(&fb,3,turn) && allocations==2 && frees==1);
  assert(!xe.setDSIPresentation(&fb,4,o.timing) && !o.logical && frees==2 && field<uint32_t>(&fb,0x4338)==1);
  failAllocation=true;assert(xe.setDSIPresentation(&fb,5,turn)==kIOReturnNotReady);

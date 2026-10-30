@@ -113,23 +113,24 @@ int main(int argc,char **argv) {
         const auto releaseLogical=reinterpret_cast<void(*)(void*)>(image+0x33062);
         for(uint32_t rotation:{0x30U,0x50U})for(bool hidpi:{false,true}) {
             auto presentation=t;presentation.scalerFlags=rotation;
+            presentation.horizontalScaled=1920;presentation.verticalScaled=1080;
             if(hidpi){presentation.horizontalScaled=1620;presentation.verticalScaled=2880;}
             put(fb,0x4348,uintptr_t(0x12345000));
             if(hidpi) {
                 assert(!AppleAdapter::prepareGeometry(fb,path,p,presentation,compute,true));
                 compute(fb,&presentation); // reference only; not admitted by the production adapter
             } else assert(AppleAdapter::prepareGeometry(fb,path,p,presentation,compute,true));
-            assert(field<uint32_t>(fb,0x430C)==(hidpi?1620U:1080U));
-            assert(field<uint32_t>(fb,0x4310)==(hidpi?2880U:1920U));
+            assert(field<uint32_t>(fb,0x430C)==(hidpi?1620U:1920U));
+            assert(field<uint32_t>(fb,0x4310)==(hidpi?2880U:1080U));
             for(unsigned offset:{0x4320U,0x4328U})assert(field<uint32_t>(fb,offset)==1080);
             for(unsigned offset:{0x4324U,0x432CU})assert(field<uint32_t>(fb,offset)==1920);
-            assert(field<uint32_t>(fb,0x4338)==(hidpi?0x30U:0x10U));
-            assert(field<uint32_t>(fb,0x4334)==(hidpi?6528U:4352U));
+            assert(field<uint32_t>(fb,0x4338)==0x30U);
+            assert(field<uint32_t>(fb,0x4334)==(hidpi?6528U:7680U));
             assert(field<uint32_t>(path,0xF8)==1080 && field<uint32_t>(path,0xFC)==1920);
             assert(allocateLogical(fb)==0);
             auto record=field<NativeBacking::Record *>(fb,0x4340);
-            assert(record && record->pitch==(hidpi?6528U:4352U));
-            assert(record->bytes==record->pitch*(hidpi?2880U:1920U));
+            assert(record && record->pitch==(hidpi?6528U:7680U));
+            assert(record->bytes==record->pitch*(hidpi?2880U:1080U));
             assert(field<uintptr_t>(fb,0x4348)==0x12345000); // Logical allocation preserves the scanout.
             releaseLogical(fb);assert(!field<uintptr_t>(fb,0x4340));
         }

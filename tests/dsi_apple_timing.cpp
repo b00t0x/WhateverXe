@@ -29,8 +29,8 @@ int main() {
     offered.reservedA[0]=0x80001001;assert(AppleAdapter::clientTiming(t,offered,1));
     for(unsigned rotation:{0x30U,0x50U}) {
         auto r=offered;r.scalerFlags=rotation;
-        assert(AppleAdapter::presentationTiming(t,r,1));
-        r.horizontalScaled=t.horizontalActive;r.verticalScaled=t.verticalActive;
+        assert(!AppleAdapter::presentationTiming(t,r,1));
+        r.horizontalScaled=t.verticalActive;r.verticalScaled=t.horizontalActive;
         assert(AppleAdapter::presentationTiming(t,r,1));
         r.horizontalScaled=1620;r.verticalScaled=2880;
         assert(!AppleAdapter::presentationTiming(t,r,1));

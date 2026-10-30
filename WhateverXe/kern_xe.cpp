@@ -4711,6 +4711,10 @@ static const XELP::DSI::AppleAdapter::Timing *dsiPresentation(uint32_t mode) {
     const auto transform=rotation->unsigned64BitValue();
     if(transform!=0 && transform!=3 && transform!=5)return nullptr;
     o.requested=*selected;o.requested.scalerFlags=static_cast<uint32_t>(transform<<4);
+    // IODetailedTimingInformationV2 scaled dimensions describe the image
+    // before rotation. Active dimensions remain the portrait wire mode.
+    o.requested.horizontalScaled=transform ? o.timing.verticalActive : 0;
+    o.requested.verticalScaled=transform ? o.timing.horizontalActive : 0;
     return &o.requested;
 }
 static void dsiAdvertiseRotation(IOService *fb) {
@@ -7524,10 +7528,11 @@ uint32_t XE::wrapDSIGetModeInformation(IOService *fb,int32_t mode,void *raw) {
     const auto result=[&]() -> uint32_t {
         if(!dsiModeTarget(fb))return FunctionCast(wrapDSIGetModeInformation,callbackXE->orgDSIMode[4])(fb,mode,raw);
         DSIModeScope scope(fb);if(!scope.lock || !dsiModeCoherent(fb))return kIOReturnNotReady;
-        if(!raw || !dsiPresentation(mode))return kIOReturnBadArgument;
+        const auto selected=dsiPresentation(mode);if(!raw || !selected)return kIOReturnBadArgument;
+        const bool rotated=selected->scalerFlags!=0;
         const auto result=FunctionCast(wrapDSIGetModeInformation,callbackXE->orgDSIMode[4])(fb,mode,raw);
         if(!result && !XELP::DSI::AppleAdapter::annotateMode(dsiFixedMode.mode,
-            *static_cast<XELP::DSI::AppleAdapter::ModeInformation *>(raw)))return kIOReturnNotReady;
+            *static_cast<XELP::DSI::AppleAdapter::ModeInformation *>(raw),rotated))return kIOReturnNotReady;
         return result;
     }();
     recordDSIClient(fb,5,static_cast<uint32_t>(mode),result);
@@ -7665,6 +7670,7 @@ uint32_t XE::setDSIPresentation(IOService *fb,uint32_t mode,const XELP::DSI::App
     const auto apply=[&](uint32_t selected,const XELP::DSI::AppleAdapter::Timing &timing) -> bool {
         if(!releaseDSILogical(fb))return false;
         auto cpu=o.timing;cpu.scalerFlags=timing.scalerFlags;
+        cpu.horizontalScaled=timing.horizontalScaled;cpu.verticalScaled=timing.verticalScaled;
         if(!XELP::DSI::AppleAdapter::prepareGeometry(fb,path,dsiProfile,cpu,
             reinterpret_cast<void (*)(void *,const XELP::DSI::AppleAdapter::Timing *)>(dsiComputeGeometry),true))return false;
         // The native allocator asks getCurrentDisplayMode/getPixelInformation
@@ -7678,8 +7684,8 @@ uint32_t XE::setDSIPresentation(IOService *fb,uint32_t mode,const XELP::DSI::App
         if(result)return false; // native failure can still leave a record to release
         if(timing.scalerFlags) {
             auto record=reinterpret_cast<const XELP::DSI::NativeBacking::Record *>(o.logical);
-            if(!record || record->kind!=2 || record->columns!=(uint32_t(o.mode.width)*4+127)/128 || record->rows!=(uint32_t(o.mode.height)+31)/32 ||
-               record->pitch!=field<uint32_t>(fb,0x4334) || record->bytes!=field<uint32_t>(fb,0x4314) || !record->memory || !record->map ||
+            if(!record || record->kind!=2 || record->columns!=(field<uint32_t>(fb,0x430C)*4+127)/128 || record->rows!=(field<uint32_t>(fb,0x4310)+31)/32 ||
+               record->pitch!=field<uint32_t>(fb,0x4334) || record->bytes!=uint64_t(record->pitch)*field<uint32_t>(fb,0x4310) || !record->memory || !record->map ||
                field<uintptr_t>(pipe,0x12B8)!=record->memory || field<uintptr_t>(pipe,0x12C0)!=record->map)return false;
         } else if(o.logical || field<uintptr_t>(pipe,0x12B8) || field<uintptr_t>(pipe,0x12C0))return false;
         reinterpret_cast<void (*)(IOService *,uint32_t)>(dsiModeCPU[1])(fb,0);
