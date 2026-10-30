@@ -7555,7 +7555,7 @@ uint32_t XE::wrapDSIGetModeInformation(IOService *fb,int32_t mode,void *raw) {
         if(!dsiModeTarget(fb))return FunctionCast(wrapDSIGetModeInformation,callbackXE->orgDSIMode[4])(fb,mode,raw);
         DSIModeScope scope(fb);if(!scope.lock || !dsiModeCoherent(fb))return kIOReturnNotReady;
         const auto selected=dsiPresentation(mode);if(!raw || !selected)return kIOReturnBadArgument;
-        const bool rotated=selected->scalerFlags!=0;
+        const bool rotated=(selected->scalerFlags&0x10)!=0;
         const auto result=FunctionCast(wrapDSIGetModeInformation,callbackXE->orgDSIMode[4])(fb,mode,raw);
         if(!result && !XELP::DSI::AppleAdapter::annotateMode(dsiFixedMode.mode,
             *static_cast<XELP::DSI::AppleAdapter::ModeInformation *>(raw),rotated,selected->horizontalScaled,selected->verticalScaled))return kIOReturnNotReady;
@@ -7683,7 +7683,8 @@ uint32_t XE::setDSIPresentation(IOService *fb,uint32_t mode,const XELP::DSI::App
     const auto old=o.presentationReady ? o.presentation : o.timing;
     const uint32_t oldMode=o.presentationReady ? o.activeMode : o.clientMode;
     if(requested.scalerFlags==old.scalerFlags && requested.horizontalScaled==old.horizontalScaled &&
-       requested.verticalScaled==old.verticalScaled) {
+       requested.verticalScaled==old.verticalScaled && requested.horizontalInset==old.horizontalInset &&
+       requested.verticalInset==old.verticalInset) {
         o.presentation=requested;o.activeMode=mode;o.presentationReady=true;
         *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(fb)+0x4250)=mode;
         return kIOReturnSuccess;
@@ -7705,6 +7706,7 @@ uint32_t XE::setDSIPresentation(IOService *fb,uint32_t mode,const XELP::DSI::App
         if(!releaseDSILogical(fb))return false;
         auto cpu=o.timing;cpu.scalerFlags=timing.scalerFlags;
         cpu.horizontalScaled=timing.horizontalScaled;cpu.verticalScaled=timing.verticalScaled;
+        cpu.horizontalInset=timing.horizontalInset;cpu.verticalInset=timing.verticalInset;
         if(!XELP::DSI::AppleAdapter::prepareGeometry(fb,path,dsiProfile,cpu,
             reinterpret_cast<void (*)(void *,const XELP::DSI::AppleAdapter::Timing *)>(dsiComputeGeometry),true))return false;
         // The native allocator asks getCurrentDisplayMode/getPixelInformation

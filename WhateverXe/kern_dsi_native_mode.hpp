@@ -13,13 +13,12 @@ template<class Compute> bool prepareGeometry(void *fb,void *path,const Profile &
     using Display13FBMemory::field;
     Timing expected;
     if(!makeTiming(profile,expected))return false;
-    const bool rotated=presentation && (timing.scalerFlags==0x30 || timing.scalerFlags==0x50);
     const bool scaled=presentation && (timing.horizontalScaled || timing.verticalScaled);
-    if(rotated || scaled) {
-        if(timing.scalerFlags && !rotated)return false;
+    if(presentation) {
         expected.scalerFlags=timing.scalerFlags;
-        if(!validPresentationSize(timing.horizontalScaled,timing.verticalScaled))return false;
-        expected.horizontalScaled=timing.horizontalScaled;expected.verticalScaled=timing.verticalScaled;}
+        expected.horizontalScaled=timing.horizontalScaled;expected.verticalScaled=timing.verticalScaled;
+        expected.horizontalInset=timing.horizontalInset;expected.verticalInset=timing.verticalInset;
+    }
     if(!fb || !path || memcmp(&expected,&timing,sizeof(timing)) ||
        Display13FBMemory::singlePath<void *>(fb)!=path || field<uintptr_t>(fb,0x4340) ||
        (!presentation && field<uintptr_t>(fb,0x4348)))return false;
@@ -33,12 +32,17 @@ template<class Compute> bool prepareGeometry(void *fb,void *path,const Profile &
     put(fb,0x4350,4);*(static_cast<uint8_t *>(fb)+0x4A18)=1;
     compute(fb,&timing);
     const auto &m=profile.mode;const uint32_t width=scaled?timing.horizontalScaled:m.width,height=scaled?timing.verticalScaled:m.height;
+    // Check the allocated geometry, not an OS rotation/mode whitelist. This
+    // transaction retains the scanout and can own a separate GPU source only.
     const uint32_t pitch=((width*4+127)/128)*128;
-    const bool valid=field<uint32_t>(fb,0x430C)==width && field<uint32_t>(fb,0x4310)==height &&
+    const auto transform=field<uint32_t>(fb,0x4338);
+    const bool gpuTransform=(transform&0x30) && !(transform&~0x30U);
+    const bool valid=width && height && uint64_t(width)*4+127<=UINT32_MAX &&
+        uint64_t(pitch)*height<=UINT32_MAX && field<uint32_t>(fb,0x430C)==width && field<uint32_t>(fb,0x4310)==height &&
         field<uint32_t>(fb,0x4314)==pitch*m.height && field<uint32_t>(fb,0x4320)==m.width &&
         field<uint32_t>(fb,0x4324)==m.height && field<uint32_t>(fb,0x4328)==m.width &&
         field<uint32_t>(fb,0x432C)==m.height && field<uint32_t>(fb,0x4334)==pitch &&
-        field<uint32_t>(fb,0x4338)==(rotated ? 0x30U : (scaled && (width!=m.width || height!=m.height) ? 0x20U : 1U)) && !field<uint64_t>(path,0xF0) &&
+        (gpuTransform || (transform==1 && width==m.width && height==m.height)) && !field<uint64_t>(path,0xF0) &&
         field<uint32_t>(path,0xF8)==m.width && field<uint32_t>(path,0xFC)==m.height &&
         !field<uint64_t>(path,0x100) && field<uint32_t>(path,0x108)==m.width &&
         field<uint32_t>(path,0x10C)==m.height;

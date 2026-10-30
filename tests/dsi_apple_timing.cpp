@@ -32,7 +32,7 @@ int main() {
     offered.reservedA[0]=0x80001001;assert(AppleAdapter::clientTiming(t,offered,1));
     for(unsigned rotation:{0x30U,0x50U}) {
         auto r=offered;r.scalerFlags=rotation;
-        assert(!AppleAdapter::presentationTiming(t,r,1));
+        assert(AppleAdapter::presentationTiming(t,r,1));
         r.horizontalScaled=t.verticalActive;r.verticalScaled=t.horizontalActive;
         assert(AppleAdapter::presentationTiming(t,r,1));
         r.horizontalScaled=2880;r.verticalScaled=1620;
@@ -40,14 +40,15 @@ int main() {
         AppleAdapter::ModeInformation info;info.width=2880;info.height=1620;info.flags=0x02000004;
         assert(AppleAdapter::annotateMode(p.mode,info,true,2880,1620));
         assert(!(info.flags&0x02000004) && info.widthMM==154 && info.heightMM==86);
-        r.horizontalScaled=8192;assert(!AppleAdapter::presentationTiming(t,r,1));
-        r.horizontalScaled=2880;r.verticalScaled=0;assert(!AppleAdapter::presentationTiming(t,r,1));
+        r.horizontalScaled=8192;assert(AppleAdapter::presentationTiming(t,r,1));
+        r.horizontalScaled=2880;r.verticalScaled=0;assert(AppleAdapter::presentationTiming(t,r,1));
         r=offered;r.scalerFlags=rotation;r.horizontalActive=1920;r.verticalActive=1080;
         assert(!AppleAdapter::presentationTiming(t,r,1));
     }
     auto portrait=offered;portrait.horizontalScaled=1620;portrait.verticalScaled=2880;
     assert(AppleAdapter::presentationTiming(t,portrait,0));
-    portrait.scalerFlags=1;assert(!AppleAdapter::presentationTiming(t,portrait,0));
+    portrait.scalerFlags=1;assert(AppleAdapter::presentationTiming(t,portrait,0));
+    portrait.scalerFlags=0x20;portrait.horizontalInset=4;assert(AppleAdapter::presentationTiming(t,portrait,0));
     assert(!AppleAdapter::acceptsMode(0x80001002,0x80001001));
     uint8_t edid[128];assert(AppleAdapter::makePanelEDID(p.mode,edid));
     unsigned sum=0;for(auto b:edid)sum+=b;assert(!(sum&255));

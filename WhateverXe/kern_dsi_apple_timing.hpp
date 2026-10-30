@@ -55,15 +55,11 @@ inline bool clientTiming(const Timing &fixed,const Timing &offered,unsigned inde
 inline bool acceptsMode(uint32_t mode,uint32_t clientMode) {
     return mode==FixedModeID || mode==clientMode;
 }
-// The donor advertises an 8191-pixel source limit through IOFBScalerInfo.
-// Rotation and HiDPI change the GPU source, never the qualified DSI wire timing.
-inline bool validPresentationSize(uint32_t width,uint32_t height) {
-    return width && height && width<=8191 && height<=8191;
-}
 inline bool presentationTiming(const Timing &fixed,const Timing &offered,unsigned index) {
-    if(offered.scalerFlags!=0 && offered.scalerFlags!=0x30 && offered.scalerFlags!=0x50)return false;
-    if(!validPresentationSize(offered.horizontalScaled,offered.verticalScaled))return false;
+    // Presentation is supplied by CoreDisplay. Do not whitelist rotation,
+    // scaling sizes or mode-ID generations here; qualify only the wire timing.
     auto native=offered;native.scalerFlags=0;native.horizontalScaled=0;native.verticalScaled=0;
+    native.horizontalInset=0;native.verticalInset=0;
     return clientTiming(fixed,native,index);
 }
 // Synthetic Apple enumeration descriptor with timing from the panel profile.
