@@ -249,9 +249,10 @@ static XELPMemory::Layout xelpPhysicalMemory(IOPCIDevice *pci) {
         pci->configRead32(0xC4),aperture->getLength()) : XELPMemory::Layout {};
 }
 static bool xelpMemoryMatches(IOPCIDevice *pci) {return xelpMemory.reservationKnown && XELPMemory::samePhysical(xelpMemory,xelpPhysicalMemory(pci));}
-// Normal dual-output profile uses native accelerator surfaces. Fixed FBMemMgr
-// slot1/2 scatter backing is unqualified and must not reserve task aperture.
-static constexpr bool adlnFixedSysMemEnabled=false;
+// Native server-state transitions can request aperture backing even after
+// accelerator binding. Protect slot1/2 through the existing registration
+// contract before admitting their owned scatter mappings.
+static constexpr bool adlnFixedSysMemEnabled=true;
 static bool tglPcodeGateSerialize(void *,void *,OSSerialize *);
 static bool tglPcodeEDRAMSerialize(void *,void *,OSSerialize *);
 static bool tglTCBootstrapSerialize(void *,void *,OSSerialize *);
