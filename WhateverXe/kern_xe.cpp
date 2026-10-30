@@ -4678,7 +4678,7 @@ struct DSIFixedModeOwner {
     OSData *data {};
     XELP::DSI::Mode mode;
     XELP::DSI::AppleAdapter::Timing timing;
-    XELP::DSI::AppleAdapter::Timing presentation,requested,offered[8];
+    XELP::DSI::AppleAdapter::Timing presentation,requested,offered[32];
     unsigned offerCount {};
     uint32_t activeMode {XELP::DSI::AppleAdapter::FixedModeID};
     uintptr_t changingThread {},logical {};
@@ -7444,7 +7444,6 @@ uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
         if(!dsiModeTarget(fb))return FunctionCast(wrapDSISetDetailedTimings,callbackXE->orgDSIMode[0])(fb,array);
         DSIModeScope scope(fb);if(!scope.lock || !dsiModeCoherent(fb))return kIOReturnNotReady;
         uint32_t client=0;unsigned count=0;
-        XELP::DSI::AppleAdapter::Timing accepted[8];
         uint64_t offer[16] {3,array ? array->getCount() : 0,UINT32_MAX};
         if(array && array->getCount()<=1024)for(unsigned i=0;i<array->getCount();++i) {
             auto bytes=OSDynamicCast(OSData,array->getObject(i));
@@ -7457,8 +7456,8 @@ uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
                 IORegistryEntry::getRegistryRoot()->setProperty("WEXDSITimingRejected",bytes);
                 continue;
             }
-            if(count==arrsize(accepted))return kIOReturnNoResources;
-            accepted[count++]=t;if(native)client=t.reservedA[0];offer[2]=i;offer[3]=client;offer[4]=t.pixelClock;
+            if(count==arrsize(dsiFixedMode.offered))return kIOReturnNoResources;
+            ++count;if(native)client=t.reservedA[0];offer[2]=i;offer[3]=client;offer[4]=t.pixelClock;
             offer[5]=t.horizontalActive;offer[6]=t.horizontalBlanking;offer[7]=t.horizontalSyncOffset;offer[8]=t.horizontalSyncWidth;
             offer[9]=t.verticalActive;offer[10]=t.verticalBlanking;offer[11]=t.verticalSyncOffset;offer[12]=t.verticalSyncWidth;
             offer[13]=t.scalerFlags;offer[14]=t.horizontalScaled;offer[15]=t.verticalScaled;
@@ -7473,8 +7472,18 @@ uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
         const auto result=FunctionCast(wrapDSISetDetailedTimings,callbackXE->orgDSIMode[0])(fb,dsiFixedMode.array);
         if(result==kIOReturnSuccess) {
             if(!dsiModeCoherent(fb))return kIOReturnNotReady;
-            dsiFixedMode.offerCount=count;
-            memcpy(dsiFixedMode.offered,accepted,count*sizeof(accepted[0]));
+            // Validate the whole list before publishing it; avoid a timing
+            // array on the kernel stack. The caller retains this immutable
+            // array and the FB mutex serializes both passes.
+            unsigned copied=0;
+            if(array)for(unsigned i=0;i<array->getCount();++i) {
+                auto bytes=OSDynamicCast(OSData,array->getObject(i));
+                if(!bytes || bytes->getLength()!=sizeof(dsiFixedMode.timing))continue;
+                const auto &t=*static_cast<const XELP::DSI::AppleAdapter::Timing *>(bytes->getBytesNoCopy());
+                if(XELP::DSI::AppleAdapter::clientTiming(dsiFixedMode.timing,t,i) ||
+                   XELP::DSI::AppleAdapter::presentationTiming(dsiFixedMode.timing,t,i))dsiFixedMode.offered[copied++]=t;
+            }
+            dsiFixedMode.offerCount=copied;
             if(client)dsiFixedMode.clientMode=client;
         }
         return result;

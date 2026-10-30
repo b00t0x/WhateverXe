@@ -230,6 +230,22 @@ int main(){
  assert(!XE::wrapDSIValidateMode(fb,pair[1],nullptr,&timing));
  assert(static_cast<const Timing *>(timing)->scalerFlags==0x30 && !dsiFixedMode.timing.scalerFlags);
  assert(!XE::wrapDSIGetModeInformation(fb,pair[1],&info) && info.width==1920 && info.height==1080);
+ // CoreDisplay offers both exact-clock and EDID-rounded scaled modes.
+ auto many=OSArray::withCapacity(1);
+ for(unsigned i=0;i<24;++i){auto t=rotated;t.reservedA[0]=0x80006000+i;
+  t.horizontalScaled=2880;t.verticalScaled=1620;
+  t.pixelClock=t.minPixelClock=t.maxPixelClock=(i&1)?135255000:135260000;
+  auto data=OSData::withBytes(&t,sizeof(t));many->setObject(data);data->release();}
+ assert(!XE::wrapDSISetDetailedTimings(fb,many) && XE::wrapDSIGetModeCount(fb)==24);
+ int32_t modes[32];assert(!XE::wrapDSIGetModes(fb,modes));
+ for(unsigned i=0;i<24;++i){assert(static_cast<uint32_t>(modes[i])==0x80006000+i);
+  assert(!XE::wrapDSIValidateMode(fb,modes[i],nullptr,&timing));
+  assert(static_cast<const Timing *>(timing)->horizontalScaled==2880);
+  assert(!XE::wrapDSIGetModeInformation(fb,modes[i],&info) && info.width==2880 && info.height==1620);}
+ for(unsigned i=24;i<33;++i){auto t=rotated;t.reservedA[0]=0x80006000+i;
+  auto data=OSData::withBytes(&t,sizeof(t));many->setObject(data);data->release();}
+ assert(XE::wrapDSISetDetailedTimings(fb,many)==kIOReturnNoResources && XE::wrapDSIGetModeCount(fb)==24);
+ many->release();assert(!XE::wrapDSISetDetailedTimings(fb,rotationList));
  rotationData->release();rotationList->release();
  // Legacy UI attributes alone must never fabricate a presentation timing.
  auto orientation=new OSNumber;fb->setProperty("IOFBTransform",orientation);

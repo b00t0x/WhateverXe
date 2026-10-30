@@ -44,8 +44,9 @@ inline bool annotateMode(const Mode &m,ModeInformation &info,bool rotated=false,
 inline bool clientTiming(const Timing &fixed,const Timing &offered,unsigned index) {
     if(index>=1024 || offered.reservedA[0]<0x80000000U || offered.reservedA[0]==UINT32_MAX || offered.signalLevels>1)return false;
     const uint64_t rounded=((fixed.pixelClock+5000)/10000)*10000;
-    if(offered.pixelClock!=rounded || offered.minPixelClock!=rounded || offered.maxPixelClock!=rounded ||
-       rounded<fixed.minPixelClock || rounded>fixed.maxPixelClock)return false;
+    if((offered.pixelClock!=rounded && offered.pixelClock!=fixed.pixelClock) ||
+       offered.minPixelClock!=offered.pixelClock || offered.maxPixelClock!=offered.pixelClock ||
+       offered.pixelClock<fixed.minPixelClock || offered.pixelClock>fixed.maxPixelClock)return false;
     auto normalized=offered;
     normalized.reservedA[0]=fixed.reservedA[0];normalized.signalLevels=fixed.signalLevels;
     normalized.pixelClock=fixed.pixelClock;normalized.minPixelClock=fixed.minPixelClock;normalized.maxPixelClock=fixed.maxPixelClock;
