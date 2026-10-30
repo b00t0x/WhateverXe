@@ -7282,7 +7282,18 @@ bool XE::processDisplay13DSIModes(KernelPatcher &patcher,size_t index,mach_vm_ad
     const uint8_t scalerEntry[]={0x55,0x48,0x89,0xE5,0x48,0xFF,0x05,0xD7,0xD7,0x07,0x00,0x48,0x8B,0x47,0x10};
     if(size<=0x6686D || scalerFn!=address+0x6685E ||
        memcmp(reinterpret_cast<void *>(scalerFn),scalerEntry,sizeof(scalerEntry)))return false;
+    const char *detailed="__ZN21AppleIntelFramebuffer22validateDetailedTimingEPvy";
+    const char *source="__ZN21AppleIntelFramebuffer18ValidateSourceSizeEP29IODetailedTimingInformationV2";
+    const auto detailedFn=patcher.solveSymbol<mach_vm_address_t>(index,detailed,address,size);patcher.clearError();
+    const auto sourceFn=patcher.solveSymbol<mach_vm_address_t>(index,source,address,size);patcher.clearError();
+    const uint8_t detailedEntry[]={0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC};
+    const uint8_t sourceEntry[]={0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x54,0x53,0x48,0x83,0xEC,0x20};
+    if(detailedFn!=address+0x2FFCA || sourceFn!=address+0x30AD8 ||
+       memcmp(reinterpret_cast<void *>(detailedFn),detailedEntry,sizeof(detailedEntry)) ||
+       memcmp(reinterpret_cast<void *>(sourceFn),sourceEntry,sizeof(sourceEntry)))return false;
     KernelPatcher::RouteRequest routes[]={
+        {detailed,wrapDSIValidateDetailed,orgDSIDetailedValidation},
+        {source,wrapDSIValidateSource,orgDSISourceValidation},
         {scaler,wrapDSIScalerSupport,orgDSIScalerSupport},
         {symbols[0],wrapDSISetDetailedTimings,orgDSIMode[0]},
         {symbols[1],wrapDSIValidateMode,orgDSIMode[1]},
@@ -7538,6 +7549,33 @@ uint32_t XE::wrapDSIGetModeCount(IOService *fb) {
     recordDSIClient(fb,4,0,result);
     return result;
 }
+// Observe native mode admission separately from the later published mode list.
+uint32_t XE::wrapDSIValidateDetailed(IOService *fb,void *raw,uint64_t size) {
+    uint64_t record[60] {};const bool observe=dsiModeTarget(fb) && raw && size==204;
+    if(observe)memcpy(record+8,raw,204);
+    const auto result=FunctionCast(wrapDSIValidateDetailed,callbackXE->orgDSIDetailedValidation)(fb,raw,size);
+    if(observe) {
+        static uint32_t sequence=0;record[0]=1;record[1]=__sync_add_and_fetch(&sequence,1);
+        record[2]=result;record[3]=Display13FBMemory::field<uint32_t>(fb,0x4318);
+        record[4]=Display13FBMemory::field<uint32_t>(fb,0x431C);
+        memcpy(reinterpret_cast<uint8_t *>(record)+268,raw,204);
+        char key[40];snprintf(key,sizeof(key),"WEXDSIDetailedValidation%u",static_cast<unsigned>(record[1])%32);
+        IORegistryEntry::getRegistryRoot()->setProperty(key,record,sizeof(record));
+    }
+    return result;
+}
+bool XE::wrapDSIValidateSource(IOService *fb,void *raw) {
+    const auto result=FunctionCast(wrapDSIValidateSource,callbackXE->orgDSISourceValidation)(fb,raw);
+    if(dsiModeTarget(fb) && raw) {
+        static uint32_t sequence=0;uint64_t record[25] {1,__sync_add_and_fetch(&sequence,1),result,
+            Display13FBMemory::field<uint32_t>(fb,0x4318),Display13FBMemory::field<uint32_t>(fb,0x431C)};
+        memcpy(record+5,raw,160);
+        char key[40];snprintf(key,sizeof(key),"WEXDSISourceValidation%u",static_cast<unsigned>(record[1])%32);
+        IORegistryEntry::getRegistryRoot()->setProperty(key,record,sizeof(record));
+    }
+    return result;
+}
+
 // The adopted DSI scanout is fixed-size. It has no panel-fitter resource
 // transaction, so let the donor select its existing GPU scaling path. Preserve
 // the real OS timing and transform; other framebuffer owners keep native policy.
