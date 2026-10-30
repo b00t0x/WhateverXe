@@ -4708,6 +4708,14 @@ static const XELP::DSI::AppleAdapter::Timing *dsiPresentation(uint32_t mode) {
     // landscape logical buffer here changes the compositor's target geometry.
     return selected;
 }
+// The DSI adapter now accepts actual OS quarter-turn timings and allocates
+// their scaled GPU source. Expose that support when CoreDisplay builds modes.
+static void dsiAdvertisePresentation(IOService *fb) {
+    auto data=OSDynamicCast(OSData,fb->getProperty("IOFBScalerInfo"));
+    if(!data || data->getLength()!=48)return;
+    uint32_t scaler[12];memcpy(scaler,data->getBytesNoCopy(),sizeof(scaler));
+    if(!(scaler[4]&0x20)){scaler[4]|=0x20;fb->setProperty("IOFBScalerInfo",scaler,sizeof(scaler));}
+}
 struct DSIModeScope {
     IORecursiveLock *lock;
     explicit DSIModeScope(IOService *fb):lock(Display13FBMemory::field<IORecursiveLock *>(fb,0x4220)) {
@@ -7404,7 +7412,7 @@ uint32_t XE::wrapDSIGetOnlineInfo(IOService *fb,OSObject *path,uint8_t *online,u
         path && path==Display13FBMemory::singlePath<OSObject *>(fb) && dsiNativeUpdateAllowed(fb);
     uint8_t descriptor[128];
     const bool described=ready && XELP::DSI::AppleAdapter::makePanelEDID(dsiFixedMode.mode,descriptor);
-    if(described){*online=1;memcpy(edid,descriptor,sizeof(descriptor));}
+    if(described){*online=1;memcpy(edid,descriptor,sizeof(descriptor));dsiAdvertisePresentation(fb);}
     const auto result=described ? kIOReturnSuccess : kIOReturnNotReady;
     recordDSIClient(fb,11,*online,result);return result;
 }
