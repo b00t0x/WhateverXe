@@ -34,7 +34,7 @@ constexpr uint32_t kIOReturnSuccess=0,kIOReturnNotReady=0xe00002d8U,
  kIOReturnUnsupported=0xe00002c7U,kIOReturnBadArgument=0xe00002c2U,kIOReturnNoResources=0xe00002bdU;
 void *current_thread(){return reinterpret_cast<void *>(1);}
 #define arrsize(x) (sizeof(x)/sizeof(*(x)))
-unsigned alive=0,calls[5]{};bool dataOK=true,arrayOK=true,publishOK=true,geometryOK=true,clearOK=true;
+unsigned alive=0,calls[5]{};bool dataOK=true,arrayOK=true,publishOK=true,geometryOK=true,clearOK=true,capacityOK=true,appendOK=true;
 struct Meta {unsigned getClassSize(){return 0x4b90;}} meta;
 struct OSObject {
  unsigned refs=1;OSObject(){++alive;}virtual ~OSObject(){--alive;}
@@ -44,9 +44,11 @@ struct OSObject {
 struct OSNumber:OSObject {uint64_t value=0;uint64_t unsigned64BitValue(){return value;}};
 struct OSData:OSObject {
  std::vector<uint8_t> bytes;
+ static OSData *withCapacity(unsigned n){if(!capacityOK)return nullptr;auto d=new OSData;d->bytes.reserve(n);return d;}
+ bool appendBytes(const void *p,unsigned n){if(!appendOK)return false;auto b=static_cast<const uint8_t *>(p);bytes.insert(bytes.end(),b,b+n);return true;}
  static OSData *withBytes(const void *p,unsigned n){if(!dataOK)return nullptr;auto d=new OSData;
   d->bytes.assign(static_cast<const uint8_t*>(p),static_cast<const uint8_t*>(p)+n);return d;}
- unsigned getLength(){return bytes.size();}void *getBytesNoCopy(){return bytes.data();}
+ unsigned getLength(){return bytes.size();}const void *getBytesNoCopy(){return bytes.data();}
 };
 struct OSArray:OSObject {
  std::vector<OSObject*> objects;
@@ -64,9 +66,10 @@ struct IOService:OSObject {
  void removeProperty(const char *k){auto i=properties.find(k);if(i!=properties.end()){i->second->release();properties.erase(i);}}
  ~IOService(){for(auto i:properties)i.second->release();}
 };
-struct IORegistryEntry {void setProperty(const char *key,OSData *d){assert(!strcmp(key,"WEXDSITimingRejected") && d->getLength()==160);}
+struct IORegistryEntry {void setProperty(const char *key,OSData *d){assert((!strcmp(key,"WEXDSITimingRejected") && d->getLength()==160) || (!strcmp(key,"WEXDSITimingList") && !(d->getLength()%160)));}
+ void removeProperty(const char *key){assert(!strcmp(key,"WEXDSITimingList"));}
  static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}
- void setProperty(const char *key,const void *p,unsigned n){if(!strncmp(key,"WEXDSIModeInfo",14)){assert(n==48);return;}if(!strcmp(key,"WEXDSITimingList")){assert(n<=32*160 && !(n%160));return;}if(!strcmp(key,"WEXDSITimingRejected")){assert(n==160);return;}assert(n==128);if(!strcmp(key,"WEXDSITimingOffer"))return;const auto w=static_cast<const uint64_t *>(p);assert(w[0]==1 && w[1]<13 && w[2]);}};
+ void setProperty(const char *key,const void *p,unsigned n){if(!strncmp(key,"WEXDSIModeInfo",14)){assert(n==48);return;}if(!strcmp(key,"WEXDSITimingList")){assert(!(n%160));return;}if(!strcmp(key,"WEXDSITimingRejected")){assert(n==160);return;}assert(n==128);if(!strcmp(key,"WEXDSITimingOffer"))return;const auto w=static_cast<const uint64_t *>(p);assert(w[0]==1 && w[1]<13 && w[2]);}};
 struct IORecursiveLock {unsigned depth=0;};struct IOLock {unsigned depth=0;};
 void IORecursiveLockLock(IORecursiveLock *l){++l->depth;}void IORecursiveLockUnlock(IORecursiveLock *l){assert(l->depth);--l->depth;}
 void IOLockLock(IOLock *l){++l->depth;}void IOLockUnlock(IOLock *l){assert(l->depth);--l->depth;}
@@ -230,21 +233,26 @@ int main(){
  assert(!XE::wrapDSIValidateMode(fb,pair[1],nullptr,&timing));
  assert(static_cast<const Timing *>(timing)->scalerFlags==0x30 && !dsiFixedMode.timing.scalerFlags);
  assert(!XE::wrapDSIGetModeInformation(fb,pair[1],&info) && info.width==1920 && info.height==1080);
- // CoreDisplay offers both exact-clock and EDID-rounded scaled modes.
+ // A large OS list with many distinct scaled dimensions must not be
+ // rejected by the former 32-mode capacity or 1024-index gates.
  auto many=OSArray::withCapacity(1);
- for(unsigned i=0;i<24;++i){auto t=rotated;t.reservedA[0]=0x80006000+i;
-  t.horizontalScaled=2880;t.verticalScaled=1620;
+ for(unsigned i=0;i<1100;++i){auto t=rotated;t.reservedA[0]=0x80006000+i;
+  t.horizontalScaled=1280+2*i;t.verticalScaled=720+i;
   t.pixelClock=t.minPixelClock=t.maxPixelClock=(i&1)?135255000:135260000;
   auto data=OSData::withBytes(&t,sizeof(t));many->setObject(data);data->release();}
- assert(!XE::wrapDSISetDetailedTimings(fb,many) && XE::wrapDSIGetModeCount(fb)==24);
- int32_t modes[32];assert(!XE::wrapDSIGetModes(fb,modes));
- for(unsigned i=0;i<24;++i){assert(static_cast<uint32_t>(modes[i])==0x80006000+i);
+ auto previous=dsiFixedMode.offeredData;const auto beforePublish=calls[0];
+ capacityOK=false;
+ assert(XE::wrapDSISetDetailedTimings(fb,many)==kIOReturnNoResources);
+ capacityOK=true;appendOK=false;
+ assert(XE::wrapDSISetDetailedTimings(fb,many)==kIOReturnNoResources);
+ appendOK=true;
+ assert(dsiFixedMode.offeredData==previous && XE::wrapDSIGetModeCount(fb)==2 && calls[0]==beforePublish);
+ assert(!XE::wrapDSISetDetailedTimings(fb,many) && XE::wrapDSIGetModeCount(fb)==1100);
+ int32_t modes[1100];assert(!XE::wrapDSIGetModes(fb,modes));
+ for(unsigned i=0;i<1100;++i){assert(static_cast<uint32_t>(modes[i])==0x80006000+i);
   assert(!XE::wrapDSIValidateMode(fb,modes[i],nullptr,&timing));
-  assert(static_cast<const Timing *>(timing)->horizontalScaled==2880);
-  assert(!XE::wrapDSIGetModeInformation(fb,modes[i],&info) && info.width==2880 && info.height==1620);}
- for(unsigned i=24;i<33;++i){auto t=rotated;t.reservedA[0]=0x80006000+i;
-  auto data=OSData::withBytes(&t,sizeof(t));many->setObject(data);data->release();}
- assert(XE::wrapDSISetDetailedTimings(fb,many)==kIOReturnNoResources && XE::wrapDSIGetModeCount(fb)==24);
+  assert(static_cast<const Timing *>(timing)->horizontalScaled==1280+2*i);
+  assert(!XE::wrapDSIGetModeInformation(fb,modes[i],&info) && info.width==1280+2*i && info.height==720+i);}
  many->release();assert(!XE::wrapDSISetDetailedTimings(fb,rotationList));
  rotationData->release();rotationList->release();
  // Legacy UI attributes alone must never fabricate a presentation timing.
@@ -280,7 +288,7 @@ int main(){
  assert(dsiModeTarget(fb) && dsiFixedMode.array->refs==1 && Display13FBMemory::field<OSArray*>(fb,0x4260)==dsiFixedMode.array);
  assert(!XE::wrapDSIGetModeCount(fb));cleanup();
  assert(!fbLock.depth && !ownerLock.depth);fb->release();peer->release();assert(!alive);
- puts("PASS production DSI fixed mode: retained native array, publication failure, index restriction, fixed enumeration, metadata and foreign FB dispatch");
+ puts("PASS production DSI fixed mode: retained native array, publication failure, dynamic enumeration, metadata and foreign FB dispatch");
 }
 '''.replace('OWNER', owner).replace('FUNCTIONS', functions)
 with tempfile.TemporaryDirectory(prefix='dsi-apple-adapter-') as directory:

@@ -26,7 +26,7 @@ struct Profile {
     uint16_t version {}; uint8_t checksum {},panel {};
     bool bdbTailQuirk {}; // explicit, caller-approved one-byte final END quirk
     Mode mode;
-    uint8_t lanes {},byteClock {},clockPrepare {},clockPre {},hsPrepare {},hsExit {};
+    uint8_t orientationQuarterTurns {},lanes {},byteClock {},clockPrepare {},clockPre {},hsPrepare {},hsExit {};
     uint16_t clockPrepareZero {},hsPrepareZero {};
     bool btaDisabled {};
     uint32_t hsTxTimeout {},lpRxTimeout {},turnaroundTimeout {},initTimer {};
@@ -97,11 +97,14 @@ inline Profile parseProfile(Span input,bool allowFinalEndQuirk=false) {
     if(options.size<1 || options.data[0]>=6 || config.size<792)return failure;
     r.panel=options.data[0];const auto c=config.data+122*r.panel;
     const auto general=sequenceU32(c+2);const auto port=profileU16(c+6);
-    // Bridge, command mode, rotation, dual link, reversal and alternate DCS
+    // Bridge, command mode, dual link, reversal and alternate DCS
     // destinations are deliberately outside the first implementation.
     if((general&4) || ((general>>3)&3)!=2 || (general&32) ||
-       ((general>>6)&3)!=2 || ((general>>10)&15)!=4 || ((general>>14)&3) ||
+       ((general>>6)&3)!=2 || ((general>>10)&15)!=4 ||
        (port&0xFFF3) || (profileU16(c+24)&7) || c[23]!=0)return failure;
+    // VBT rotation describes panel mounting, not the DSI wire protocol.
+    // Keep the metadata without synthesizing or restricting OS transforms.
+    r.orientationQuarterTurns=(general>>14)&3;
     r.lanes=((port>>2)&3)+1;if(r.lanes!=4)return failure;
     r.byteClock=c[23];r.btaDisabled=(general>>16)&1;
     r.hsTxTimeout=sequenceU32(c+26);r.lpRxTimeout=sequenceU32(c+30);

@@ -20,6 +20,7 @@ if len(sys.argv)==2:
 code=r'''
 #include "kern_display13_fb_memory.hpp"
 #include "kern_dsi_apple_timing.hpp"
+#include "kern_dsi_attributes.hpp"
 #include "kern_display13_transcoder.hpp"
 #include <cassert>
 #include <cstdio>
@@ -326,21 +327,26 @@ int main(){
  }
  {Case c;nestedTx=true;auto before=txCalls[2];assert(callTx(0,&c.fb)==txResult(0));
   assert(txCalls[2]==before+1 && !display13FBPower.dsiNativeWriters && !fbLock.depth && !owner);}
- // Only qualified P2 attributes reach native; lifetime accounting spans
+ // Ordinary OS attributes reach native; lifetime accounting spans
  // their nested flip/color work and preserves full pointer-sized values.
- for(unsigned attr:{0x77737276U,0x63617064U}){Case c;expectedAttribute=attr;expectedValue=txOptions;nestedAttribute=true;
+ for(unsigned attr:{0x77737276U,0x63617064U,0x63727363U,0x706E6C70U,0x73484443U,0x2070656EU,0x20637463U,0xDEADBEEFU}){Case c;expectedAttribute=attr;expectedValue=txOptions;nestedAttribute=true;
   const auto before=attrCalls[0];assert(XE::wrapDSISetAttribute(&c.fb,attr,expectedValue)==0xe0000121U);
   assert(attrCalls[0]==before+1 && !display13FBPower.dsiNativeWriters && !owner && !fbLock.depth);}
- for(unsigned attr:{0x00647064U,0x72677363U,0x67677363U,0x62677363U,0x67736320U,0x666C7573U}){
+ for(unsigned attr:{0x00647064U,0x72677363U,0x67677363U,0x62677363U,0x67736320U,0x666C7573U,0x76626C6DU,0x64666C67U,0x00677264U,0x20627063U,0x706F7772U,0xDEADBEEFU}){
   Case c;expectedAttribute=attr;expectedValue=txOptions;expectedConnection=0;
   assert(XE::wrapDSISetConnectionAttribute(&c.fb,0,attr,expectedValue)==0xe0000122U && !display13FBPower.dsiNativeWriters);
   assert(XE::wrapDSISetConnectionAttribute(&c.fb,1,attr,expectedValue)==kIOReturnUnsupported);}
- for(unsigned attr:{0x706F7772U,0x70777273U,0x73707772U,0x64706F77U,0x706E6C70U,0x706E6C74U,
-                    0x00696772U,0x7073723FU,0x70726F62U,0x64706972U,0xDEADBEEFU}){
-  Case c;const auto before=attrCalls[0]+attrCalls[1]+attrCalls[2];const auto original=c.fb;
+ // Transport-only routes remain blocked, independently of the selector
+ // namespace. Native/IOGraphics handles all other attributes and return values.
+ for(unsigned attr:{0x68646370U,0x73707772U}) {
+  Case c;const auto before=attrCalls[0];const auto original=c.fb;
   assert(XE::wrapDSISetAttribute(&c.fb,attr,0)==kIOReturnUnsupported);
+  assert(attrCalls[0]==before && !memcmp(&c.fb,&original,sizeof(c.fb)));}
+ for(unsigned attr:{0x706E6C74U,0x00696772U,0x7073723FU,0x70726F62U,0x64707461U,0x7073636EU,
+                    0x00617572U,0x61756D73U,0x61757063U}) {
+  Case c;const auto before=attrCalls[1];const auto original=c.fb;
   assert(XE::wrapDSISetConnectionAttribute(&c.fb,0,attr,0)==kIOReturnUnsupported);
-  assert(attrCalls[0]+attrCalls[1]+attrCalls[2]==before && !memcmp(&c.fb,&original,sizeof(c.fb)) && !display13FBPower.memoryFaulted);}
+  assert(attrCalls[1]==before && !memcmp(&c.fb,&original,sizeof(c.fb)) && !display13FBPower.memoryFaulted);}
  {Case c;xe.dsiStopAttempted=true;const auto before=attrCalls[0];
   assert(XE::wrapDSISetAttribute(&c.fb,0x626B7376,123)==0);
   assert(XE::wrapDSISetAttribute(&c.fb,0x626B7376,0x100000001ULL)==kIOReturnUnsupported);
@@ -378,7 +384,7 @@ int main(){
   assert(streamCalls==before);}
  {Case c;xe.adlnOutputWiring.dsi=0;nativeFB=nullptr;expectedPath=nullptr;
   assert(XE::wrapDSISetStream(&c.ctl,nullptr,nullptr,&paramAnchor)==0xe0000124U);}
- puts("PASS DSI public mode preflight and native update dispatch: stopped/faulted rejection, held FB serialization, nested cursor/transaction counts, P2 attribute/power admission, full-width arguments, native wait lock boundaries, peer and disabled-DSI forwarding");
+ puts("PASS DSI public mode preflight and native update dispatch: stopped/faulted rejection, held FB serialization, nested cursor/transaction counts, transport-specific attribute/power admission, full-width arguments, native wait lock boundaries, peer and disabled-DSI forwarding");
 }
 '''.replace('SCOPE',scope).replace('FUNCTIONS',functions)
 with tempfile.TemporaryDirectory(prefix='dsi-update-') as d:

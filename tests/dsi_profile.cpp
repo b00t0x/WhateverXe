@@ -73,7 +73,12 @@ int main(int argc,char **argv) {
         bad=b;
         if(id==2){bad[p+21]=22;reject(bad);}
         if(id==40){bad[p]=6;reject(bad);}
-        if(id==52){bad[p+6]=8;reject(bad);bad=b;put(bad,p+98,49);reject(bad);}
+        if(id==52){
+            for(unsigned turn=0;turn<4;++turn){auto oriented=b;put(oriented,p+2,0x11190|(turn<<14),4);
+                auto profile=parse(oriented);assert(profile.valid() && profile.orientationQuarterTurns==turn);
+                auto plan=linkPlan(profile);assert(plan.valid && plan.htotal==link.htotal && plan.vtotal==link.vtotal && plan.afeKHz==link.afeKHz);}
+            bad[p+6]=8;reject(bad);bad=b;put(bad,p+98,49);reject(bad);
+        }
         if(id==58){put(bad,p+8,1);reject(bad);}
         if(id==43){bad[p+257]=16;reject(bad);}
         // Duplicate required blocks reject before publication.

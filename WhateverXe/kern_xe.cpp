@@ -21,6 +21,7 @@
 #include "kern_display13_boot.hpp"
 #include "kern_display13_dsi_trial.hpp"
 #include "kern_dsi_readout.hpp"
+#include "kern_dsi_attributes.hpp"
 #include "kern_dsi_apple_timing.hpp"
 #include "kern_display13_firmware.hpp"
 #include "kern_display13_tc_aux.hpp"
@@ -4679,7 +4680,9 @@ struct DSIFixedModeOwner {
     OSData *data {};
     XELP::DSI::Mode mode;
     XELP::DSI::AppleAdapter::Timing timing;
-    XELP::DSI::AppleAdapter::Timing presentation,requested,offered[32];
+    XELP::DSI::AppleAdapter::Timing presentation,requested;
+    OSData *offeredData {};
+    const XELP::DSI::AppleAdapter::Timing *offered {};
     unsigned offerCount {};
     uint32_t activeMode {XELP::DSI::AppleAdapter::FixedModeID};
     uintptr_t changingThread {},logical {};
@@ -7390,11 +7393,11 @@ bool XE::releaseDSIFixedMode(IOService *fb) {
     const auto result=FunctionCast(wrapDSISetDetailedTimings,orgDSIMode[0])(fb,nullptr);
     if(result!=kIOReturnSuccess || Display13FBMemory::field<OSArray *>(fb,0x4260) ||
        fb->getProperty("IOFBDetailedTimings"))return false;
-    auto array=o.array;auto data=o.data;
+    auto array=o.array;auto data=o.data;auto offered=o.offeredData;
     __atomic_store_n(&o.framebuffer,static_cast<IOService *>(nullptr),__ATOMIC_RELEASE);
-    o.array=nullptr;o.data=nullptr;o.mode={};o.timing={};o.clientMode=XELP::DSI::AppleAdapter::FixedModeID;
+    o.array=nullptr;o.data=nullptr;o.offeredData=nullptr;o.offered=nullptr;o.mode={};o.timing={};o.clientMode=XELP::DSI::AppleAdapter::FixedModeID;
     o.presentation={};o.requested={};o.offerCount=0;o.activeMode=o.clientMode;o.presentationReady=false;o.presentationFault=false;o.changingThread=0;
-    OSSafeReleaseNULL(array);OSSafeReleaseNULL(data);fb->release();return true;
+    OSSafeReleaseNULL(array);OSSafeReleaseNULL(data);OSSafeReleaseNULL(offered);fb->release();return true;
 }
 
 // IOGraphics also requests EDID independently of online detection. Stop at
@@ -7474,7 +7477,7 @@ uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
         DSIModeScope scope(fb);if(!scope.lock || !dsiModeCoherent(fb))return kIOReturnNotReady;
         uint32_t client=0;unsigned count=0;
         uint64_t offer[16] {3,array ? array->getCount() : 0,UINT32_MAX};
-        if(array && array->getCount()<=1024)for(unsigned i=0;i<array->getCount();++i) {
+        if(array)for(unsigned i=0;i<array->getCount();++i) {
             auto bytes=OSDynamicCast(OSData,array->getObject(i));
             if(!bytes || bytes->getLength()!=sizeof(dsiFixedMode.timing))continue;
             const auto &t=*static_cast<const XELP::DSI::AppleAdapter::Timing *>(bytes->getBytesNoCopy());
@@ -7485,7 +7488,6 @@ uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
                 IORegistryEntry::getRegistryRoot()->setProperty("WEXDSITimingRejected",bytes);
                 continue;
             }
-            if(count==arrsize(dsiFixedMode.offered))return kIOReturnNoResources;
             ++count;if(native)client=t.reservedA[0];offer[2]=i;offer[3]=client;offer[4]=t.pixelClock;
             offer[5]=t.horizontalActive;offer[6]=t.horizontalBlanking;offer[7]=t.horizontalSyncOffset;offer[8]=t.horizontalSyncWidth;
             offer[9]=t.verticalActive;offer[10]=t.verticalBlanking;offer[11]=t.verticalSyncOffset;offer[12]=t.verticalSyncWidth;
@@ -7496,26 +7498,41 @@ uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
         const bool canonical=data && data->getLength()==sizeof(dsiFixedMode.timing) &&
             !memcmp(data->getBytesNoCopy(),&dsiFixedMode.timing,sizeof(dsiFixedMode.timing));
         if(!count && !canonical)return kIOReturnUnsupported;
-        // Native storage retains the immutable wire mode. Qualified presentation
-        // timings are returned by validation, without changing the DSI link.
-        const auto result=FunctionCast(wrapDSISetDetailedTimings,callbackXE->orgDSIMode[0])(fb,dsiFixedMode.array);
-        if(result==kIOReturnSuccess) {
-            if(!dsiModeCoherent(fb))return kIOReturnNotReady;
-            // Validate the whole list before publishing it; avoid a timing
-            // array on the kernel stack. The caller retains this immutable
-            // array and the FB mutex serializes both passes.
-            unsigned copied=0;
-            if(array)for(unsigned i=0;i<array->getCount();++i) {
+        // Size storage from the accepted OS list, not a fixed number of modes.
+        // Prepare the complete replacement before touching native state so an
+        // allocation failure preserves the previous list and its timing pointers.
+        OSData *replacement=nullptr;
+        if(count) {
+            if(count>UINT32_MAX/sizeof(dsiFixedMode.timing))return kIOReturnNoResources;
+            replacement=OSData::withCapacity(count*sizeof(dsiFixedMode.timing));
+            if(!replacement)return kIOReturnNoResources;
+            for(unsigned i=0;i<array->getCount();++i) {
                 auto bytes=OSDynamicCast(OSData,array->getObject(i));
                 if(!bytes || bytes->getLength()!=sizeof(dsiFixedMode.timing))continue;
                 const auto &t=*static_cast<const XELP::DSI::AppleAdapter::Timing *>(bytes->getBytesNoCopy());
                 if(XELP::DSI::AppleAdapter::clientTiming(dsiFixedMode.timing,t,i) ||
-                   XELP::DSI::AppleAdapter::presentationTiming(dsiFixedMode.timing,t,i))dsiFixedMode.offered[copied++]=t;
+                   XELP::DSI::AppleAdapter::presentationTiming(dsiFixedMode.timing,t,i)) {
+                    if(!replacement->appendBytes(&t,sizeof(t))) {
+                        replacement->release();return kIOReturnNoResources;
+                    }
+                }
             }
-            dsiFixedMode.offerCount=copied;
-            IORegistryEntry::getRegistryRoot()->setProperty("WEXDSITimingList",dsiFixedMode.offered,
-                copied*sizeof(dsiFixedMode.offered[0]));
+        }
+        // Native storage retains the immutable wire mode. Qualified presentation
+        // timings are returned by validation, without changing the DSI link.
+        const auto result=FunctionCast(wrapDSISetDetailedTimings,callbackXE->orgDSIMode[0])(fb,dsiFixedMode.array);
+        if(result==kIOReturnSuccess && dsiModeCoherent(fb)) {
+            auto previous=dsiFixedMode.offeredData;
+            dsiFixedMode.offeredData=replacement;
+            dsiFixedMode.offered=replacement ? static_cast<const XELP::DSI::AppleAdapter::Timing *>(replacement->getBytesNoCopy()) : nullptr;
+            dsiFixedMode.offerCount=count;
+            if(replacement)IORegistryEntry::getRegistryRoot()->setProperty("WEXDSITimingList",replacement);
+            else IORegistryEntry::getRegistryRoot()->removeProperty("WEXDSITimingList");
             if(client)dsiFixedMode.clientMode=client;
+            OSSafeReleaseNULL(previous);
+        } else {
+            OSSafeReleaseNULL(replacement);
+            if(result==kIOReturnSuccess)return kIOReturnNotReady;
         }
         return result;
     }();
@@ -7940,9 +7957,9 @@ uint32_t XE::wrapDSISetGammaTable(IOService *fb,uint32_t channels,uint32_t count
     const auto result=FunctionCast(wrapDSISetGammaTable,callbackXE->orgDSITransaction[4])(fb,channels,count,bits,data,sync);
     endDSINativeWriter(token);return result;
 }
-// P2 preserves the firmware link. Unknown/native panel and power setters do
-// not inherit eDP behavior. The admitted CPU/color operations remain counted
-// through their native bodies; P5 will replace this policy with DSI controls.
+// Power/backlight use DSI owners. Block only the donor branches that enter
+// unsupported native transport controls; let ordinary OS attributes reach
+// their native implementations under the existing writer lifetime.
 uint32_t XE::wrapDSISetAttribute(IOService *fb,uint32_t attribute,uintptr_t value) {
     recordDSIClient(fb,7,attribute,UINT32_MAX);
     const auto result=[&]() -> uint32_t {
@@ -7956,9 +7973,7 @@ uint32_t XE::wrapDSISetAttribute(IOService *fb,uint32_t attribute,uintptr_t valu
                     return wrapDSISetPowerState(fb,static_cast<uint32_t>(value));
                 }
                 if(attribute==0x626B7376)return callbackXE->saveDSIBrightness(fb,value);
-                // wsrv and capd: retain native server/capture bookkeeping and the
-                // routed plane/transaction work. Other selectors need admission.
-                if(attribute!=0x77737276 && attribute!=0x63617064)return kIOReturnUnsupported;
+                if(XELP::DSI::AppleAdapter::transportAttribute(attribute))return kIOReturnUnsupported;
                 token=beginDSIFramebufferWriter(fb);if(token<0)return kIOReturnNotReady;
             }
         }
@@ -8049,15 +8064,7 @@ uint32_t XE::wrapDSISetConnectionAttribute(IOService *fb,int32_t connection,uint
             if(dsiLifecycleTarget(fb,Display13FBMemory::singlePath<OSObject *>(fb))) {
                 if(connection!=0)return kIOReturnUnsupported;
                 if(attribute==0x626B6C74)return callbackXE->setDSIBrightness(fb,value);
-                // Controller depth and gamma scales/flush have qualified native
-                // CPU/color paths. In particular ignore, pnlt, psr?, powr,
-                // probe and DP-link configuration must never reach native DSI.
-                switch(attribute) {
-                    case 0x00647064: // controller depth
-                    case 0x72677363: case 0x67677363: case 0x62677363: // RGB gamma scale
-                    case 0x67736320: case 0x666C7573: break; // gamma scale / flush
-                    default:return kIOReturnUnsupported;
-                }
+                if(XELP::DSI::AppleAdapter::transportConnectionAttribute(attribute))return kIOReturnUnsupported;
                 token=beginDSIFramebufferWriter(fb);if(token<0)return kIOReturnNotReady;
             }
         }

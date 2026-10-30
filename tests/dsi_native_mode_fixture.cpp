@@ -150,6 +150,22 @@ int main(int argc,char **argv) {
         logicalResult=0;failRecord=true;assert(allocateLogical(fb)==0xE00002BD);
         assert(!field<uintptr_t>(fb,0x4340));
         assert(logicalAllocations==6 && logicalFrees==6 && recordAllocations==6 && recordFrees==6);
+        // Different render sizes and all ordinary rotations use the same
+        // donor contract. No preferred HiDPI size is an admission condition.
+        failRecord=false;
+        for(uint32_t rotation:{0U,0x30U,0x40U,0x50U})for(unsigned width:{1280U,2560U,3200U}) {
+            auto other=t;other.scalerFlags=rotation;
+            const auto height=width*9/16;
+            other.horizontalScaled=(rotation&0x10)?width:height;
+            other.verticalScaled=(rotation&0x10)?height:width;
+            assert(AppleAdapter::prepareGeometry(fb,path,p,other,compute,true));
+            assert(allocateLogical(fb)==0);
+            auto record=field<NativeBacking::Record *>(fb,0x4340);
+            assert(record && record->bytes==uint64_t(record->pitch)*other.verticalScaled);
+            assert(field<uintptr_t>(fb,0x4348)==0x12345000);
+            releaseLogical(fb);assert(!field<uintptr_t>(fb,0x4340));
+        }
+        assert(logicalAllocations==18 && logicalFrees==18 && recordAllocations==18 && recordFrees==18);
         munmap(image,0x400000);puts("DSI native geometry: fixed scanout, quarter-turn logical buffers, HiDPI and failure cleanup replay passed");
     }
     puts("DSI native mode preparation rollback and admission passed");

@@ -41,8 +41,8 @@ inline bool annotateMode(const Mode &m,ModeInformation &info,bool rotated=false,
 // CoreDisplay can replace the reserved client IDs when rebuilding its mode
 // list. Treat reserved IDs as opaque: the complete
 // timing, not an assumed generation/index bit layout, qualifies this alias.
-inline bool clientTiming(const Timing &fixed,const Timing &offered,unsigned index) {
-    if(index>=1024 || offered.reservedA[0]<0x80000000U || offered.reservedA[0]==UINT32_MAX || offered.signalLevels>1)return false;
+inline bool clientTiming(const Timing &fixed,const Timing &offered,unsigned /*index*/) {
+    if(offered.reservedA[0]<0x80000000U || offered.reservedA[0]==UINT32_MAX || offered.signalLevels>1)return false;
     const uint64_t rounded=((fixed.pixelClock+5000)/10000)*10000;
     if((offered.pixelClock!=rounded && offered.pixelClock!=fixed.pixelClock) ||
        offered.minPixelClock!=offered.pixelClock || offered.maxPixelClock!=offered.pixelClock ||

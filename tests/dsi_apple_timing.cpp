@@ -22,7 +22,7 @@ int main() {
     assert(AppleAdapter::clientTiming(t,exact,1));
     exact.minPixelClock--;assert(!AppleAdapter::clientTiming(t,exact,1));
     assert(AppleAdapter::clientTiming(t,offered,1)); // IDs are opaque, not array positions.
-    assert(!AppleAdapter::clientTiming(t,offered,1024));
+    assert(AppleAdapter::clientTiming(t,offered,1024));
     for(uint32_t id:{0x80002000U,0x80003000U,0x80005007U}) {
         offered.reservedA[0]=id;assert(AppleAdapter::clientTiming(t,offered,0));
     }
