@@ -252,7 +252,7 @@ static bool xelpMemoryMatches(IOPCIDevice *pci) {return xelpMemory.reservationKn
 // Native server-state transitions can request aperture backing even after
 // accelerator binding. Protect slot1/2 through the existing registration
 // contract before admitting their owned scatter mappings.
-static constexpr bool adlnFixedSysMemEnabled=true;
+static bool adlnFixedSysMemEnabled=true; // Latched from the native layout before accelerator registration.
 static bool tglPcodeGateSerialize(void *,void *,OSSerialize *);
 static bool tglPcodeEDRAMSerialize(void *,void *,OSSerialize *);
 static bool tglTCBootstrapSerialize(void *,void *,OSSerialize *);
@@ -7185,6 +7185,13 @@ void XE::wrapDisplay13FBMemoryInit(IOService *controller) {
 		for(uint32_t i=0;valid && i<pool.pages;++i)
 			valid=io.readPTE(0x800000+8*i)==Display13FBGTT::pte(pool.physical,4096*i);
 		g.initialized=valid;
+        // Qualify the entire fixed reservation before the accelerator exists.
+        // Large stolen layouts may leave no aperture for secondary windows;
+        // retain their native-surface path instead of rejecting registration.
+        const auto layout=Display13FBMemory::poolLayout(controller,controller->getMetaClass()->getClassSize(),UINT32_MAX);
+        adlnFixedSysMemEnabled=valid && Display13FBTopology::multiOutputWiring(s->adlnOutputWiring) &&
+            Display13FBMemory::sharedReservation(layout,Display13FBGTT::Aperture,true).valid;
+        IORegistryEntry::getRegistryRoot()->setProperty("N97FixedSysMemEnabled",adlnFixedSysMemEnabled);
 	} else OSSafeReleaseNULL(map);
 	if(!valid) {g.faulted=true;adlnFault(display13FBPower.memoryFaulted,__LINE__);}
 	uint64_t record[] {1,valid,g.reads,g.faulted};
