@@ -64,8 +64,9 @@ struct IOService:OSObject {
  void removeProperty(const char *k){auto i=properties.find(k);if(i!=properties.end()){i->second->release();properties.erase(i);}}
  ~IOService(){for(auto i:properties)i.second->release();}
 };
-struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}
- void setProperty(const char *key,const void *p,unsigned n){assert(n==128);if(!strcmp(key,"WEXDSITimingOffer"))return;const auto w=static_cast<const uint64_t *>(p);assert(w[0]==1 && w[1]<13 && w[2]);}};
+struct IORegistryEntry {void setProperty(const char *key,OSData *d){assert(!strcmp(key,"WEXDSITimingRejected") && d->getLength()==160);}
+ static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}
+ void setProperty(const char *key,const void *p,unsigned n){if(!strcmp(key,"WEXDSITimingRejected")){assert(n==160);return;}assert(n==128);if(!strcmp(key,"WEXDSITimingOffer"))return;const auto w=static_cast<const uint64_t *>(p);assert(w[0]==1 && w[1]<13 && w[2]);}};
 struct IORecursiveLock {unsigned depth=0;};struct IOLock {unsigned depth=0;};
 void IORecursiveLockLock(IORecursiveLock *l){++l->depth;}void IORecursiveLockUnlock(IORecursiveLock *l){assert(l->depth);--l->depth;}
 void IOLockLock(IOLock *l){++l->depth;}void IOLockUnlock(IOLock *l){assert(l->depth);--l->depth;}

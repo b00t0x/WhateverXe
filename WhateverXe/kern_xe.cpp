@@ -7443,7 +7443,12 @@ uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
             if(!bytes || bytes->getLength()!=sizeof(dsiFixedMode.timing))continue;
             const auto &t=*static_cast<const XELP::DSI::AppleAdapter::Timing *>(bytes->getBytesNoCopy());
             const bool native=XELP::DSI::AppleAdapter::clientTiming(dsiFixedMode.timing,t,i);
-            if(!native && !XELP::DSI::AppleAdapter::presentationTiming(dsiFixedMode.timing,t,i))continue;
+            if(!native && !XELP::DSI::AppleAdapter::presentationTiming(dsiFixedMode.timing,t,i)) {
+                // Keep the last rejected OS request across later successful
+                // enumeration calls, so clock/geometry admission is observable.
+                IORegistryEntry::getRegistryRoot()->setProperty("WEXDSITimingRejected",bytes);
+                continue;
+            }
             if(count==arrsize(accepted))return kIOReturnNoResources;
             accepted[count++]=t;if(native)client=t.reservedA[0];offer[2]=i;offer[3]=client;offer[4]=t.pixelClock;
             offer[5]=t.horizontalActive;offer[6]=t.horizontalBlanking;offer[7]=t.horizontalSyncOffset;offer[8]=t.horizontalSyncWidth;
