@@ -10,10 +10,11 @@
 #include <mach-o/loader.h>
 #include <i386/machine_routines.h>
 #include <sys/proc.h>
+#include <sys/sysctl.h>
+#include <sys/errno.h>
 #include <kern/clock.h>
 namespace ShutdownObserver {
 static const char *traceKey="4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:wex-shutdown-trace";
-static const char *armKey="4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:wex-shutdown-arm";
 struct Event { uint32_t code, detail; uint64_t time, pc; char label[24]; };
 struct Journal { uint32_t magic, version; uint64_t run; uint32_t count, dropped, failed, reserved; Event events[32]; };
 static Journal journal {};
@@ -30,6 +31,14 @@ static int (*orgSync)(proc_t,void *,int *);
 static void (*orgHaltLog)(const char *,const void *,uint64_t);
 static int (*orgPEHalt)(unsigned int,uint32_t);
 static void (*orgPlatform)(void *,unsigned int);
+// _sync starts with a RIP-relative LEA. Lilu copies prologues verbatim,
+// so replay that exact prefix with its original callback address explicitly.
+extern "C" {
+uintptr_t wexShutdownSyncCallback=0, wexShutdownSyncContinue=0;
+}
+__attribute__((naked,noinline)) static int syncBridge(proc_t,void *,int *) {
+ __asm__("pushq %rbp\n\tmovq %rsp, %rbp\n\tmovq _wexShutdownSyncCallback(%rip), %rsi\n\tjmpq *_wexShutdownSyncContinue(%rip)");
+}
 static void publish() { IORegistryEntry::getRegistryRoot()->setProperty("WEXShutdownObserver",ready,sizeof(ready)); }
 // All call sites precede the final platform power-off. Refuse an interrupt-off
 // context; never take a blocking diagnostic lock or allocate journal storage here.
@@ -51,19 +60,27 @@ static void record(uint32_t code,uint32_t detail=0,const char *label=nullptr,con
  ready[3]=journal.count;ready[4]=journal.failed;ready[5]=journal.dropped;
  IOLockUnlock(lock);
 }
-static void tryArm() {
- if(armed || ready[2]!=63)return;
- if(!nvram)nvram=OSDynamicCast(IODTNVRAM,IORegistryEntry::fromPath("IODeviceTree:/options"));
- if(!nvram){ready[6]=2;publish();return;}
- auto d=OSDynamicCast(OSData,nvram->getProperty(armKey));
- if(!d || d->getLength()!=sizeof(uint64_t) || memcmp(d->getBytesNoCopy(),&journal.run,sizeof(uint64_t)))return;
- armed=true;record(1,0,"probe");
+// No registry access from normal sync calls. Only this root-only control
+// operation resolves NVRAM and arms the observer after userspace is online.
+static int armControl SYSCTL_HANDLER_ARGS {
+ uint64_t token=0;
+ int error=sysctl_handle_quad(oidp,&token,0,req);
+ if(error || !req->newptr)return error;
+ if(ready[2]!=63 || token!=journal.run)return EINVAL;
+ if(armed)return 0;
+ auto entry=IORegistryEntry::fromPath("IODeviceTree:/options");
+ nvram=OSDynamicCast(IODTNVRAM,entry);
+ if(!nvram){if(entry)entry->release();ready[6]=2;publish();return ENXIO;}
+ armed=true;record(1,0,"probe");publish();
+ return journal.failed ? EIO : 0;
 }
-static int wrapSync(proc_t p,void *a,int *r) { bool before=armed;tryArm();record(30);int v=orgSync(p,a,r);record(31,v);if(armed && !before)publish();return v; }
+SYSCTL_PROC(_debug, OID_AUTO, wex_shutdown_arm, CTLTYPE_QUAD | CTLFLAG_RW | CTLFLAG_LOCKED,
+ nullptr, 0, armControl, "Q", "Arm bounded shutdown diagnostics for this boot");
+static int wrapSync(proc_t p,void *a,int *r) { record(30);int v=orgSync(p,a,r);record(31,static_cast<uint32_t>(v));return v; }
 static int wrapReboot(int howto,char *message) { record(10,howto);return orgReboot(howto,message); }
 static void wrapNotify(int stage) { record(20,stage);orgNotify(stage);record(21,stage); }
 static void wrapPlatform(void *self,unsigned int type) { record(60,type);orgPlatform(self,type);record(61,type); }
-static int wrapPEHalt(unsigned int type,uint32_t details) { if(type<=2)record(50,type);int v=orgPEHalt(type,details);if(type<=2)record(51,type);return v; }
+static int wrapPEHalt(unsigned int type,uint32_t details) { if(type==0 || type==1 || type==3)record(50,type);int v=orgPEHalt(type,details);if(type==0 || type==1 || type==3)record(51,type);return v; }
 static void wrapHaltLog(const char *what,const void *pc,uint64_t time) {
  orgHaltLog(what,pc,time);
  if(!what)return;
@@ -101,14 +118,26 @@ void install(KernelPatcher &p) {
  KernelPatcher::RouteRequest routes[]={
   {"_reboot_kernel",wrapReboot,orgReboot},
   {"_IOSystemShutdownNotification",wrapNotify,orgNotify},
-  {"_sync",wrapSync,orgSync},
+  {"_sync",wrapSync},
   {"_halt_log_enter",wrapHaltLog,orgHaltLog},
   {"_PEHaltRestartInternal",wrapPEHalt,orgPEHalt},
   {"__ZN14IOPMrootDomain25handlePlatformHaltRestartEj",wrapPlatform,orgPlatform}
  };
- // Resolve all targets before any routing. A partial install stays unarmed.
- for(auto &r:routes)if(!p.solveSymbol(KernelPatcher::KernelID,r.symbol)){ready[6]=3;ready[7]=static_cast<uint64_t>(p.getError());p.clearError();publish();return;}
- if(p.routeMultiple(KernelPatcher::KernelID,routes,arrsize(routes)))ready[2]=63;
+ // Every automatic trampoline copies exactly six position-independent
+ // bytes. Reject changed entries or out-of-range rel32 jumps before patching.
+ const uint8_t simple[]={0x55,0x48,0x89,0xe5,0x41,0x57};
+ const uint8_t syncEntry[]={0x55,0x48,0x89,0xe5,0x48,0x8d,0x35,0x25,0,0,0,0xbf,1,0,0,0};
+ for(auto &r:routes) {
+  auto address=p.solveSymbol(KernelPatcher::KernelID,r.symbol);
+  if(!address){ready[6]=3;p.clearError();publish();return;}
+  const auto delta=static_cast<int64_t>(r.to-(address+5));
+  if(delta!=static_cast<int32_t>(delta)){ready[6]=5;publish();return;}
+  if(!strcmp(r.symbol,"_sync")) {
+   if(memcmp(reinterpret_cast<void *>(address),syncEntry,sizeof(syncEntry))){ready[6]=6;publish();return;}
+   wexShutdownSyncCallback=address+0x30;wexShutdownSyncContinue=address+11;orgSync=syncBridge;
+  } else if(memcmp(reinterpret_cast<void *>(address),simple,sizeof(simple))){ready[6]=7;publish();return;}
+ }
+ if(p.routeMultipleShort(KernelPatcher::KernelID,routes,arrsize(routes))){ready[2]=63;sysctl_register_oid(&sysctl__debug_wex_shutdown_arm);}
  else {ready[6]=4;ready[7]=static_cast<uint64_t>(p.getError());p.clearError();}
  publish();
 }
