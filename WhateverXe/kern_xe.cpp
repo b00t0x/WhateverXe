@@ -7570,6 +7570,9 @@ uint32_t XE::wrapDSIValidateDetailed(IOService *fb,void *raw,uint64_t size) {
     uint64_t record[60] {};const bool observe=dsiModeTarget(fb) && raw && size==204;
     if(observe)memcpy(record+8,raw,204);
     const auto result=FunctionCast(wrapDSIValidateDetailed,callbackXE->orgDSIDetailedValidation)(fb,raw,size);
+    // Match getInformationForDisplayMode: the retained scanout is RGB8.
+    // CoreDisplay consumes this metadata before it asks for a mode's info.
+    if(observe && !result)static_cast<XELP::DSI::AppleAdapter::ModeInformation *>(raw)->depth=0;
     if(observe) {
         static uint32_t sequence=0;record[0]=1;record[1]=__sync_add_and_fetch(&sequence,1);
         record[2]=result;record[3]=Display13FBMemory::field<uint32_t>(fb,0x4318);
