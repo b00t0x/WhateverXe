@@ -190,13 +190,13 @@ struct Case {
  void refuse(){const auto calls=armCalls;XE::wrapDisplay13WMArmUpdate(&fb);assert(calls==armCalls && !fbLock.depth && !owner);}
 };
 int main(){
- for(unsigned state:{0U,1U}){Case c;xe.dsiStopTest=true;put(&c.fb,0x4284,2U);
-  assert(XE::wrapDSISetPowerState(&c.fb,state)==kIOReturnNotReady && xe.stopCalls==1);
+ for(unsigned attr:{0x706F7772U,0x70777273U})for(unsigned state:{0U,1U}){Case c;xe.dsiStopTest=true;put(&c.fb,0x4284,2U);
+  assert(XE::wrapDSISetAttribute(&c.fb,attr,state)==kIOReturnNotReady && xe.stopCalls==1);
   assert(Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==2);
-  xe.stopOK=true;assert(XE::wrapDSISetPowerState(&c.fb,state)==kIOReturnSuccess && xe.stopCalls==2);
+  xe.stopOK=true;assert(XE::wrapDSISetAttribute(&c.fb,attr,state)==kIOReturnSuccess && xe.stopCalls==2);
   assert(Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==state);
-  assert(XE::wrapDSISetPowerState(&c.fb,state)==kIOReturnSuccess && xe.stopCalls==2);
-  assert(XE::wrapDSISetPowerState(&c.fb,2)==kIOReturnUnsupported && xe.stopCalls==2);
+  assert(XE::wrapDSISetAttribute(&c.fb,attr,state)==kIOReturnSuccess && xe.stopCalls==2);
+  assert(XE::wrapDSISetAttribute(&c.fb,attr,2)==kIOReturnUnsupported && xe.stopCalls==2);
  }
 
  {Case c;auto before=backingCalls;

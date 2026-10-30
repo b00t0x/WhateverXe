@@ -7713,7 +7713,7 @@ uint32_t XE::wrapDSISetAttribute(IOService *fb,uint32_t attribute,uintptr_t valu
             if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
             DSIModeScope scope(fb);if(!scope.lock)return kIOReturnNotReady;
             if(dsiLifecycleTarget(fb,Display13FBMemory::singlePath<OSObject *>(fb))) {
-                if(attribute==0x706F7772) { // powr: native entry passes an unsigned state.
+                if(attribute==0x706F7772 || attribute==0x70777273) { // powr / IOGraphics pwrs relay.
                     if(value>UINT32_MAX)return kIOReturnUnsupported;
                     return wrapDSISetPowerState(fb,static_cast<uint32_t>(value));
                 }
