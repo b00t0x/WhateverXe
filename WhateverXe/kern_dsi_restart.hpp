@@ -178,6 +178,21 @@ template<class IO> bool stop(IO &io,const Readout &source,const Profile &profile
        !a.wait(0x64000,0x80000080U,0x80,8) || !a.rmw(0x164280,0,1U<<10))return false;
     return powerOff(a,pll);
 }
+// A peer clock transaction may run while this host is parked. Revalidate the
+// retained allocation and stopped hardware, without demanding the old live
+// source or reacquiring an allocation whose PLL is intentionally powered off.
+// Keep the stop receipt immutable; failed observation cannot advance it.
+template<class IO> bool retainedStopped(IO &io,const Readout &source,
+    XELPComboClock::ClockAllocation &allocation,uintptr_t owner,const State &state) {
+    if(!source.complete() || source.identity.pipe!=0 || source.identity.phy!=0 ||
+       source.identity.pll!=state.pll || !state.stopped || state.started ||
+       state.stage!=Stage::Stopped || state.error!=Error::None || !state.config.valid)return false;
+    State observed=state;Access<IO> a{io,allocation,owner,observed};XELPComboClock::PLL pll;
+    return XELPComboClock::PLL::resolve(state.pll,pll) && a.held() &&
+        a.bits(pll.enable,0xCC000000U,0) && a.bits(0x6B400,1U<<31,0) &&
+        a.bits(0x64000,0x80000080U,0x80) && a.bits(0x6B094,1,0) &&
+        a.bits(0x164280,0x403,0x400|state.pll);
+}
 // Invoke after panel POWER_ON/PPS/DEASSERT_RESET, before INIT_OTP. Timing and
 // transport derive from the profile; no firmware PLL/PHY register dump replay.
 // Leaves pixel transfer off, ready for command sequence initialization. The

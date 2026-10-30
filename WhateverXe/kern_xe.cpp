@@ -21003,13 +21003,20 @@ bool XE::comboBeginClock(void *controller,void *port,bool enable,bool &keepPLL,v
         // clock mutex, then pin its PLL even when DDI_CLK_OFF_A is set.
         const auto &source=display13FBPower.bootDSI;
         struct IO {
-            void *access;
+            void *access;bool parked;
+            bool ready(){return parked;}
             bool readable(uint32_t r) {return r<Display13FBMemory::field<uint32_t>(access,0x60);}
             uint32_t read(uint32_t r) {return XE::comboClockRead(access,r);}
-        } io {access};
+        } io {access,s->dsiRuntimePower.sleeping && !s->dsiRuntimePower.failed &&
+            s->dsiStopAttempted && s->dsiIRQParked && s->dsiResourcesReady &&
+            s->dsiStop.complete() && s->dsiPanelStop.complete};
+        const auto owner=reinterpret_cast<uintptr_t>(controller);
+        const bool retained=io.parked ? XELP::DSI::Restart::retainedStopped(
+            io,source,t.allocation,owner,s->dsiRuntimePower.host) :
+            (XELP::DSI::sourceUnchanged(io,source) &&
+             t.allocation.retain(source.identity.phy,source.identity.pll,owner,snapshot));
         if(source.identity.pipe!=display13FBPower.transcoders.dsi0Pipe ||
-           !XELP::DSI::sourceUnchanged(io,source) ||
-           !t.allocation.retain(source.identity.phy,source.identity.pll,reinterpret_cast<uintptr_t>(controller),snapshot)) {
+           !retained) {
             comboClockPower(power,false);IORecursiveLockUnlock(t.lock);return false;
         }
     }

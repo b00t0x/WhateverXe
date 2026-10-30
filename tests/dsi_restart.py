@@ -137,6 +137,24 @@ void successful(Fixture &f){
  assert(rebuilt.matches(f.p) && rebuilt.afeKHz==811529);
 }
 int main(int argc,char **argv){
+ for(unsigned fault=0;fault<7;++fault){Fixture f;
+  assert(!Restart::retainedStopped(f.io,f.source,f.allocation,1,f.state));
+  assert(f.stop());const auto count=f.io.writes.size();const auto state=f.state;
+  if(fault==1)f.allocation.external[0]=2;
+  if(fault==2)f.io.regs[0x46014]=0xCC000000;
+  if(fault==3)f.io.regs[0x6B400]|=1U<<31;
+  if(fault==4)f.io.regs[0x7B008]=0xC0000000;
+  if(fault==5)f.allocation.binding[1]=2;
+  if(fault==6)f.io.owned=false;
+  assert(Restart::retainedStopped(f.io,f.source,f.allocation,1,f.state)==!fault);
+  assert(f.io.writes.size()==count && !memcmp(&state,&f.state,sizeof(state)));
+  if(!fault){XELPComboClock::ClockSnapshot snapshot;snapshot.layout=XELPComboClock::Layout::Display13;
+   snapshot.mux[0]=f.io.regs[0x164280]|(1U<<11);snapshot.enable[1]=0;
+   const auto choice=f.allocation.choose(XELPComboClock::Port(1),snapshot,true);
+   assert(choice.valid && choice.pll==0); // powered-off DSI PLL1 remains reserved
+   assert(f.start());
+  }
+ }
  {Fixture f;successful(f);}
  for(unsigned fault=0;fault<4;++fault){Fixture f;retainedCycle(f,fault);}
  {Fixture f;panelCycle(f);}
