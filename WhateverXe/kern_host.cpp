@@ -3,6 +3,7 @@
 #include "kern_xelp_device.hpp"
 #include "kern_xe_data_access.hpp"
 #include "kern_backlight_profile.hpp"
+#include "kern_shutdown_observer.hpp"
 #include <Headers/kern_api.hpp>
 #include <Headers/kern_iokit.hpp>
 #include <IOKit/pci/IOPCIDevice.h>
@@ -26,6 +27,7 @@ void XeHost::init() {
  XeDataAccess::init();
 }
 void XeHost::processKernel(KernelPatcher &patcher) {
+ ShutdownObserver::install(patcher);
  auto info=DeviceInfo::create();if(!info)return;
  auto gpu=OSDynamicCast(IOPCIDevice,info->videoBuiltin);
  // Match WEG ordering: PCI config reads require a published IOPCIDevice.
