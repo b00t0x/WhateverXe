@@ -23,15 +23,19 @@ struct ModeInformation {
     uint32_t reserved[3] {};
 };
 static_assert(sizeof(ModeInformation)==36,"IODisplayModeInformation ABI");
-inline bool annotateMode(const Mode &m,ModeInformation &info,bool rotated=false) {
-    if(!m.valid() || info.width!=(rotated?m.height:m.width) || info.height!=(rotated?m.width:m.height))return false;
+inline bool annotateMode(const Mode &m,ModeInformation &info,bool rotated=false,uint32_t drawWidth=0,uint32_t drawHeight=0) {
+    const auto width=drawWidth?drawWidth:(rotated?m.height:m.width);
+    const auto height=drawHeight?drawHeight:(rotated?m.width:m.height);
+    if(!m.valid() || info.width!=width || info.height!=height)return false;
     info.refresh=static_cast<uint32_t>((uint64_t(m.clockKHz)*1000*65536+m.htotal()*uint64_t(m.vtotal())/2)/
         (m.htotal()*uint64_t(m.vtotal())));
     info.depth=0; // the adopted DSI surface is RGB8 only
     info.widthMM=static_cast<uint16_t>(rotated?m.heightMM:m.widthMM);info.heightMM=static_cast<uint16_t>(rotated?m.widthMM:m.heightMM);
     // IOGraphics: valid/safe/default + built-in + native. Acceleration is a
     // separate runtime qualification, never inferred from a fixed mode.
-    info.flags|=0x02000407;
+    info.flags|=0x403;
+    if(width==(rotated?m.height:m.width) && height==(rotated?m.width:m.height))info.flags|=0x02000004;
+    else info.flags&=~0x02000004U; // A scaled source is not the native/default mode.
     return true;
 }
 // CoreDisplay can replace the reserved client IDs when rebuilding its mode
@@ -50,11 +54,14 @@ inline bool clientTiming(const Timing &fixed,const Timing &offered,unsigned inde
 inline bool acceptsMode(uint32_t mode,uint32_t clientMode) {
     return mode==FixedModeID || mode==clientMode;
 }
-// Presentation changes never alter the qualified DSI wire timing. Initially
-// admit only native-size quarter-turns; scaled sources are a separate stage.
+// The donor advertises an 8191-pixel source limit through IOFBScalerInfo.
+// Rotation and HiDPI change the GPU source, never the qualified DSI wire timing.
+inline bool validPresentationSize(uint32_t width,uint32_t height) {
+    return width && height && width<=8191 && height<=8191;
+}
 inline bool presentationTiming(const Timing &fixed,const Timing &offered,unsigned index) {
     if(offered.scalerFlags!=0x30 && offered.scalerFlags!=0x50)return false;
-    if(offered.horizontalScaled!=fixed.verticalActive || offered.verticalScaled!=fixed.horizontalActive)return false;
+    if(!validPresentationSize(offered.horizontalScaled,offered.verticalScaled))return false;
     auto native=offered;native.scalerFlags=0;native.horizontalScaled=0;native.verticalScaled=0;
     return clientTiming(fixed,native,index);
 }

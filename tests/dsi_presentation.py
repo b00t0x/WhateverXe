@@ -60,7 +60,8 @@ uint32_t allocate(IOService *f){
  assert(dsiFixedMode.changingThread && !field<uintptr_t>(f,0x4340));
  assert(field<uint32_t>(f,0x4250)==dsiFixedMode.activeMode);
  if(!dsiFixedMode.presentation.scalerFlags)return 0;
- ++allocations;auto r=new Record;r->kind=2;r->columns=60;r->rows=34;r->pitch=7680;r->bytes=8294400;
+ ++allocations;auto r=new Record;r->kind=2;r->columns=(field<uint32_t>(f,0x430C)*4+127)/128;r->rows=(field<uint32_t>(f,0x4310)+31)/32;
+ r->pitch=field<uint32_t>(f,0x4334);r->bytes=r->pitch*field<uint32_t>(f,0x4310);
  r->memory=0x200000;r->map=0x300000;
  put(f,0x4340,r);put(dsiPendingBacking.pipe,0x12B8,r->memory);put(dsiPendingBacking.pipe,0x12C0,r->map);
  return failAllocation?0xE00002BD:0;
@@ -84,9 +85,14 @@ int main(){
  assert(!xe.setDSIPresentation(&fb,2,turn) && o.logical && o.activeMode==2 && !o.changingThread);
  assert(field<uint32_t>(&fb,0x4338)==0x30 && dsiPublishedTarget(&fb));
  turn.scalerFlags=0x50;assert(!xe.setDSIPresentation(&fb,3,turn) && allocations==2 && frees==1);
- assert(!xe.setDSIPresentation(&fb,4,o.timing) && !o.logical && frees==2 && field<uint32_t>(&fb,0x4338)==1);
+ auto scaled=turn;scaled.horizontalScaled=2880;scaled.verticalScaled=1620;
+ assert(!xe.setDSIPresentation(&fb,8,scaled) && allocations==3 && frees==2);
+ assert(field<uint32_t>(&fb,0x430C)==2880 && field<Record *>(&fb,0x4340)->bytes==18662400);
+ assert(!xe.setDSIPresentation(&fb,9,scaled) && allocations==3 && frees==2);
+ assert(!xe.setDSIPresentation(&fb,3,turn) && allocations==4 && frees==3);
+ assert(!xe.setDSIPresentation(&fb,4,o.timing) && !o.logical && frees==4 && field<uint32_t>(&fb,0x4338)==1);
  failAllocation=true;assert(xe.setDSIPresentation(&fb,5,turn)==kIOReturnNotReady);
- assert(o.activeMode==4 && !o.logical && !o.presentationFault && !o.changingThread && allocations==3 && frees==3);
+ assert(o.activeMode==4 && !o.logical && !o.presentationFault && !o.changingThread && allocations==5 && frees==5);
  assert(field<uint32_t>(&fb,0x4338)==1 && dsiPublishedTarget(&fb) && receiptCopy[10]==1);
  failAllocation=false;assert(!xe.setDSIPresentation(&fb,6,turn));failRelease=true;
  assert(xe.setDSIPresentation(&fb,7,o.timing)==kIOReturnNotReady && o.presentationFault && !o.changingThread);

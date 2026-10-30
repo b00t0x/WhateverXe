@@ -7517,7 +7517,7 @@ uint32_t XE::wrapDSIGetModeInformation(IOService *fb,int32_t mode,void *raw) {
         const bool rotated=selected->scalerFlags!=0;
         const auto result=FunctionCast(wrapDSIGetModeInformation,callbackXE->orgDSIMode[4])(fb,mode,raw);
         if(!result && !XELP::DSI::AppleAdapter::annotateMode(dsiFixedMode.mode,
-            *static_cast<XELP::DSI::AppleAdapter::ModeInformation *>(raw),rotated))return kIOReturnNotReady;
+            *static_cast<XELP::DSI::AppleAdapter::ModeInformation *>(raw),rotated,selected->horizontalScaled,selected->verticalScaled))return kIOReturnNotReady;
         return result;
     }();
     recordDSIClient(fb,5,static_cast<uint32_t>(mode),result);
@@ -7641,7 +7641,8 @@ uint32_t XE::setDSIPresentation(IOService *fb,uint32_t mode,const XELP::DSI::App
     if(!path || !pipe || !dsiArmedBackingOwned(fb,path))return kIOReturnNotReady;
     const auto old=o.presentationReady ? o.presentation : o.timing;
     const uint32_t oldMode=o.presentationReady ? o.activeMode : o.clientMode;
-    if(requested.scalerFlags==old.scalerFlags) {
+    if(requested.scalerFlags==old.scalerFlags && requested.horizontalScaled==old.horizontalScaled &&
+       requested.verticalScaled==old.verticalScaled) {
         o.presentation=requested;o.activeMode=mode;o.presentationReady=true;
         *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(fb)+0x4250)=mode;
         return kIOReturnSuccess;

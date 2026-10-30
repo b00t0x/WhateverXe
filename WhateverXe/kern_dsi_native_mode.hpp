@@ -6,7 +6,7 @@
 #include "kern_display13_fb_memory.hpp"
 namespace XELP { namespace DSI { namespace AppleAdapter {
 // The caller holds the FB mutex and validates object classes/ownership. No
-// resized mode is admitted. Quarter-turn preparation retains the physical
+// wire timing changes are admitted. Quarter-turn preparation retains the physical
 // scanout; its separate logical buffer must be retired by the caller first.
 template<class Compute> bool prepareGeometry(void *fb,void *path,const Profile &profile,
                                              const Timing &timing,Compute compute,bool presentation=false) {
@@ -15,7 +15,8 @@ template<class Compute> bool prepareGeometry(void *fb,void *path,const Profile &
     if(!makeTiming(profile,expected))return false;
     const bool rotated=presentation && (timing.scalerFlags==0x30 || timing.scalerFlags==0x50);
     if(rotated) {expected.scalerFlags=timing.scalerFlags;
-        expected.horizontalScaled=expected.verticalActive;expected.verticalScaled=expected.horizontalActive;}
+        if(!validPresentationSize(timing.horizontalScaled,timing.verticalScaled))return false;
+        expected.horizontalScaled=timing.horizontalScaled;expected.verticalScaled=timing.verticalScaled;}
     if(!fb || !path || memcmp(&expected,&timing,sizeof(timing)) ||
        Display13FBMemory::singlePath<void *>(fb)!=path || field<uintptr_t>(fb,0x4340) ||
        (!presentation && field<uintptr_t>(fb,0x4348)))return false;
@@ -28,7 +29,7 @@ template<class Compute> bool prepareGeometry(void *fb,void *path,const Profile &
     const auto put=[](void *o,unsigned offset,uint32_t v){memcpy(static_cast<uint8_t *>(o)+offset,&v,4);};
     put(fb,0x4350,4);*(static_cast<uint8_t *>(fb)+0x4A18)=1;
     compute(fb,&timing);
-    const auto &m=profile.mode;const uint32_t width=rotated?m.height:m.width,height=rotated?m.width:m.height;
+    const auto &m=profile.mode;const uint32_t width=rotated?timing.horizontalScaled:m.width,height=rotated?timing.verticalScaled:m.height;
     const uint32_t pitch=((width*4+127)/128)*128;
     const bool valid=field<uint32_t>(fb,0x430C)==width && field<uint32_t>(fb,0x4310)==height &&
         field<uint32_t>(fb,0x4314)==pitch*m.height && field<uint32_t>(fb,0x4320)==m.width &&

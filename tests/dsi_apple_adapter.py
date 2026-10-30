@@ -230,7 +230,7 @@ int main(){
  assert(static_cast<const Timing *>(timing)->scalerFlags==0x30 && !dsiFixedMode.timing.scalerFlags);
  assert(!XE::wrapDSIGetModeInformation(fb,pair[1],&info) && info.width==1920 && info.height==1080);
  rotationData->release();rotationList->release();
- // Big Sur keeps timing flags zero and publishes UI rotation separately.
+ // Legacy UI attributes alone must never fabricate a presentation timing.
  auto orientation=new OSNumber;fb->setProperty("IOFBTransform",orientation);
  for(auto transform:{3ULL,5ULL,0ULL}) {
   orientation->value=transform;
