@@ -3872,6 +3872,7 @@ Display13OutputWiring XE::display13BoardWiring(IOService *provider) {
            (board.selected()&1) || !prepareDSIFirmware(provider))return {};
         board.dsi=1;
         dsiPanelOnly=checkKernelArgument("-wex-dsi-panel-only");
+        dsiCommandTest=checkKernelArgument("-wex-dsi-command-test");
         IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPanelOnly",dsiPanelOnly);
         if(!board.described())return {};
     }
@@ -12063,6 +12064,62 @@ void XE::adlnSetupDBUFPipe(IOService *controller,IOService *fb,unsigned pipe,boo
 void XE::wrapAlderLakeNDefaultDBUF(IOService *controller) {adlnSetupDBUF(controller,false);}
 void XE::wrapAlderLakeNOptimizedDBUF(IOService *controller) {adlnSetupDBUF(controller,true);}
 
+// One optional bootstrap NOP/drain trial before native engine and IRQ users.
+// This exercises the same packet engine used by panel sequences, without
+// changing panel power/reset, timing, brightness, or any framebuffer state.
+bool XE::probeDSICommands(IOService *controller) {
+    auto &c=display13FBPower;auto &clock=comboClockTransaction;
+    if(!controller || !c.lock || !clock.lock)return false;
+    IORecursiveLockLock(clock.lock);IOLockLock(c.lock);
+    const auto owned=[&]() {
+        return controller==c.controller && controller==adlnTopologyController &&
+            dsiResourcesReady && !dsiStopAttempted && adlnOutputWiring.dsi==1 &&
+            !c.engineEnabled && !c.memoryFaulted && !c.clockFaulted &&
+            !c.bridge.state.faulted && !c.bridge.state.suspended && !clock.thread &&
+            clock.allocation.external[0]==reinterpret_cast<uintptr_t>(controller) &&
+            clock.allocation.binding[0]==dsiBoot.source.identity.pll+1;
+    };
+    struct IO : Display13FBBootIO {
+        decltype(owned) &owns;
+        IO(IOMemoryMap *m,decltype(owned) &q):Display13FBBootIO{m},owns(q) {}
+        bool ready() {
+            if(!owns() || !readable(0x45404))return false;
+            const auto wells=read(0x45404);return wells!=UINT32_MAX && (wells&0x403)==0x403;
+        }
+        void write(uint32_t reg,uint32_t value) {
+            if(reg==0x6B100 || reg==0x6B104)
+                *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg)=value;
+        }
+        void delayUs(unsigned us){IODelay(us);}
+    } io{c.map,owned};
+    XELP::DSI::CommandPort<IO> port{io};uint64_t record[16] {1};
+    uint32_t credits=0,lp=0;
+    record[1]=io.ready() && !dsiCommandHost.enabled && dsiProfile.valid() &&
+        c.bridge.outputHeld(io,0,0) && XELP::DSI::bootUnchanged(io,dsiBoot,xelpMemory);
+    if(record[1]) {
+        const bool empty=port.credits(credits) && port.read(0x6B0D8,lp) &&
+            (credits&0x1FFF)==0x1040 && !(lp&((1U<<17)|(1U<<16)|1U));
+        record[2]=credits;record[3]=lp;record[4]=empty;
+        if(empty) {
+            dsiCommandHost.enabled=true;const uint8_t nop=0;
+            record[5]=dsiCommandHost.send(port,0x05,{&nop,1});
+            record[6]=record[5] && dsiCommandHost.drain(port);
+        }
+        record[7]=port.credits(credits)?credits:UINT32_MAX;
+        record[8]=port.read(0x6B0D8,lp)?lp:UINT32_MAX;
+        record[9]=io.ready() && XELP::DSI::bootUnchanged(io,dsiBoot,xelpMemory);
+    }
+    record[10]=static_cast<uint32_t>(dsiCommandHost.error);record[11]=dsiCommandHost.pending;
+    record[12]=dsiCommandHost.headers;record[13]=dsiCommandHost.payloadWords;
+    record[14]=dsiCommandHost.waitedUs;record[15]=port.writes;
+    const bool complete=record[1] && record[4] && record[6] && record[9] &&
+        !record[10] && !record[11] && !port.failed && (record[7]&0x1FFF)==0x1040 &&
+        record[8]!=UINT32_MAX && !(record[8]&((1U<<17)|(1U<<16)|1U));
+    IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSICommandTrial",record,sizeof(record));
+    return complete;
+}
+
 // Called outside the owner lock, before native engine/probe/IRQ users start.
 // The lock order matches clock clients: Combo clock -> display owner -> IRQ.
 // Failure retains any already acquired boot power references for cleanup.
@@ -12108,6 +12165,7 @@ bool XE::bindDSIResources(IOService *controller) {
     }
     IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
     if(ready)dsiPublishIRQLive();
+    if(ready && dsiCommandTest)return probeDSICommands(controller);
     return ready;
 }
 

@@ -2,6 +2,7 @@
   "-wex-dsi-audit": [],
   "-wex-dsi-adopt": [],
   "-wex-dsi-panel-only": [],
+  "-wex-dsi-command-test": [],
   "-wex-adln-config-stage": [
     "-adlnconfigstage",
     "-n97configstage"

@@ -14,6 +14,7 @@
 #include "kern_dsi_surface.hpp"
 #include "kern_dsi_quiesce.hpp"
 #include "kern_dsi_clock.hpp"
+#include "kern_dsi_commands.hpp"
 #include "kern_tgl_tc_native.hpp"
 #include "kern_tgl_native_fia.hpp"
 #include "kern_tgl_hdmi_wiring.hpp"
@@ -246,6 +247,9 @@ private:
     bool dsiNativeWriterHooksReady {};
     bool dsiBackingHooksReady {};
     bool dsiPanelOnly {};
+    bool dsiCommandTest {};
+    XELP::DSI::Host dsiCommandHost;
+    bool probeDSICommands(IOService *);
     mach_vm_address_t orgDSIBacking[2] {};
     bool processDSIBackingHooks(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     mach_vm_address_t dsiComputeGeometry {},dsiModeCPU[3] {};
