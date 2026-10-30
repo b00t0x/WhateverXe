@@ -154,6 +154,7 @@ private:
     bool resumeDSIPath(IOService *,IOService *,OSObject *);
     XELP::DSI::Backlight dsiBacklight;
     uint32_t setDSIBrightness(IOService *,uintptr_t);
+    uint32_t saveDSIBrightness(IOService *,uintptr_t);
     void publishDSIBacklight();
     bool processDSIPathDisposal(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     bool disposeDSIPath(IOService *,OSObject *);

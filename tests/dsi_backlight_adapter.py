@@ -4,7 +4,7 @@ from pathlib import Path
 import re, subprocess, tempfile
 r=Path(__file__).resolve().parents[1]
 s=(r/'WhateverXe/kern_xe.cpp').read_text()
-body=re.search(r'uint32_t XE::setDSIBrightness\(.*?\n\}',s,re.S)[0]
+body='\n'.join(re.search(r'uint32_t XE::'+name+r'\(.*?\n\}',s,re.S)[0] for name in ['setDSIBrightness','saveDSIBrightness'])
 code=r'''
 #include "kern_dsi_backlight.hpp"
 #include <cassert>
@@ -36,6 +36,7 @@ struct XE {
  unsigned published=0;void publishDSIBacklight(){assert(!depth);++published;}
  bool dsiNativeUpdateAllowed(IOService*){assert(!depth);return awake;}
  uint32_t setDSIBrightness(IOService*,uintptr_t);
+ uint32_t saveDSIBrightness(IOService*,uintptr_t);
 };
 BODY
 int main(){
@@ -53,6 +54,10 @@ int main(){
  assert(xe.setDSIBrightness(&fb,65535)==0 && map.words[Light::Duty/4]==240);
  assert(heldQueries==queries && xe.dsiBacklight.writes==writes);
  assert(Display13FBMemory::field<uint32_t>(&controller,0xE58)==65535 && xe.dsiBacklight.requested==65535);
+ assert(xe.saveDSIBrightness(&fb,12345)==0);
+ assert(Display13FBMemory::field<uint32_t>(&controller,0xE5C)==12345);
+ assert(xe.dsiBacklight.requested==65535 && xe.dsiBacklight.writes==writes);
+ assert(xe.saveDSIBrightness(&fb,0x100000001ULL)==kIOReturnBadArgument);
  xe.dsiDDIReleased=true;assert(xe.setDSIBrightness(&fb,0)==kIOReturnNotReady);
  xe.dsiDDIReleased=false;c.bridge.state.suspended=true;assert(xe.setDSIBrightness(&fb,0)==kIOReturnNotReady);
  c.bridge.state.suspended=false;xe.dsiRuntimePower.failed=true;assert(xe.setDSIBrightness(&fb,0)==kIOReturnNotReady);

@@ -93,6 +93,7 @@ struct XE {
  uintptr_t orgDSIAttributes[4]{};
  static uint32_t wrapDSISetStream(IOService*,IOService*,OSObject*,const void*);
  static uint32_t wrapDSISetAttribute(IOService*,uint32_t,uintptr_t);
+ uint32_t saveDSIBrightness(IOService*,uintptr_t value){assert(fbLock.depth && !owner);return value<=UINT32_MAX?0U:kIOReturnUnsupported;}
  uint32_t setDSIBrightness(IOService*,uintptr_t value){assert(fbLock.depth && !owner);return value<=65535?0U:kIOReturnUnsupported;}
  static uint32_t wrapDSISetConnectionAttribute(IOService*,int32_t,uint32_t,uintptr_t);
  static uint32_t wrapDSISetPowerState(IOService*,uint32_t);
@@ -332,6 +333,10 @@ int main(){
   assert(XE::wrapDSISetAttribute(&c.fb,attr,0)==kIOReturnUnsupported);
   assert(XE::wrapDSISetConnectionAttribute(&c.fb,0,attr,0)==kIOReturnUnsupported);
   assert(attrCalls[0]+attrCalls[1]+attrCalls[2]==before && !memcmp(&c.fb,&original,sizeof(c.fb)) && !display13FBPower.memoryFaulted);}
+ {Case c;xe.dsiStopAttempted=true;const auto before=attrCalls[0];
+  assert(XE::wrapDSISetAttribute(&c.fb,0x626B7376,123)==0);
+  assert(XE::wrapDSISetAttribute(&c.fb,0x626B7376,0x100000001ULL)==kIOReturnUnsupported);
+  assert(attrCalls[0]==before && !display13FBPower.dsiNativeWriters);}
  {Case c;const auto before=attrCalls[1];
   assert(XE::wrapDSISetConnectionAttribute(&c.fb,0,0x626B6C74,12345)==0);
   assert(XE::wrapDSISetConnectionAttribute(&c.fb,0,0x626B6C74,0x100000001ULL)==kIOReturnUnsupported);

@@ -7718,6 +7718,7 @@ uint32_t XE::wrapDSISetAttribute(IOService *fb,uint32_t attribute,uintptr_t valu
                     if(value>UINT32_MAX)return kIOReturnUnsupported;
                     return wrapDSISetPowerState(fb,static_cast<uint32_t>(value));
                 }
+                if(attribute==0x626B7376)return callbackXE->saveDSIBrightness(fb,value);
                 // wsrv and capd: retain native server/capture bookkeeping and the
                 // routed plane/transaction work. Other selectors need admission.
                 if(attribute!=0x77737276 && attribute!=0x63617064)return kIOReturnUnsupported;
@@ -7737,6 +7738,18 @@ void XE::publishDSIBacklight() {
         b.control,b.requests,b.writes,dsiRuntimePower.sleeping};
     IOLockUnlock(c.lock);
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIBacklight",receipt,sizeof(receipt));
+}
+// Exact donor setAttribute('bksv') stores its 32-bit value at controller+E5C.
+// This is user preference bookkeeping, not a hardware brightness command.
+uint32_t XE::saveDSIBrightness(IOService *fb,uintptr_t value) {
+    auto &c=display13FBPower;
+    if(value>UINT32_MAX)return kIOReturnBadArgument;
+    if(!c.lock || !dsiModeTarget(fb))return kIOReturnNotReady;
+    IOLockLock(c.lock);
+    const bool owned=dsiResourcesReady && c.controller && c.controller==adlnTopologyController &&
+        Display13FBMemory::field<IOService *>(fb,0x1D0)==c.controller && c.pipe[0].memoryFramebuffer==fb;
+    if(owned)*reinterpret_cast<uint32_t *>(static_cast<uint8_t *>(c.controller)+0xE5C)=static_cast<uint32_t>(value);
+    IOLockUnlock(c.lock);return owned?kIOReturnSuccess:kIOReturnNotReady;
 }
 // The caller holds the same framebuffer mutex as stop/resume. Deferred requests
 // update only software; the panel-on sequence applies PWM before its enable GPIO.
