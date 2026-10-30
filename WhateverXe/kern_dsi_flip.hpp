@@ -10,8 +10,9 @@ inline uint32_t flipDimensionBits(uint32_t value) {
     unsigned exponent=0;for(auto n=value;n>1;n>>=1)++exponent;
     return ((127+exponent)<<23) | ((value<<(23-exponent))&0x7FFFFF);
 }
-// The rotated resource is already in physical coordinates. Adapt only the
-// observed single-plane, full-screen mismatch; do not reinterpret arbitrary
+// Source dimensions match physical coordinates; this does not prove that its
+// pixels have been rotated. Adapt only the observed single-plane, full-screen
+// mismatch while qualifying the compositor path; do not reinterpret arbitrary
 // crops, scaling, multiple planes, or a destination already in physical space.
 // Native FB copies all 0xB8 bytes before retaining transaction state.
 inline bool normalizeFullFrameFlip(const void *params,void *copy,uint32_t transform,

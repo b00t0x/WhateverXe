@@ -4704,20 +4704,17 @@ static const XELP::DSI::AppleAdapter::Timing *dsiPresentation(uint32_t mode) {
     if(!selected && XELP::DSI::AppleAdapter::acceptsMode(mode,o.clientMode))selected=&o.timing;
     if(!selected && o.presentationReady && mode==o.activeMode)selected=&o.presentation;
     if(!selected)return nullptr;
-    // Big Sur supplies UI rotation separately from its detailed-timing list.
-    // Convert that selected orientation to the donor's pixel-info/geometry
-    // contract without altering the immutable portrait wire timing.
-    auto rotation=o.framebuffer ? OSDynamicCast(OSNumber,o.framebuffer->getProperty("IOFBTransform")) : nullptr;
-    if(!rotation)return selected;
-    const auto transform=rotation->unsigned64BitValue();
-    if(transform!=0 && transform!=3 && transform!=5)return nullptr;
-    o.requested=*selected;o.requested.scalerFlags=static_cast<uint32_t>(transform<<4);
-    // IODetailedTimingInformationV2 scaled dimensions describe the image
-    // before rotation. Active dimensions remain the portrait wire mode.
-    o.requested.horizontalScaled=transform ? o.timing.verticalActive : 0;
-    o.requested.verticalScaled=transform ? o.timing.horizontalActive : 0;
-    return &o.requested;
+    // UI orientation is not a request for driver-side scaling/rotation.
+    // Preserve the timing actually supplied by CoreDisplay. Fabricating a
+    // landscape logical buffer here changes the compositor's target geometry.
+    return selected;
 }
+static uint32_t dsiUITransform(IOService *fb) {
+    auto rotation=fb ? OSDynamicCast(OSNumber,fb->getProperty("IOFBTransform")) : nullptr;
+    const auto value=rotation ? rotation->unsigned64BitValue() : 0;
+    return value<=UINT32_MAX ? static_cast<uint32_t>(value) : UINT32_MAX;
+}
+
 static void dsiAdvertiseRotation(IOService *fb) {
     auto data=OSDynamicCast(OSData,fb->getProperty("IOFBScalerInfo"));
     if(!data || data->getLength()!=48)return;
@@ -7821,12 +7818,15 @@ uint32_t XE::wrapDSIFlipTransaction(IOService *fb,void *transaction,uint64_t opt
         const auto transform=Display13FBMemory::field<uint32_t>(fb,0x4338);
         const auto width=Display13FBMemory::field<uint32_t>(fb,0x4320);
         const auto height=Display13FBMemory::field<uint32_t>(fb,0x4324);
-        const bool changed=XELP::DSI::AppleAdapter::normalizeFullFrameFlip(params,adapted,transform,width,height);
+        const auto uiTransform=dsiUITransform(fb);
+        const auto quarterTurn=(uiTransform==3 || uiTransform==5) ? 0x30U : 0U;
+        const bool changed=XELP::DSI::AppleAdapter::normalizeFullFrameFlip(params,adapted,quarterTurn,width,height);
         static unsigned observed=0;
-        if(observed<8 && transform==0x30) {
+        if(observed<8 && quarterTurn) {
             uint64_t record[16] {1,++observed,changed,transform,width,height,
                 Display13FBMemory::field<uint8_t>(params,0)};
             for(unsigned i=0;i<8;++i)record[7+i]=Display13FBMemory::field<uint32_t>(params,8+0xC+4*i);
+            record[15]=uiTransform;
             char key[40];snprintf(key,sizeof(key),"WEXDSIFlipGeometry%u",observed);
             IORegistryEntry::getRegistryRoot()->setProperty(key,record,sizeof(record));
         }

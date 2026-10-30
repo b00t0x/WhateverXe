@@ -51,6 +51,7 @@ const XELP::DSI::AppleAdapter::Timing *dsiPresentation(uint32_t mode){
  static XELP::DSI::AppleAdapter::Timing t;
  return XELP::DSI::AppleAdapter::acceptsMode(mode,dsiFixedMode.clientMode)?&t:nullptr;
 }
+unsigned uiTransform=0;uint32_t dsiUITransform(IOService*){return uiTransform;}
 IOService *panel=nullptr,*nativeFB=nullptr;bool dsiModeTarget(IOService *f){return f && f==panel;}
 constexpr uint32_t kIOReturnNotReady=0xe00002d8U,kIOReturnUnsupported=0xe00002c7U,kIOReturnSuccess=0;
 #define FunctionCast(f,p) reinterpret_cast<decltype(&f)>(p)
@@ -213,14 +214,14 @@ struct Case {
  void refuse(){const auto calls=armCalls;XE::wrapDisplay13WMArmUpdate(&fb);assert(calls==armCalls && !fbLock.depth && !owner);}
 };
 int main(){
- {Case c;put(&c.fb,0x4338,0x30U);put(&c.fb,0x4320,1080U);put(&c.fb,0x4324,1920U);
+ {Case c;uiTransform=3;put(&c.fb,0x4338,1U);put(&c.fb,0x4320,1080U);put(&c.fb,0x4324,1920U);
   flipInput[0]=1;
   const float rects[]={0,0,1080,1920,0,0,1920,1080};
   memcpy(flipInput+0x14,rects,sizeof(rects));memcpy(flipExpected,flipInput,sizeof(flipInput));
   memcpy(flipExpected+0x2C,flipInput+0x1C,8);adaptedFlip=true;
   assert(XE::wrapDSIFlipTransaction(&c.fb,&txAnchor,txOptions,flipInput)==txResult(0));
   assert(!memcmp(flipInput+0x14,rects,sizeof(rects)) && !display13FBPower.dsiNativeWriters);
-  adaptedFlip=false;
+  adaptedFlip=false;uiTransform=0;
  }
 
  for(unsigned attr:{0x706F7772U,0x70777273U}){Case c;xe.dsiPowerTest=true;put(&c.fb,0x4284,2U);

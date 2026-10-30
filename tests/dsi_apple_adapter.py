@@ -235,13 +235,14 @@ int main(){
  for(auto transform:{3ULL,5ULL,0ULL}) {
   orientation->value=transform;
   assert(!XE::wrapDSIValidateMode(fb,static_cast<int32_t>(offered.reservedA[0]),nullptr,&timing));
-  assert(static_cast<const Timing *>(timing)->scalerFlags==transform*16);
-  assert(static_cast<const Timing *>(timing)->horizontalScaled==(transform?1920U:0U));
-  assert(static_cast<const Timing *>(timing)->verticalScaled==(transform?1080U:0U));
+  assert(static_cast<const Timing *>(timing)->scalerFlags==0);
+  assert(!static_cast<const Timing *>(timing)->horizontalScaled);
+  assert(!static_cast<const Timing *>(timing)->verticalScaled);
   assert(!dsiFixedMode.timing.scalerFlags && static_cast<const Timing *>(timing)->horizontalActive==1080);
  }
  orientation->value=7;
- assert(XE::wrapDSIValidateMode(fb,static_cast<int32_t>(offered.reservedA[0]),nullptr,&timing)==kIOReturnBadArgument);
+ assert(!XE::wrapDSIValidateMode(fb,static_cast<int32_t>(offered.reservedA[0]),nullptr,&timing));
+ assert(!static_cast<const Timing *>(timing)->scalerFlags);
  fb->removeProperty("IOFBTransform");orientation->release();
  renewedData->bytes[64]^=1;
  assert(XE::wrapDSISetDetailedTimings(fb,renewed)==kIOReturnUnsupported && dsiFixedMode.clientMode==0x80003000);
