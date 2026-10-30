@@ -106,7 +106,7 @@ ADL-P/RPL-Pは物理IDと検出したGPU資源を自動で使用します。devi
 
 任意の `-wex-dsi-audit` は、対応するMIPI DSI firmware形式とnative起動前のGOP状態（他の表示エンジンとstolen memoryのGGTT prefixを含む）を検査し、診断結果を公開します。既定では無効で、この検査はディスプレイへの設定書込みやDSI出力の有効化を行いません。
 
-任意の `-wex-dsi-adopt` は、対応パネルprofileで実験的なMIPI DSI firmware GOP採用を選択します。firmwareのリンクを保持し、パネルprofile由来の合成EDIDを公開してnative pathと固定modeの設定を行います。完全なアクセラレーション付きデスクトップには未対応です。`-wex-dsi-hdmi-test` とは併用できません。追加の `-wex-dsi-panel-only` は、内蔵パネルの開発中に外部出力の接続公開とmode設定を一時的に抑止します。物理配線の定義は変更しません。外部共存の検証時はこの引数を省略してください。
+任意の `-wex-dsi-adopt` は、対応パネルprofileで実験的なMIPI DSI firmware GOP採用を選択します。firmwareのリンクを保持し、パネルprofile由来の合成EDIDを公開してnative pathと固定modeのアクセラレーション付きデスクトップへ接続します。輝度調整、画面・システムのsleep、パネルの完全再初期化は開発中です。`-wex-dsi-hdmi-test` とは併用できません。追加の `-wex-dsi-panel-only` は、内蔵パネルの開発中に外部出力の接続公開とmode設定を一時的に抑止します。物理配線の定義は変更しません。外部共存の検証時はこの引数を省略してください。
 
 ### 内蔵パネルの輝度
 
