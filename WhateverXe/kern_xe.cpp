@@ -10,7 +10,6 @@
 #include "kern_dsi_native_cache.hpp"
 #include "kern_dsi_native_backing.hpp"
 #include "kern_dsi_native_mode.hpp"
-#include "kern_dsi_flip.hpp"
 #include "kern_dsi_test_image.hpp"
 #include "kern_xe.hpp"
 #include "kern_framebuffer_donor.hpp"
@@ -4709,12 +4708,6 @@ static const XELP::DSI::AppleAdapter::Timing *dsiPresentation(uint32_t mode) {
     // landscape logical buffer here changes the compositor's target geometry.
     return selected;
 }
-static uint32_t dsiUITransform(IOService *fb) {
-    auto rotation=fb ? OSDynamicCast(OSNumber,fb->getProperty("IOFBTransform")) : nullptr;
-    const auto value=rotation ? rotation->unsigned64BitValue() : 0;
-    return value<=UINT32_MAX ? static_cast<uint32_t>(value) : UINT32_MAX;
-}
-
 struct DSIModeScope {
     IORecursiveLock *lock;
     explicit DSIModeScope(IOService *fb):lock(Display13FBMemory::field<IORecursiveLock *>(fb,0x4220)) {
@@ -7806,26 +7799,6 @@ int XE::beginDSIFramebufferWriter(IOService *fb) {
 }
 uint32_t XE::wrapDSIFlipTransaction(IOService *fb,void *transaction,uint64_t options,void *params) {
     const int token=beginDSIFramebufferWriter(fb);if(token<0)return kIOReturnNotReady;
-    uint8_t adapted[XELP::DSI::AppleAdapter::flipParamsBytes];
-    if(token==1 && params) {
-        DSIModeScope scope(fb);
-        const auto transform=Display13FBMemory::field<uint32_t>(fb,0x4338);
-        const auto width=Display13FBMemory::field<uint32_t>(fb,0x4320);
-        const auto height=Display13FBMemory::field<uint32_t>(fb,0x4324);
-        const auto uiTransform=dsiUITransform(fb);
-        const auto quarterTurn=(uiTransform==3 || uiTransform==5) ? 0x30U : 0U;
-        const bool changed=XELP::DSI::AppleAdapter::normalizeFullFrameFlip(params,adapted,quarterTurn,width,height);
-        static unsigned observed=0;
-        if(observed<8 && quarterTurn) {
-            uint64_t record[16] {1,++observed,changed,transform,width,height,
-                Display13FBMemory::field<uint8_t>(params,0)};
-            for(unsigned i=0;i<8;++i)record[7+i]=Display13FBMemory::field<uint32_t>(params,8+0xC+4*i);
-            record[15]=uiTransform;
-            char key[40];snprintf(key,sizeof(key),"WEXDSIFlipGeometry%u",observed);
-            IORegistryEntry::getRegistryRoot()->setProperty(key,record,sizeof(record));
-        }
-        if(changed)params=adapted;
-    }
     const auto result=FunctionCast(wrapDSIFlipTransaction,callbackXE->orgDSITransaction[0])(fb,transaction,options,params);
     endDSINativeWriter(token);return result;
 }
