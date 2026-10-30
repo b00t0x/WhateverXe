@@ -12720,17 +12720,40 @@ bool XE::probeDSIPanel(IOService *controller) {
         }
         void delayUs(unsigned us){IODelay(us);}
     } io{c.map,owned,irq.lock,dsiHostTest,dsiBoot.source.identity.pll};
+    Display13Clock::Change bootCDClock;
     struct Lifecycle {
-        bool enabled;XELPComboClock::ClockAllocation &allocation;uintptr_t owner;XELP::DSI::Restart::State &state;
+        bool enabled,prepareExternal;XELPComboClock::ClockAllocation &allocation;uintptr_t owner;
+        XELP::DSI::Restart::State &state;Display13Clock::Change &cdclk;
         bool stop(IO &io,const XELP::DSI::Readout &source,const XELP::DSI::Profile &profile) {
             return !enabled || XELP::DSI::Restart::stop(io,source,profile,allocation,owner,state);
         }
         bool start(IO &io,XELP::DSI::Readout &source) {
             if(!enabled)return true;
+            // Native external modes request the maximum CDCLK. Prepare that
+            // shared clock while the bootstrap cycle has stopped DSI and all
+            // other consumers, before native mode setting/IRQ users start.
+            // The DSI link PLL remains a separate retained allocation.
+            if(prepareExternal) {
+                auto &c=display13FBPower;
+                Display13FBClockIO clockIO {c.map};
+                const auto current=Display13Clock::read(clockIO);
+                cdclk.before=current;cdclk.requestedHz=current.nativeMaxHz();
+                const bool stopped=io.ready() && state.stopped && !state.started &&
+                    !c.engineEnabled && Display13FBIRQ::consumersStopped(io,7,c.transcoders);
+                if(!stopped || current.status!=Display13Clock::Status::Complete)return false;
+                cdclk=Display13Clock::set(clockIO,current.nativeMaxHz(),{true,true,0});
+                if(cdclk.status!=Display13Clock::ChangeStatus::Complete) {
+                    adlnFault(c.clockFaulted,__LINE__);return false;
+                }
+                c.clock=cdclk.after;c.clockStopped=false;c.resumeClockHz=cdclk.after.nativeHz();
+                auto controller=reinterpret_cast<IOService *>(owner);
+                *reinterpret_cast<uint64_t *>(reinterpret_cast<uint8_t *>(controller)+0xE98)=cdclk.after.nativeHz();
+                *reinterpret_cast<uint64_t *>(reinterpret_cast<uint8_t *>(controller)+0xEA0)=cdclk.after.nativeHz();
+            }
             if(!XELP::DSI::Restart::start(io,allocation,owner,state))return false;
             source=XELP::DSI::Restart::expected(source,state);return source.complete();
         }
-    } lifecycle{dsiHostTest,clock.allocation,reinterpret_cast<uintptr_t>(controller),dsiHostRestart};
+    } lifecycle{dsiHostTest,!dsiPanelOnly,clock.allocation,reinterpret_cast<uintptr_t>(controller),dsiHostRestart,bootCDClock};
     uint64_t record[32] {1};
     record[1]=io.ready() && !dsiPanelTrial.attempted && dsiProfile.valid() &&
         !dsiCommandHost.faulted && !dsiCommandHost.pending &&
@@ -12768,6 +12791,8 @@ bool XE::probeDSIPanel(IOService *controller) {
     IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPanelTrial",record,sizeof(record));
     if(dsiHostTest)IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIHostRestart",hostRecord,sizeof(hostRecord));
+    if(dsiHostTest && !dsiPanelOnly)
+        IORegistryEntry::getRegistryRoot()->setProperty("N97FBDSIBootCDClock",&bootCDClock,sizeof(bootCDClock));
     return complete;
 }
 

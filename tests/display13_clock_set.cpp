@@ -43,6 +43,15 @@ int main() {
     assert(select(38400,0,true)==1305600000 && select(24000,0,true)==1296000000);
     assert(select(38400,345600000,false)==358400000 && select(38400,358400000,false)==384000000);
     assert(!select(38400,1305600000,false) && !select(0,0,true));
+    // DSI firmware clock (38.4 MHz reference, /3) to the external-output
+    // maximum (/2): prepare only in the stopped bootstrap interval.
+    for (unsigned active : {0U,1U}) {
+        IO io;io.regs[DSSM]=0x40000000;io.regs[PLL]=0xC000000E;io.regs[Control]=0x780164;
+        auto r=set(io,1305600000,{true,true,active});
+        assert(r.before.nativeHz()==358400000);
+        if(active)assert(r.status==ChangeStatus::ActiveDividerChange && io.writes.empty());
+        else assert(r.status==ChangeStatus::Complete && r.after.nativeHz()==1305600000 && r.after.divider==2);
+    }
     {IO io;auto r=stop(io,{false,false,0});assert(r.status==ChangeStatus::OwnershipRequired && io.writes.empty());}
     {IO io;auto r=stop(io,ready);assert(r.status==ChangeStatus::ActiveDividerChange && io.writes.empty());}
     {IO io;auto r=stop(io,{true,false,0});assert(r.status==ChangeStatus::Complete && r.after.status==Status::Disabled &&
