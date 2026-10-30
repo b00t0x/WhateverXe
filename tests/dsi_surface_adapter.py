@@ -77,7 +77,10 @@ struct XE {
  bool dsiNativeUpdateAllowed(IOService*){return dsiPendingBacking.modeReady && !display13FBPower.memoryFaulted;}
  static void adlnSetupDBUFPipe(IOService *controller,IOService *fb,unsigned pipe,bool optimized) {
   assert(!gpuDepth && locks==std::vector<unsigned>{1} && controller==display13FBPower.controller && dsiPublishedTarget(fb) && !pipe && !optimized);
-  assert(dsiPendingBacking.modeReady);auto &c=display13FBPower;
+  assert(dsiPendingBacking.modeReady);
+  auto path=Display13FBMemory::singlePath<OSObject *>(fb);
+  assert(Display13FBMemory::field<uint64_t>(path,0x118)==dsiFixedMode.timing.pixelClock && dsiFixedMode.timing.pixelClock==135255000);
+  auto &c=display13FBPower;
   if(failModeDBUF){c.dbuf.faulted=true;return;}
   c.dbuf.pipe[0].primary={40,2048};c.dbuf.pipe[0].cursor={0,40};c.pipe[0].wmPending=0;
   c.pipe[0].wmLatch.status=Display13WM::Status::Complete;c.pipe[0].watermarkClockHz=358400000;

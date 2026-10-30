@@ -5771,6 +5771,10 @@ bool XE::publishDSINativeMode(IOService *fb) {
         }
     }
     if(o.modeReady) {
+        // setupClocks normally copies the detailed timing's Hz into this CPU
+        // path field before WM calculation. DSI retains its live PLL, so supply
+        // that fixed-mode cache without entering the native DDI clock setup.
+        memcpy(reinterpret_cast<uint8_t *>(path)+0x118,&dsiFixedMode.timing.pixelClock,sizeof(uint64_t));
         // Still under the native FB mutex: admit the existing DDB transaction,
         // then require its latch before returning mode success to any client.
         // GOP adoption may have no cursor reservation and a full primary DDB.

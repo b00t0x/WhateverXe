@@ -64,6 +64,19 @@ int main(int argc,char **argv) {
             assert(field<uint32_t>(fb,0x402C)>=1 && field<uint32_t>(fb,0x402C)<=2);
 
         }
+        // setupClocks' CPU assignment at 0x6C719 reads Timing+0x28 and
+        // stores path+0x118. Replay both WM consumers without a DDI modeset.
+        const uint8_t cacheCopy[]={0x49,0x8B,0x77,0x28,0x48,0x89,0xB3,0x18,0x01,0x00,0x00};
+        assert(!memcmp(image+0x6C719,cacheCopy,sizeof(cacheCopy)));
+        alignas(8) uint8_t scaler[0x80]{},plane[0x1C8]{};
+        put(path,0x32C0,scaler);put(path,0x32C8,plane);
+        put(scaler,0x4C,uint32_t(p.mode.width<<16 | p.mode.height));
+        put(plane,0x88,uintptr_t(0));put(path,0x118,t.pixelClock);
+        const auto adjust=reinterpret_cast<uint64_t(*)(void*,void*,void*,bool,void*)>(image+0x4ACE4);
+        assert(adjust(controller,fb,path,false,nullptr)==135255000);
+        assert(adjust(controller,fb,path,true,nullptr)==135255000);
+        put(scaler,0x4C,0U); // Disabled boot scaler also leaves Hz unchanged.
+        assert(adjust(controller,fb,path,false,nullptr)==135255000);
         assert(notifications==4);munmap(image,0x400000);puts("DSI native mode geometry and logical-buffer replay passed");
     }
     puts("DSI native mode preparation rollback and admission passed");
