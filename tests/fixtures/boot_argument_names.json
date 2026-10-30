@@ -146,5 +146,6 @@
   "-wex-adlp-readout": [],
   "-wex-adlp-load-only": [],
   "-wex-display13-offline": [],
-  "-wex-dsi-hdmi-test": []
+  "-wex-dsi-hdmi-test": [],
+  "-wex-dsi-power-test": []
 }

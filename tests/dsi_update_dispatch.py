@@ -69,14 +69,22 @@ unsigned streamCalls=0;OSObject *expectedPath=nullptr;
 uint32_t nativeStream(IOService*,IOService*,OSObject*,const void*);
 struct XE {
  struct {unsigned dsi=1;}adlnOutputWiring;bool dsiStopAttempted=false,dsiResourcesReady=true;
+ bool dsiPowerTest=false;struct {bool sleeping=false,failed=false;}dsiRuntimePower;unsigned wakeCalls=0;bool wakeOK=false;
  bool dsiStopTest=false,dsiMemoryReleased=false,dsiDDIReleased=false,stopOK=false;unsigned stopCalls=0;
  struct {bool done=false;bool complete(){return done;}}dsiClockStop;
  struct {bool complete=false;}dsiPanelStop;
- bool quiesceDSIPath(IOService *ctl,IOService *fb,OSObject *path){
+ bool quiesceDSIPath(IOService *ctl,IOService *fb,OSObject *path,bool retain=false){
   assert(fbLock.depth && !owner && ctl==display13FBPower.controller && fb==panel);
   assert(path==Display13FBMemory::singlePath<OSObject *>(fb));++stopCalls;
+  if(stopOK && retain){dsiStopAttempted=true;dsiRuntimePower.sleeping=true;return true;}
   if(stopOK){dsiStopAttempted=true;dsiMemoryReleased=dsiDDIReleased=dsiPanelStop.complete=dsiClockStop.done=true;}
   return stopOK;
+ }
+ bool resumeDSIPath(IOService *ctl,IOService *fb,OSObject *path){
+  assert(fbLock.depth && !owner && ctl==display13FBPower.controller && fb==panel && dsiRuntimePower.sleeping);
+  assert(path==Display13FBMemory::singlePath<OSObject *>(fb));++wakeCalls;
+  if(wakeOK){dsiRuntimePower.sleeping=false;dsiStopAttempted=false;}
+  return wakeOK;
  }
  bool dsiPanelOnly=false,publicationReady=false;bool publishDSINativeMode(IOService*){return publicationReady;}
  bool dsiNativeWriterHooksReady=true;uintptr_t orgDSICursor[2]{};
@@ -190,6 +198,26 @@ struct Case {
  void refuse(){const auto calls=armCalls;XE::wrapDisplay13WMArmUpdate(&fb);assert(calls==armCalls && !fbLock.depth && !owner);}
 };
 int main(){
+ for(unsigned attr:{0x706F7772U,0x70777273U}){Case c;xe.dsiPowerTest=true;put(&c.fb,0x4284,2U);
+  assert(XE::wrapDSISetAttribute(&c.fb,attr,1)==kIOReturnNotReady && xe.stopCalls==1);
+  assert(Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==2);
+  xe.stopOK=true;
+  for(unsigned cycle=0;cycle<3;++cycle){
+   assert(XE::wrapDSISetAttribute(&c.fb,attr,1)==kIOReturnSuccess && xe.dsiRuntimePower.sleeping);
+   auto stops=xe.stopCalls;
+   assert(XE::wrapDSISetAttribute(&c.fb,attr,0)==kIOReturnSuccess && xe.stopCalls==stops);
+   assert(Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==0 && !xe.dsiMemoryReleased && !xe.dsiDDIReleased);
+   c.refuse();c.refuseCursor();xe.wakeOK=false;
+   assert(XE::wrapDSISetAttribute(&c.fb,attr,2)==kIOReturnNotReady);
+   assert(Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==0);
+   xe.wakeOK=true;assert(XE::wrapDSISetAttribute(&c.fb,attr,2)==kIOReturnSuccess);
+   assert(!xe.dsiRuntimePower.sleeping && !xe.dsiStopAttempted && Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==2);
+   auto wakes=xe.wakeCalls;assert(XE::wrapDSISetAttribute(&c.fb,attr,2)==kIOReturnSuccess && xe.wakeCalls==wakes);
+  }
+  xe.dsiRuntimePower.failed=true;auto calls=xe.stopCalls;
+  assert(XE::wrapDSISetAttribute(&c.fb,attr,1)==kIOReturnNotReady && xe.stopCalls==calls);
+ }
+
  for(unsigned attr:{0x706F7772U,0x70777273U})for(unsigned state:{0U,1U}){Case c;xe.dsiStopTest=true;put(&c.fb,0x4284,2U);
   assert(XE::wrapDSISetAttribute(&c.fb,attr,state)==kIOReturnNotReady && xe.stopCalls==1);
   assert(Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==2);

@@ -89,6 +89,29 @@ void panelCycle(Fixture &f,bool fail=false){
  assert(f.io.regs[0x70180]==0x94000008 && f.io.regs[0x7B008]==0xC0000000);
  assert(f.allocation.external[0]==1 && f.allocation.binding[0]==2);
 }
+void retainedCycle(Fixture &f,unsigned fault=0){
+ f.io.regs[0x7B008]=0xC0000000;f.io.regs[0x70180]=0x94000008;
+ f.io.regs[0x42084]=1U<<30;f.io.regs[0x6001C]=0x0437077F;f.io.regs[0x6B010]=f.io.regs[0x6B00C];
+ f.io.regs[0xC7204]=15;f.io.regs[0xC4030]=0x84;f.source.mux=f.io.regs[0x164280];
+ Panel::Shutdown shutdown;
+ const auto stopped=Quiesce::run(f.io,f.source,f.p,shutdown);
+ assert(stopped.complete() && shutdown.complete);
+ auto count=f.io.writes.size();
+ if(fault==1)f.allocation.external[0]=2;
+ if(fault==2)f.io.regs[0x7B008]=0xC0000000;
+ if(fault==3)f.io.regs[0x16428C]^=1;
+ if(fault){assert(!Restart::stopQuiesced(f.io,f.source,f.p,stopped,f.allocation,1,f.state));
+  assert(f.io.writes.size()==count && !f.state.stopped);return;}
+ assert(Restart::stopQuiesced(f.io,f.source,f.p,stopped,f.allocation,1,f.state));
+ assert(f.state.stopped && !f.io.regs[0x46014] && f.allocation.external[0]==1 && f.allocation.binding[0]==2);
+ Panel::Result panel;Lifecycle lifecycle{f.allocation,f.state};
+ Panel::cycle(f.io,f.source,f.p,0x94000008,0,panel,lifecycle,&shutdown);
+ if(!panel.complete())fprintf(stderr,"resume stage=%u error=%u reg=%x host=%u restart=%u/%u\n",unsigned(panel.stage),unsigned(panel.error),panel.reg,unsigned(panel.host.error),unsigned(f.state.stage),unsigned(f.state.error));
+ assert(panel.complete() && f.state.started && Surface::source(f.io,panel.source));
+ assert(f.io.regs[0x70180]==0x94000008 && f.io.regs[0x46014]==0xCC000000);
+ assert(f.allocation.external[0]==1 && f.allocation.binding[0]==2);
+ assert(f.io.regs[0x71180]==0x94000000 && f.io.regs[0x64100]==0x80000000);
+}
 void successful(Fixture &f){
  assert(f.stop() && f.state.stopped && !f.state.started);
  assert(f.io.regs[0x46014]==0 && f.io.regs[0x6B400]==0x30006 && f.io.regs[0x64000]==0x80 && f.io.regs[0x6B094]==0);
@@ -115,6 +138,7 @@ void successful(Fixture &f){
 }
 int main(int argc,char **argv){
  {Fixture f;successful(f);}
+ for(unsigned fault=0;fault<4;++fault){Fixture f;retainedCycle(f,fault);}
  {Fixture f;panelCycle(f);}
  {Fixture f;panelCycle(f,true);}
  for(unsigned fault=0;fault<6;++fault){Fixture f;
@@ -148,6 +172,8 @@ int main(int argc,char **argv){
   assert(f.io.elapsed<5000);
  }
  if(argc==2){
+  {Fixture f;std::ifstream in(argv[1],std::ios::binary);assert(in);f.vbt=Bytes{std::istreambuf_iterator<char>(in),{}};
+   f.p=parseProfile({f.vbt.data(),f.vbt.size()},true);retainedCycle(f);}
   for(bool fail:{false,true}){Fixture f;std::ifstream in(argv[1],std::ios::binary);assert(in);
    f.vbt=Bytes{std::istreambuf_iterator<char>(in),{}};f.p=parseProfile({f.vbt.data(),f.vbt.size()},true);
    panelCycle(f,fail);

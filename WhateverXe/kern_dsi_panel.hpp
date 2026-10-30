@@ -30,7 +30,7 @@ enum class Error : uint32_t {None,Input,Ownership,Readback,Timeout,Sequence,Host
 struct Result {
     Stage stage {Stage::Input};Error error {Error::Input};
     uint32_t reg {},value {},writes {},waitUs {},frameBefore {},frameAfter {};
-    Host host;Readout source;bool attempted {};
+    Host host {};Readout source;bool attempted {};
     bool complete() const {return stage==Stage::Complete && error==Error::None;}
 };
 // Panel half of a serialized runtime shutdown. Host/IRQ/clock/memory remain
@@ -68,15 +68,18 @@ struct Shutdown {
 // Stop pixel transfer, execute the complete panel off/reset/on sequences, and
 // restart the same scanout. Lifecycle may stop/rebuild the host between panel
 // operations; RetainedHost leaves its settings intact. Neither variant is a
-// runtime DPMS implementation or releases allocation/shared power ownership.
+// complete OS DPMS implementation or releases allocation/shared power ownership.
+// A verified Shutdown permits the same power-on/init tail on runtime resume;
+// native backing, cursor and IRQ lifetime still belong to the owning adapter.
 // IO::gpio serializes HPD writes; no delays may run under that IRQ lock.
 // A failed transaction is never retried and must retain all resources.
 template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const Profile &profile,
-                             uint32_t planeControl,uint32_t surface,Result &r,Lifecycle &lifecycle) {
+                             uint32_t planeControl,uint32_t surface,Result &r,Lifecycle &lifecycle,const Shutdown *shutdown=nullptr) {
     Readout current=link;
     if(r.attempted)return;
     r.attempted=true;
-    if(!profile.valid() || !link.matches(profile) || link.identity.pipe!=0 ||
+    if((shutdown && (!shutdown->complete || shutdown->host.faulted || shutdown->host.pending)) ||
+       !profile.valid() || !link.matches(profile) || link.identity.pipe!=0 ||
        !(planeControl&(1U<<31)) || (surface&4095) || !profile.sequences.valid())return;
     constexpr unsigned required[]={1,2,4,5,6,7,10,11};
     for(auto id:required) {
@@ -130,22 +133,30 @@ template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const P
     };
     r.error=Error::Readback;
     uint32_t credits=0,lp=0;
-    if(!held() || !Surface::source(io,link) ||
-       !Surface::word(io,0x70180,UINT32_MAX,planeControl) ||
-       !Surface::word(io,0x7019C,UINT32_MAX,surface) ||
-       !read(0x6B0D0,credits) || !read(0x6B0D8,lp) ||
-       (credits&0x1FFF)!=0x1040 || (lp&0x30001))return;
-    r.host.enabled=true;
-    r.stage=Stage::BacklightOff;if(!sequence(7) || !delay(2))return;
-    r.stage=Stage::PlaneOff;
-    if(!write(0x70180,planeControl&~(1U<<31)) || !write(0x7019C,surface) ||
-       !wait(0x70180,1U<<31,0,0) || !frame())return;
-    r.stage=Stage::TranscoderOff;
-    if(!write(0x7B008,link.conf&~(1U<<31)) || !wait(0x7B008,0xC0000000U,0,50000))return;
-    r.stage=Stage::DisplayOff;if(!sequence(4))return;
-    r.stage=Stage::HostOff;if(!lifecycle.stop(io,link,profile)){r.error=Error::Host;return;}
-    r.stage=Stage::AssertReset;if(!sequence(5) || !delay(3))return;
-    r.stage=Stage::PowerOff;if(!sequence(11))return;
+    if(shutdown) {
+        // The adapter retains the native backing and all display leases.
+        // Restart::start separately proves the stopped PLL/host and its owner.
+        if(!held() || !wait(0x7B008,0xC0000000U,0,0) || !wait(0x70180,1U<<31,0,0) ||
+           !wait(0x70080,63,0,0))return;
+        r.host=shutdown->host;
+    } else {
+        if(!held() || !Surface::source(io,link) ||
+           !Surface::word(io,0x70180,UINT32_MAX,planeControl) ||
+           !Surface::word(io,0x7019C,UINT32_MAX,surface) ||
+           !read(0x6B0D0,credits) || !read(0x6B0D8,lp) ||
+           (credits&0x1FFF)!=0x1040 || (lp&0x30001))return;
+        r.host.enabled=true;
+        r.stage=Stage::BacklightOff;if(!sequence(7) || !delay(2))return;
+        r.stage=Stage::PlaneOff;
+        if(!write(0x70180,planeControl&~(1U<<31)) || !write(0x7019C,surface) ||
+           !wait(0x70180,1U<<31,0,0) || !frame())return;
+        r.stage=Stage::TranscoderOff;
+        if(!write(0x7B008,link.conf&~(1U<<31)) || !wait(0x7B008,0xC0000000U,0,50000))return;
+        r.stage=Stage::DisplayOff;if(!sequence(4))return;
+        r.stage=Stage::HostOff;if(!lifecycle.stop(io,link,profile)){r.error=Error::Host;return;}
+        r.stage=Stage::AssertReset;if(!sequence(5) || !delay(3))return;
+        r.stage=Stage::PowerOff;if(!sequence(11))return;
+    }
     r.stage=Stage::PowerCycle;if(!delay(4))return;
     r.stage=Stage::PowerOn;if(!sequence(10) || !delay(0))return;
     r.stage=Stage::DeassertReset;if(!sequence(1))return;

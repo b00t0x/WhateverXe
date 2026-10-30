@@ -149,7 +149,8 @@ private:
     XELP::DSI::Quiesce::Result dsiStop;
     XELP::DSI::Clock::Result dsiClockStop;
     bool dsiStopAttempted {},dsiIRQParked {},dsiDDIReleased {},dsiMemoryReleased {};
-    bool quiesceDSIPath(IOService *,IOService *,OSObject *);
+    bool quiesceDSIPath(IOService *,IOService *,OSObject *,bool retain=false);
+    bool resumeDSIPath(IOService *,IOService *,OSObject *);
     bool processDSIPathDisposal(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     bool disposeDSIPath(IOService *,OSObject *);
     mach_vm_address_t dsiFreePlane {},dsiFreeScaler {},dsiDetachPath {},dsiRemovePath {},dsiPipeMap {};
@@ -253,6 +254,14 @@ private:
     bool dsiPanelTest {};
     bool dsiHostTest {};
     bool dsiStopTest {};
+    bool dsiPowerTest {};
+    struct {
+        bool sleeping {},failed {};uint32_t cycles {};
+        XELP::DSI::Surface::Plane plane;
+        uint32_t cursorControl {},cursorPosition {},cursorBase {};
+        XELP::DSI::Restart::State host;
+        XELP::DSI::Panel::Result panel;
+    } dsiRuntimePower;
     XELP::DSI::Panel::Shutdown dsiPanelStop;
     XELP::DSI::Restart::State dsiHostRestart;
     XELP::DSI::Panel::Result dsiPanelTrial;

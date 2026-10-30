@@ -4,6 +4,7 @@
 #ifndef KERN_DSI_RESTART_HPP
 #define KERN_DSI_RESTART_HPP
 #include "kern_dsi_readout.hpp"
+#include "kern_dsi_quiesce.hpp"
 #include "kern_xelp_combo_clock.hpp"
 namespace XELP { namespace DSI { namespace Restart {
 enum class Stage : uint32_t {
@@ -121,6 +122,34 @@ template<class IO> struct Access {
         return true;
     }
 };
+// Shared tail for bootstrap stop and a runtime Quiesce proof. The latter
+// retains backing, DDI power and external PLL ownership for display wake.
+template<class IO> bool powerOff(Access<IO> &a,const XELPComboClock::PLL &pll) {
+    auto &s=a.s;
+    s.stage=Stage::ModeOff;if(!a.rmw(0x6B094,1,0))return false;
+    s.stage=Stage::PLLDisable;
+    if(!a.rmw(pll.enable,1U<<31,0) || !a.wait(pll.enable,0xC0000000U,0,1000,10))return false;
+    s.stage=Stage::PLLPowerOff;
+    if(!a.rmw(pll.enable,1U<<27,0) || !a.wait(pll.enable,0xCC000000U,0,1000,10))return false;
+    s.stage=Stage::Stopped;s.stopped=true;return true;
+}
+template<class IO> bool stopQuiesced(IO &io,const Readout &source,const Profile &profile,
+                                    const Quiesce::Result &host,XELPComboClock::ClockAllocation &allocation,
+                                    uintptr_t owner,State &s) {
+    if(s.attempted)return false;s.attempted=true;
+    if(!host.complete() || !source.matches(profile) || source.identity.pipe!=0)return s.fail(Error::Input);
+    s.config=plan(profile,source.referenceKHz);s.pll=source.identity.pll;
+    if(!s.config.valid)return s.fail(Error::Input);
+    Access<IO> a{io,allocation,owner,s};XELPComboClock::PLL pll;
+    if(!XELPComboClock::PLL::resolve(s.pll,pll) || !a.held())return false;
+    // Re-read consumers and ownership: a completed software receipt alone
+    // cannot authorize stopping a currently active or reassigned PLL.
+    if(!a.wait(pll.enable,0xCC000000U,0xCC000000U,0) ||
+       !a.wait(pll.cfg0,UINT32_MAX,source.cfg0,0) || !a.wait(pll.cfg1,UINT32_MAX,source.cfg1,0) ||
+       !a.wait(0x6B400,1U<<31,0,0) || !a.wait(0x64000,0x80000080U,0x80,0) ||
+       !a.wait(0x164280,0x403,0x400|s.pll,0))return false;
+    return powerOff(a,pll);
+}
 // Invoke only after plane/cursor/transcoder stop and DISPLAY_OFF/drain.
 // Hardware readbacks recheck those preconditions; a caller assertion alone
 // must not permit clock writes. This stop deliberately retains the owner.
@@ -147,12 +176,7 @@ template<class IO> bool stop(IO &io,const Readout &source,const Profile &profile
     s.stage=Stage::BufferOff;
     if(!a.rmw(0x164280,1U<<10,0) || !a.rmw(0x64000,1U<<31,0) ||
        !a.wait(0x64000,0x80000080U,0x80,8) || !a.rmw(0x164280,0,1U<<10))return false;
-    s.stage=Stage::ModeOff;if(!a.rmw(0x6B094,1,0))return false;
-    s.stage=Stage::PLLDisable;
-    if(!a.rmw(pll.enable,1U<<31,0) || !a.wait(pll.enable,0xC0000000U,0,1000,10))return false;
-    s.stage=Stage::PLLPowerOff;
-    if(!a.rmw(pll.enable,1U<<27,0) || !a.wait(pll.enable,0xCC000000U,0,1000,10))return false;
-    s.stage=Stage::Stopped;s.stopped=true;return true;
+    return powerOff(a,pll);
 }
 // Invoke after panel POWER_ON/PPS/DEASSERT_RESET, before INIT_OTP. Timing and
 // transport derive from the profile; no firmware PLL/PHY register dump replay.

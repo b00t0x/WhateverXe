@@ -3875,6 +3875,7 @@ Display13OutputWiring XE::display13BoardWiring(IOService *provider) {
         dsiCommandTest=checkKernelArgument("-wex-dsi-command-test");
         dsiHostTest=checkKernelArgument("-wex-dsi-host-test");
         dsiStopTest=checkKernelArgument("-wex-dsi-stop-test");
+        dsiPowerTest=checkKernelArgument("-wex-dsi-power-test");
         dsiPanelTest=checkKernelArgument("-wex-dsi-panel-test") || dsiHostTest;
         IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPanelOnly",dsiPanelOnly);
         if(!board.described())return {};
@@ -7763,6 +7764,16 @@ uint32_t XE::wrapDSISetPowerState(IOService *fb,uint32_t state) {
             if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
             DSIModeScope scope(fb);if(!scope.lock)return kIOReturnNotReady;
             if(dsiLifecycleTarget(fb,Display13FBMemory::singlePath<OSObject *>(fb))) {
+                if(callbackXE->dsiPowerTest && state<=2 && dsiModeTarget(fb)) {
+                    auto controller=Display13FBMemory::field<IOService *>(fb,0x1D0);
+                    auto path=Display13FBMemory::singlePath<OSObject *>(fb);
+                    auto &power=callbackXE->dsiRuntimePower;
+                    const bool ready=!power.failed && (state==2 ? (power.sleeping ? callbackXE->resumeDSIPath(controller,fb,path) : dsiNativeUpdateAllowed(fb)) :
+                        (power.sleeping ? true : (dsiNativeUpdateAllowed(fb) && callbackXE->quiesceDSIPath(controller,fb,path,true))));
+                    if(!ready)return kIOReturnNotReady;
+                    *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(fb)+0x4284)=state;
+                    return kIOReturnSuccess;
+                }
                 // One-way runtime stop experiment through the real power callback.
                 // Recovery is a reboot; state 2 never replays the donor's DDI path.
                 if(callbackXE->dsiStopTest && state<2 && dsiModeTarget(fb)) {
@@ -11007,7 +11018,7 @@ static bool adlnWriterMappingBound() {
 // Host/IRQ/PLL retirement; the native DDI reference follows the stopped clock.
 // Keep the real stopped source separate from Session cleanup: it is not a full
 // Session StopProof. The one-shot journal retains a partial stop for diagnosis.
-bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
+bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path,bool retain) {
     auto &c=display13FBPower;auto &clock=comboClockTransaction;auto &irq=display13FBIRQ;
     if(!c.lock || !clock.lock || !controller || controller->getMetaClass()->getClassSize()<0x1C20 ||
        !fb || fb->getMetaClass()->getClassSize()<0x4B90 || !path || path->getMetaClass()->getClassSize()<0x3730 ||
@@ -11044,13 +11055,14 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
             c.bridge.outputHeld(io,0,0);
     };
     struct IO : Display13FBBootIO {
-        decltype(qualified) &owns;IOSimpleLock *irqLock;bool panel;
-        IO(IOMemoryMap *m,decltype(qualified) &q,IOSimpleLock *l,bool p):Display13FBBootIO{m},owns(q),irqLock(l),panel(p) {}
+        decltype(qualified) &owns;IOSimpleLock *irqLock;bool panel,retain;
+        IO(IOMemoryMap *m,decltype(qualified) &q,IOSimpleLock *l,bool p,bool r):Display13FBBootIO{m},owns(q),irqLock(l),panel(p),retain(r) {}
         bool ready(){return owns();}
         void write(uint32_t reg,uint32_t value) {
             if(readable(reg) && (reg==0x70080 || reg==0x70084 || reg==0x70088 || reg==0x70180 || reg==0x7019C ||
                reg==0x7B008 || reg==0x6B0D8 || reg==0x6B400 || reg==0x164280 || reg==0x64000 ||
                reg==0x46010+4*display13FBPower.bootDSI.identity.pll ||
+               (retain && XELP::DSI::Restart::writable(reg,display13FBPower.bootDSI.identity.pll)) ||
                (panel && (reg==0x6B100 || reg==0x6B104 || reg==0xC4030 || reg==0xC7204))))
                 *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg)=value;
         }
@@ -11061,8 +11073,24 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
             IOSimpleLockUnlockEnableInterrupt(irqLock,saved);return r.complete;
         }
         void delayUs(unsigned us){if(us>=1000)IOSleep((us+999)/1000);else IODelay(us);}
-    } io{c.map,qualified,irq.lock,dsiStopTest};
+    } io{c.map,qualified,irq.lock,dsiStopTest || dsiPowerTest || retain,retain};
+    auto &power=dsiRuntimePower;
     record[1]=qualified();
+    bool snapshot=!retain;
+    if(retain && record[1] && !dsiStopAttempted && !power.sleeping && !c.memoryFaulted && !c.dbuf.faulted && !c.watermarkFaulted &&
+       dsiPublishedTarget(fb) && dsiPendingBacking.modeReady && dsiArmedBackingOwned(fb,path)) {
+        auto &p=power.plane;
+        p.control=io.read(0x70180);p.surface=io.read(0x7019C);p.stride=io.read(0x70188);p.size=io.read(0x70190);
+        p.position=io.read(0x7018C);p.offset=io.read(0x701A4);p.color=io.read(0x701CC);
+        power.cursorControl=io.read(0x70080);power.cursorPosition=io.read(0x70088);power.cursorBase=io.read(0x70084);
+        const auto &proof=dsiPendingBacking.proof;
+        const XELP::DSI::Surface::Backing backing{reinterpret_cast<uintptr_t>(dsiPendingBacking.record),proof.gpu,proof.bytes,proof.pitch};
+        snapshot=XELP::DSI::Surface::target(p,dsiProfile,backing) && XELP::DSI::Surface::matches(io,p,true) &&
+            power.cursorControl!=UINT32_MAX && power.cursorBase!=UINT32_MAX && power.cursorPosition!=UINT32_MAX &&
+            Display13Cursor::controlWrite(0x70080,power.cursorControl)==power.cursorControl;
+        if(snapshot){power.host=XELP::DSI::Restart::State{};power.panel=XELP::DSI::Panel::Result{};dsiPanelStop={};dsiStop={};}
+    }
+    record[1]=record[1] && snapshot;
     if(record[1] && !dsiStopAttempted && adlnIRQOwner(controller) && irq.lock &&
        irq.lock==Display13FBMemory::field<IOSimpleLock *>(controller,0x90) && irq.base==c.map->getVirtualAddress()) {
         Display13FBIRQIO irqIO{irq.base};
@@ -11090,7 +11118,8 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
         if(maskOK) {
             dsiStopAttempted=true;
-            if(dsiStopTest)dsiStop=XELP::DSI::Quiesce::run(io,c.bootDSI,dsiProfile,dsiPanelStop);
+            if(!retain)dsiPanelStop={};
+            if(dsiStopTest || dsiPowerTest || retain)dsiStop=XELP::DSI::Quiesce::run(io,c.bootDSI,dsiProfile,dsiPanelStop);
             else dsiStop=XELP::DSI::Quiesce::run(io,c.bootDSI,dsiProfile);
         }
         if(masked) {
@@ -11107,11 +11136,13 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
             }
             IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
             if(parked) {
-                dsiClockStop=XELP::DSI::Clock::retire(io,c.bootDSI,dsiStop,true,clock.allocation,
+                if(retain)XELP::DSI::Restart::stopQuiesced(io,c.bootDSI,dsiProfile,dsiStop,clock.allocation,
+                    reinterpret_cast<uintptr_t>(controller),power.host);
+                else dsiClockStop=XELP::DSI::Clock::retire(io,c.bootDSI,dsiStop,true,clock.allocation,
                     reinterpret_cast<uintptr_t>(controller));
             }
             saved=IOSimpleLockLockDisableInterrupt(irq.lock);
-            if(dsiClockStop.complete()) {
+            if(!retain && dsiClockStop.complete()) {
                 // The host and its PLL are now stopped. Withdraw both maps at
                 // the same masked IRQ boundary, so an external clock client
                 // no longer tries to re-adopt the obsolete running DSI source.
@@ -11141,7 +11172,7 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     // The donor's disableClocks(port,peer) puts this DDI reference at 6db04;
     // PG1 belongs to freeDisplayPathResources and must remain until memory /
     // DDB / path destruction. Match that ownership without running DDI/DP code.
-    const bool stopped=parked && restored && dsiClockStop.complete();
+    const bool stopped=!retain && parked && restored && dsiClockStop.complete();
     record[30]=c.bridge.ddiRefs[0];
     if(stopped && c.bridge.bootAdopted && c.bridge.bootPath==reinterpret_cast<uintptr_t>(path) &&
        c.bridge.bootPort==0 && !c.bridge.bootDDIProtected && c.bridge.ddiRefs[0]==1 && c.power) {
@@ -11190,8 +11221,11 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     record[47]=dsiPanelStop.host.payloadWords;record[48]=dsiPanelStop.host.completedOperations;
     record[49]=dsiPanelStop.host.waitedUs;record[50]=dsiPanelStop.host.pending;
     record[33]=dsiMemoryReleased;record[34]=c.memoryFaulted;
-    const bool complete=stoppedPath && dsiMemoryReleased;
-    if(complete) {
+    const bool complete=retain ? (parked && restored && power.host.stopped && !power.host.started &&
+        power.host.error==XELP::DSI::Restart::Error::None && dsiPanelStop.complete && qualified() &&
+        dsiArmedBackingOwned(fb,path) && !c.memoryFaulted && !c.dbuf.faulted) : (stoppedPath && dsiMemoryReleased);
+    if(retain && complete)power.sleeping=true;
+    if(complete && !retain) {
         // Exact donor disableDisplay publishes path state 1 only after its
         // clock-disable call (4dbba -> 4dbc6). Mirror that CPU completion now,
         // never on a partial host/IRQ/PLL stop or by replaying the donor body.
@@ -11203,12 +11237,149 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     // Native backing and the GOP pool have been retired before a full stop
     // leaves PG/path disposal to releaseDisplay13Path; only partial stops
     // need the global retention guard. Never clear a pre-existing real fault.
-    if(masked && !complete)adlnFault(c.memoryFaulted,__LINE__);
+    if(masked && !complete){if(retain)power.failed=true;adlnFault(c.memoryFaulted,__LINE__);}
     IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
     if(modeWithdrawn)fb->setProperty("WEXDSIFixedModeReady",false);
     if(acquired)reinterpret_cast<void (*)(IOWorkLoop *)>(adlnWorkLoopOpen)(loop);
     loop->release();IORecursiveLockUnlock(mutex);
     adlnPublishMemory("N97FBDSIHostStop",0,record,sizeof(record));
+    if(retain) {
+        const auto &h=power.host;
+        uint64_t receipt[] {1,0,complete,power.cycles,power.sleeping,snapshot,
+            power.plane.control,power.plane.surface,power.cursorControl,power.cursorBase,
+            static_cast<uint32_t>(h.stage),static_cast<uint32_t>(h.error),h.reg,h.value,h.writes,h.waitUs,
+            parked,restored,dsiPanelStop.complete,dsiMemoryReleased,dsiDDIReleased};
+        IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIRuntimePower",receipt,sizeof(receipt));
+    }
+    return complete;
+}
+
+// Runtime display wake keeps the native scanout allocation and every display
+// lease from the matching off transaction. System power loss is not covered.
+bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
+    auto &c=display13FBPower;auto &clock=comboClockTransaction;auto &irq=display13FBIRQ;auto &power=dsiRuntimePower;
+    if(!c.lock || !clock.lock || !controller || controller->getMetaClass()->getClassSize()<0x1C20 ||
+       !fb || fb->getMetaClass()->getClassSize()<0x4B90 || !path || path->getMetaClass()->getClassSize()<0x3730 ||
+       !adlnWorkLoopInGate || !adlnWorkLoopTryClose || !adlnWorkLoopOpen)return false;
+    auto mutex=Display13FBMemory::field<IORecursiveLock *>(fb,0x4220);if(!mutex)return false;
+    IORecursiveLockLock(mutex);IOLockLock(c.lock);
+    auto loop=controller==c.controller ? c.workLoop : nullptr;if(loop)loop->retain();IOLockUnlock(c.lock);
+    const bool boundLoop=loop && Display13FBMemory::field<IOWorkLoop *>(controller,0xE00)==loop;
+    const bool inGate=boundLoop && reinterpret_cast<bool (*)(const IOWorkLoop *)>(adlnWorkLoopInGate)(loop);
+    const bool acquired=boundLoop && !inGate && reinterpret_cast<bool (*)(IOWorkLoop *)>(adlnWorkLoopTryClose)(loop);
+    if(!inGate && !acquired){if(loop)loop->release();IORecursiveLockUnlock(mutex);return false;}
+    IORecursiveLockLock(clock.lock);IOLockLock(c.lock);
+    const auto owned=[&]() {
+        if(!power.sleeping || power.failed || !dsiStopAttempted || !dsiIRQParked || !dsiResourcesReady ||
+           !dsiStop.complete() || !dsiPanelStop.complete || !dsiNativeWriterHooksReady || !dsiProfile.valid() ||
+           controller!=c.controller || controller!=adlnTopologyController || c.workLoop!=loop ||
+           Display13FBMemory::field<IOWorkLoop *>(controller,0xE00)!=loop || adlnOutputWiring.dsi!=1 ||
+           c.pipe[0].memoryFramebuffer!=fb || Display13FBMemory::singlePath<OSObject *>(fb)!=path ||
+           c.transcoders.dsi0Pipe!=0 || c.dsiNativeWriters || c.memoryFaulted || c.clockFaulted || c.watermarkFaulted ||
+           c.bridge.state.faulted || c.bridge.state.suspended || c.dbuf.faulted || c.dbuf.updating ||
+           c.pipe[0].destroyingPath || c.pipe[0].wmProgramming || c.pipe[0].wmCommitting ||
+           !c.dsiPort || Display13FBMemory::field<OSObject *>(path,0x3648)!=c.dsiPort ||
+           Display13FBMemory::field<uint32_t>(c.dsiPort,0x550)!=1 || Display13FBMemory::field<uint32_t>(path,0x3644)!=2 ||
+           Display13FBMemory::field<uint32_t>(path,0x35F0) || !adlnWriterMappingBound() ||
+           clock.thread || clock.allocation.external[0]!=reinterpret_cast<uintptr_t>(controller) ||
+           clock.allocation.binding[0]!=dsiBoot.source.identity.pll+1 || !c.bootDSI.sameSource(dsiBoot.source) ||
+           !dsiPublishedTarget(fb) || !dsiPendingBacking.modeReady || !dsiArmedBackingOwned(fb,path))return false;
+        Display13FBBootIO io{c.map};return c.bridge.outputHeld(io,0,0);
+    };
+    struct IO : Display13FBBootIO {
+        decltype(owned) &owns;IOSimpleLock *lock;unsigned pll;
+        IO(IOMemoryMap *m,decltype(owned) &o,IOSimpleLock *l,unsigned p):Display13FBBootIO{m},owns(o),lock(l),pll(p) {}
+        bool ready(){return owns();}
+        void write(uint32_t r,uint32_t v) {
+            if(readable(r) && (XELP::DSI::Restart::writable(r,pll) || r==0x6B100 || r==0x6B104 ||
+               r==0xC4030 || r==0xC7204 || r==0x70180 || r==0x7019C || r==0x7B008 ||
+               r==0x70080 || r==0x70088 || r==0x70084))
+                *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+r)=v;
+        }
+        bool gpio(unsigned role,unsigned value) {
+            const auto saved=IOSimpleLockLockDisableInterrupt(lock);const auto r=XELP::DSI::Panel::gpio(*this,role,value);
+            IOSimpleLockUnlockEnableInterrupt(lock,saved);return r.complete;
+        }
+        void delayUs(unsigned us){if(us>=1000)IOSleep((us+999)/1000);else IODelay(us);}
+    } io{c.map,owned,irq.lock,dsiBoot.source.identity.pll};
+    uint64_t receipt[24] {1,1,0,power.cycles,power.sleeping};
+    bool masked=false,restored=false,rearmed=false,cursor=false,complete=false;uint32_t master=0;
+    auto stoppedPlane=power.plane;stoppedPlane.control&=~(1U<<31);
+    receipt[5]=owned() && power.host.stopped && !power.host.started && !power.panel.attempted &&
+        power.host.error==XELP::DSI::Restart::Error::None && XELP::DSI::Surface::matches(io,stoppedPlane,false);
+    if(receipt[5] && adlnIRQOwner(controller) && irq.lock && irq.lock==Display13FBMemory::field<IOSimpleLock *>(controller,0x90) &&
+       irq.base==c.map->getVirtualAddress()) {
+        Display13FBIRQIO irqIO{irq.base};auto saved=IOSimpleLockLockDisableInterrupt(irq.lock);
+        const auto queued=[&](unsigned offset) {
+            return __atomic_load_n(reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(controller)+offset),__ATOMIC_ACQUIRE);
+        };
+        master=irqIO.read(Display13FBIRQ::Master);
+        const bool quiet=irq.scopes.total==irq.handlers && !irq.scopes.display && !irq.softwareHandlers &&
+            !(queued(0xE08)&Display13FBIRQ::pipeEvents(0)) && !queued(0xE0C) && !(queued(0xE10)&3);
+        if(quiet && !irq.quiescing && !irq.blockedPipes && !irq.state.faulted && irq.state.begun && irq.state.enabled &&
+           !(irq.state.active&1) && (irq.state.configured&1) && (irq.admittedPipes&1) && irq.state.transcoders.dsi0Pipe==0 &&
+           master!=UINT32_MAX && (master&Display13FBIRQ::Enable)) {
+            irq.quiescing=true;irq.blockedPipes=1;irq.state.enabled=false;masked=true;
+            irqIO.write(Display13FBIRQ::Master,0);
+            const auto after=irqIO.read(Display13FBIRQ::Master);
+            if(after==UINT32_MAX || (after&Display13FBIRQ::Enable))irq.state.faulted=true;
+        }
+        const bool canStart=masked && !irq.state.faulted;
+        IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
+        if(canStart) {
+            struct Lifecycle {
+                XELPComboClock::ClockAllocation &allocation;uintptr_t owner;XELP::DSI::Restart::State &state;
+                bool stop(IO &,const XELP::DSI::Readout &,const XELP::DSI::Profile &){return false;}
+                bool start(IO &io,XELP::DSI::Readout &source) {
+                    if(!XELP::DSI::Restart::start(io,allocation,owner,state))return false;
+                    source=XELP::DSI::Restart::expected(source,state);return source.complete();
+                }
+            } lifecycle{clock.allocation,reinterpret_cast<uintptr_t>(controller),power.host};
+            XELP::DSI::Panel::cycle(io,c.bootDSI,dsiProfile,power.plane.control,power.plane.surface,power.panel,lifecycle,&dsiPanelStop);
+            if(power.panel.complete() && owned() && XELP::DSI::Surface::matches(io,power.plane,true)) {
+                io.write(0x70080,power.cursorControl);io.write(0x70088,power.cursorPosition);io.write(0x70084,power.cursorBase);
+                const auto before=io.read(0x70040);
+                for(unsigned us=0;us<=50000;us+=1000) {
+                    const auto after=io.read(0x70040);
+                    if(before!=UINT32_MAX && after!=UINT32_MAX && after!=before) {
+                        cursor=XELP::DSI::Surface::word(io,0x70080,UINT32_MAX,power.cursorControl) &&
+                            XELP::DSI::Surface::word(io,0x70088,UINT32_MAX,power.cursorPosition) &&
+                            XELP::DSI::Surface::word(io,0x70084,UINT32_MAX,power.cursorBase);break;
+                    }
+                    if(us<50000)io.delayUs(1000);
+                }
+                if(cursor){dsiBoot.source=power.panel.source;c.bootDSI=power.panel.source;}
+            }
+        }
+        if(masked) {
+            saved=IOSimpleLockLockDisableInterrupt(irq.lock);
+            const auto wells=irqIO.read(Display13FBIRQ::Driver);
+            if(wells==UINT32_MAX || (wells&3)!=3)irq.state.faulted=true;
+            if(!irq.state.faulted) {
+                irqIO.write(Display13FBIRQ::Master,master&Display13FBIRQ::Enable);
+                const auto after=irqIO.read(Display13FBIRQ::Master);
+                restored=after!=UINT32_MAX && (after&Display13FBIRQ::Enable);irq.state.enabled=restored;
+                if(!restored)irq.state.faulted=true;
+                if(restored && cursor && owned())rearmed=Display13FBIRQ::extendActivePipes(irqIO,irq.state,irq.admittedPipes)==Display13FBIRQ::Status::Complete && (irq.state.active&1);
+            }
+            irq.quiescing=false;irq.blockedPipes=0;
+            adlnIRQCache(controller,irqIO);IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
+            complete=restored && rearmed && cursor && power.panel.complete() && owned();
+            if(complete){power.sleeping=false;++power.cycles;dsiStopAttempted=false;dsiIRQParked=false;}
+            else{power.failed=true;adlnFault(c.memoryFaulted,__LINE__);}
+        }
+    }
+    const auto &h=power.host;const auto &p=power.panel;
+    receipt[2]=complete;receipt[3]=power.cycles;receipt[4]=power.sleeping;
+    receipt[6]=power.plane.control;receipt[7]=power.plane.surface;receipt[8]=power.cursorControl;receipt[9]=power.cursorBase;
+    receipt[10]=static_cast<uint32_t>(h.stage);receipt[11]=static_cast<uint32_t>(h.error);
+    receipt[12]=h.reg;receipt[13]=h.value;receipt[14]=h.writes;receipt[15]=h.waitUs;
+    receipt[16]=masked;receipt[17]=restored;receipt[18]=rearmed;receipt[19]=cursor;
+    receipt[20]=static_cast<uint32_t>(p.stage);receipt[21]=static_cast<uint32_t>(p.error);receipt[22]=p.reg;receipt[23]=p.value;
+    IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
+    if(acquired)reinterpret_cast<void (*)(IOWorkLoop *)>(adlnWorkLoopOpen)(loop);
+    loop->release();IORecursiveLockUnlock(mutex);
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIRuntimePower",receipt,sizeof(receipt));
     return complete;
 }
 
