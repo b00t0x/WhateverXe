@@ -29,6 +29,7 @@ struct Sim:IO {
  void write(uint32_t reg,uint32_t value){
   assert(owned);writes.push_back(reg);if(reg==drop)return;
   if(reg==0x7B008){regs[reg]=(value&~(1U<<30))|(regs[reg]&(1U<<30));return;}
+  if(reg==0x1621A0){regs[reg]=value|0x400;return;} // non-field status survives a zero write
   if(reg==0x46014){regs[reg]=(value&~0x44000000U)|(regs[reg]&0x44000000U);return;}
   if(reg==0x64000){regs[reg]=(value&~0x80U)|(regs[reg]&0x80);return;}
   if(reg==0x6B0D8){ulpsRequest=value&1;regs[reg]=(value&~0x30001U)|(regs[reg]&0x30000);return;}
@@ -96,7 +97,7 @@ void successful(Fixture &f){
  assert(f.io.regs[0x16428C]==f.state.config.pll.cfg0() && f.io.regs[0x16428C]!=oldCfg);
  assert(f.io.regs[0x46014]==0xCC000000 && f.io.regs[0x64000]==0x80000000 && f.io.regs[0x6B094]==1);
  assert(f.io.regs[0x6B030]==0x20130304 && f.io.regs[0x6B400]==f.state.config.function);
- assert(f.io.regs[0x6B090]==56 && f.io.regs[0x162190]==56 && f.io.regs[0x1621A0]==0);
+ assert(f.io.regs[0x6B090]==56 && f.io.regs[0x162190]==56 && (f.io.regs[0x1621A0]&0xFF0000)==0 && (f.io.regs[0x1621A0]&0x400));
  assert(f.io.regs[0x162180]==0xC8690000 && f.io.regs[0x162184]==0x84830083);
  assert(f.io.regs[0x162894]==0xE0080030 && f.io.regs[0x162888]==0x1598);
  for(unsigned lane=0;lane<4;++lane){assert(f.io.regs[0x162804+0x100*lane]==4);

@@ -170,7 +170,7 @@ template<class IO> bool start(IO &io,XELPComboClock::ClockAllocation &allocation
     if(!a.set(0x6B090,p.link.escapeDivider,0x1FF) || !a.set(0x162190,p.link.escapeDivider,0x1FF) ||
        // Linux ADL_MIPIO_DW8 writes zero (unshifted divider & shifted mask),
        // matching the saved Linux state. Do not enable an unverified override.
-       !a.set(0x1621A0,0))return false;
+       !a.set(0x1621A0,0,0xFF0000))return false;
     s.stage=Stage::PLLPowerOn;
     if(!a.rmw(pll.enable,0,1U<<27) || !a.wait(pll.enable,1U<<26,1U<<26,1000,10))return false;
     s.stage=Stage::PLLConfig;if(!a.set(pll.cfg0,p.pll.cfg0()) || !a.set(pll.cfg1,p.pll.cfg1()))return false;
