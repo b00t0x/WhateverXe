@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Qualify DSI boot recognition; optionally replay the exact native consumer."""
 from pathlib import Path
+from production_source import read_source
 import hashlib, re, subprocess, sys, tempfile
 root=Path(__file__).resolve().parents[1]
-source=(root/'WhateverXe/kern_xe.cpp').read_text()
+source=read_source(root/'WhateverXe/kern_xe.cpp')
 body=re.search(r'uint32_t XE::wrapDSIBootProbe\(.*?\n\}',source,re.S)[0]
 boot=(root/'tests/dsi_boot.cpp').read_text()
 io=boot[boot.index('struct IO {'):boot.index('Boot capture(')]

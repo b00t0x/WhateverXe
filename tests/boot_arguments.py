@@ -15,7 +15,8 @@ assert 'PE_parse_boot_arg' not in provider and 'checkKernelArgument' not in prov
 external = {'-igfxdvmt', 'gfxrst', '-allow3d', '-disablegfxfirmware'}
 used = set()
 for directory in ['WhateverXe', 'AppleIntelTGLCompat']:
-    for path in (root / directory).glob('*.cpp'):
+    for path in (root / directory).iterdir():
+        if path.suffix not in {'.cpp', '.inc'}: continue
         used.update(re.findall(r'(?:checkKernelArgument|PE_parse_boot_argn)\("([^"]+)"', path.read_text()))
 for array, expected in [('Off', '-wexoff'), ('Debug', '-wexdbg'), ('Beta', '-wexbeta')]:
     body = re.search(r'bootarg' + array + r'\[\] \{(.*?)\}', start, re.S).group(1)

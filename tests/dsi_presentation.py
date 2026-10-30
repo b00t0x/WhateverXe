@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Exercise the production presentation transaction with native allocation leaves mocked."""
 from pathlib import Path
+from production_source import read_source
 import re, subprocess, tempfile
 root=Path(__file__).resolve().parents[1]
-source=(root/'WhateverXe/kern_xe.cpp').read_text()
+source=read_source(root/'WhateverXe/kern_xe.cpp')
 functions='\n'.join(re.search(r'(?:bool|uint32_t) XE::'+name+r'\(.*?\n\}',source,re.S)[0] for name in ['releaseDSILogical','setDSIPresentation'])
 code=r'''
 #include "kern_dsi_native_mode.hpp"

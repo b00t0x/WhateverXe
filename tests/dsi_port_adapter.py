@@ -5,9 +5,10 @@ Optional exact donor executes its base mode setter; HAL/AUX/reset are forbidden.
 The topology, power leases and register values are synthetic CPU fixtures.
 """
 from pathlib import Path
+from production_source import read_source
 import hashlib, re, subprocess, sys, tempfile
 root=Path(__file__).resolve().parents[1]
-source=(root/'WhateverXe/kern_xe.cpp').read_text()
+source=read_source(root/'WhateverXe/kern_xe.cpp')
 functions='\n'.join(re.search(r'uint32_t XE::'+name+r'\(.*?\n\}',source,re.S)[0]
                     for name in ['setDSIPortMode','wrapAlderLakeNPortState','wrapDisplay13ProbeMode'])
 dispatch=re.search(r'uint32_t XE::wrapDisplay13TCMode\(.*?\n\}',source,re.S)[0]

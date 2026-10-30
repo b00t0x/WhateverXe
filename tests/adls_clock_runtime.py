@@ -8,6 +8,8 @@ state+=' comboClockTransaction;\n'+re.search(r'static bool comboClockAccess\(.*?
 functions='\n'.join(re.search(r'(?:bool|void) XE::'+n+r'\(.*?\n\}',s,re.S).group() for n in ['comboBeginClock','comboEndClock'])
 code=r'''
 #include "kern_adls_clock.hpp"
+#include "kern_dsi_restart.hpp"
+#include "kern_dsi_panel.hpp"
 #include "kern_display13_fb_memory.hpp"
 #include "kern_display13_transcoder.hpp"
 #include <cassert>
@@ -33,6 +35,9 @@ void getPG(void *p,uint32_t pg){assert(p==power && pg==1);++refs;++getCount;}
 void putPG(void *p,uint32_t pg){assert(p==power && pg==1 && refs);--refs;++putCount;}
 struct XE {
  bool adlsDisplaySelected=true,display13FramebufferRequested=false;
+ bool dsiStopAttempted=false,dsiIRQParked=false,dsiResourcesReady=false;
+ XELP::DSI::Quiesce::Result dsiStop;XELP::DSI::Panel::Shutdown dsiPanelStop;
+ struct {bool sleeping=false,failed=false;XELP::DSI::Restart::State host;} dsiRuntimePower;
  struct Native {
   bool ready=true;bool complete(){return ready;}
   void (*getPG)(void*,uint32_t)=::getPG,(*putPG)(void*,uint32_t)=::putPG;

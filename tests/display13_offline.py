@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Replay the production port-state boundary, including the normal native path."""
 from pathlib import Path
+from production_source import read_source
 import re,subprocess,tempfile
 r=Path(__file__).resolve().parents[1]
-s=(r/'WhateverXe/kern_xe.cpp').read_text()
+s=read_source(r/'WhateverXe/kern_xe.cpp')
 body=re.search(r'uint32_t XE::wrapAlderLakeNPortState\(.*?\n\}',s,re.S).group()
 code=r'''
 #include <cassert>

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Replay the bootstrap command trial's real ownership and MMIO boundary."""
 from pathlib import Path
+from production_source import read_source
 import re, subprocess, tempfile
 root=Path(__file__).resolve().parents[1]
-s=(root/'WhateverXe/kern_xe.cpp').read_text()
+s=read_source(root/'WhateverXe/kern_xe.cpp')
 body=re.search(r'bool XE::probeDSICommands\(.*?\n\}',s,re.S)[0]
 code=r'''
 #include "kern_dsi_commands.hpp"

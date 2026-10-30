@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """Execute DSI cache hooks with real binding/boot helpers and bounded fake objects."""
 from pathlib import Path
+from production_source import read_source
 import hashlib,re,subprocess,sys,tempfile
 root=Path(__file__).resolve().parents[1]
-s=(root/'WhateverXe/kern_xe.cpp').read_text()
+s=read_source(root/'WhateverXe/kern_xe.cpp')
 names=['updateDSIBootCache','wrapDSIUpdateCache','wrapDSIGetCRTC']
-functions='\n'.join(re.search(r'(?:bool|void) XE::'+n+r'\(.*?\n\}',s,re.S)[0] for n in names)
-functions=re.search(r'static bool dsiCachePath\(.*?\n\}',s,re.S)[0]+'\n'+functions
-binding=re.search(r'static TGLFBBinding::Readout adlnInspectPathBinding\(.*?\n\}',s,re.S)[0]
+functions='\n'.join(re.search(r'(?:bool|void) XE::'+n+r'\([^;{]*\{.*?\n\}',s,re.S)[0] for n in names)
+functions=re.search(r'static bool dsiCachePath\([^;{]*\{.*?\n\}',s,re.S)[0]+'\n'+functions
+binding=re.search(r'static TGLFBBinding::Readout adlnInspectPathBinding\([^;{]*\{.*?\n\}',s,re.S)[0]
 boot=(root/'tests/dsi_boot.cpp').read_text();io=boot[boot.index('struct IO {'):boot.index('Boot capture(')]
 # Non-source cache-word drift must be caught by the two snapshots as well.
 io=io.replace('bool driftOnWrite=false,strict=false;','bool driftOnWrite=false,strict=false,cacheDrift=false;unsigned cacheReads=0;')
 io=io.replace('reads.push_back(reg);return regs[reg];','reads.push_back(reg);if(cacheDrift && reg==0x701CC && ++cacheReads==2)++regs[reg];return regs[reg];')
 if len(sys.argv)>1:
  b=Path(sys.argv[1]).read_bytes();assert hashlib.sha256(b).hexdigest()=='c004fc1ac9ee4157e2e12736f40fa6639bde025a279326beeb9dd48c9b445731'
- install=re.search(r'bool XE::processDisplay13DSICache\(.*?\n\}',s,re.S)[0]
+ install=re.search(r'bool XE::processDisplay13DSICache\([^;{]*\{.*?\n\}',s,re.S)[0]
  offsets=[int(x,0) for x in re.search(r'offsets\[\]=\{([^}]+)',install)[1].split(',')]
  entries=re.search(r'entries\[\]\[16\]=\{(.*?)\};',install,re.S)[1]
  for offset,row in zip(offsets,re.findall(r'\{([^}]+)\}',entries)):

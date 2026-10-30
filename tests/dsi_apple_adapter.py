@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Replay production DSI fixed-mode ownership/dispatch with IOKit leaves mocked."""
 from pathlib import Path
+from production_source import read_source
 import hashlib, re, subprocess, sys, tempfile
 
 root = Path(__file__).resolve().parents[1]
-source = (root/'WhateverXe/kern_xe.cpp').read_text()
+source = read_source(root/'WhateverXe/kern_xe.cpp')
 owner = source[source.index('struct DSIFixedModeOwner {'):source.index('// AlderLakeN start bypasses')]
 names = ['recordDSIClient', 'releaseDSIFixedMode', 'bindDSIFixedMode', 'wrapDSISetDetailedTimings', 'wrapDSIValidateMode',
          'wrapDSIGetModes', 'wrapDSIGetModeCount', 'wrapDSIGetModeInformation', 'wrapDSIGetCurrentMode', 'wrapDSIGetOnlineInfo', 'wrapDSIDDC']

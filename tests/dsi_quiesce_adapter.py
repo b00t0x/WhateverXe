@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Exercise the production native DSI stop boundary with real host/IRQ cores."""
 from pathlib import Path
+from production_source import read_source
 import re,subprocess,tempfile
 root=Path(__file__).resolve().parents[1]
-s=(root/'WhateverXe/kern_xe.cpp').read_text()
+s=read_source(root/'WhateverXe/kern_xe.cpp')
 body=re.search(r'bool XE::quiesceDSIPath\(.*?\n\}',s,re.S)[0]
 b=(root/'tests/dsi_boot.cpp').read_text();fixture=b[b.index('struct IO {'):b.index('Boot capture(')]
 code=r'''
 #include "kern_dsi_quiesce.hpp"
 #include "kern_dsi_clock.hpp"
+#include "kern_dsi_restart.hpp"
+#include "kern_dsi_panel.hpp"
 #include "kern_dsi_boot.hpp"
+#include "kern_dsi_native_backing.hpp"
 #include "kern_display13_fb_memory.hpp"
 #include "kern_display13_power_bridge.hpp"
 #include "kern_xelp_combo_clock.hpp"
@@ -21,6 +25,10 @@ code=r'''
 using namespace XELP::DSI;
 FIXTURE
 std::vector<unsigned> locks;
+#ifndef DSI_SURFACE_REPLAY
+struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}
+ void setProperty(const char*,const void*,unsigned){assert(locks.empty());}};
+#endif
 struct IORecursiveLock{unsigned rank;};struct IOLock{};struct IOSimpleLock{};
 void IORecursiveLockLock(IORecursiveLock *p){assert(locks.empty() || locks.back()<p->rank);locks.push_back(p->rank);}
 void IORecursiveLockUnlock(IORecursiveLock *p){assert(locks.back()==p->rank);locks.pop_back();}
@@ -62,7 +70,7 @@ struct Display13FBIRQIO {
 };
 struct {IORecursiveLock *lock=nullptr;uintptr_t thread=0;XELPComboClock::ClockAllocation allocation;}comboClockTransaction;
 struct {IOLock *lock=nullptr;IOService *controller=nullptr;void *power=nullptr;IOMemoryMap *map=nullptr;IOWorkLoop *workLoop=nullptr;OSObject *dsiPort=nullptr;
- Display13Transcoder::Bindings transcoders;Readout bootDSI;Display13Power::NativeBridge bridge;bool clockFaulted=false,memoryFaulted=false;
+ Display13Transcoder::Bindings transcoders;Readout bootDSI;Display13Power::NativeBridge bridge;bool clockFaulted=false,memoryFaulted=false,watermarkFaulted=false;
  Display13DBUF::State dbuf;unsigned dsiNativeWriters=0;
  struct {IOService *memoryFramebuffer=nullptr;uintptr_t publishedScanout=0;struct {uintptr_t record=0;}scanout;bool destroyingPath=false,wmProgramming=false,wmCommitting=false;}pipe[3];
 }display13FBPower;
@@ -71,6 +79,10 @@ struct {uintptr_t base=0;IOSimpleLock *lock=nullptr;IOService *controller=nullpt
  Display13FBIRQ::HandlerScopes scopes;}display13FBIRQ;
 void adlnFault(bool &fault,unsigned){assert(locks==std::vector<unsigned>({1,2,3}));fault=true;}
 struct {bool ready=true;}dsiFixedMode;
+ #ifndef DSI_SURFACE_REPLAY
+struct {NativeBacking::Record *record=nullptr;bool modeReady=false;} dsiPendingBacking;
+bool dsiPublishedTarget(IOService *){return false;} // This fixture retires backing; it does not retain it for wake.
+#endif
 bool dsiModeTarget(IOService *fb){return fb==display13FBPower.pipe[0].memoryFramebuffer;}
 bool mappingBound=true,failDDIPut=false,failMemoryFree=false,lieMemoryFree=false,loseDBUF=false,loseIRQRestore=false,losePowerFree=false;unsigned memoryFrees=0;
 bool adlnWriterMappingBound(){return mappingBound;}
@@ -97,6 +109,10 @@ struct XE {
  uintptr_t adlnWorkLoopInGate=reinterpret_cast<uintptr_t>(inGate),adlnWorkLoopTryClose=reinterpret_cast<uintptr_t>(tryClose),adlnWorkLoopOpen=reinterpret_cast<uintptr_t>(open);
  struct {unsigned dsi=1;operator unsigned()const{return dsi;}}adlnOutputWiring;void *adlnPlatform=nullptr;
  bool dsiNativeWriterHooksReady=true,dsiResourcesReady=true,dsiStopAttempted=false,dsiIRQParked=false,dsiDDIReleased=false,dsiMemoryReleased=false;
+ bool dsiStopTest=false,dsiPowerTest=false;
+ Panel::Shutdown dsiPanelStop;
+ struct {bool sleeping=false,failed=false;unsigned cycles=0;Surface::Plane plane;
+ uint32_t cursorControl=0,cursorPosition=0,cursorBase=0;Restart::State host;Panel::Result panel;}dsiRuntimePower;
  IOService *adlnTopologyController=nullptr;Profile dsiProfile;Boot dsiBoot;Quiesce::Result dsiStop;Clock::Result dsiClockStop;
  bool dsiArmedBackingOwned(IOService *fb,OSObject*){return armedOwner && pendingFB==fb;}
  bool retireDSINativeBacking(IOService *fb,OSObject*){
@@ -128,7 +144,7 @@ struct XE {
   const auto result=display13FBPower.bridge.putDDI(pio,0);
   IOLockUnlock(display13FBPower.lock);return result.status==Display13Power::Status::Complete;
  }
- bool quiesceDSIPath(IOService*,IOService*,OSObject*);
+ bool quiesceDSIPath(IOService*,IOService*,OSObject*,bool retain=false);
 };
 BODY
 template<class T>void put(void *p,unsigned o,T v){memcpy(static_cast<uint8_t*>(p)+o,&v,sizeof(v));}

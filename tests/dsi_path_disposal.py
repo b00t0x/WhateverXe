@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Exercise production DSI PG/path disposal, optionally replay exact CPU leaves."""
 from pathlib import Path
+from production_source import read_source
 import hashlib,re,subprocess,sys,tempfile
 root=Path(__file__).resolve().parents[1]
-s=(root/'WhateverXe/kern_xe.cpp').read_text()
+s=read_source(root/'WhateverXe/kern_xe.cpp')
 body=re.search(r'bool XE::disposeDSIPath\(.*?\n\}',s,re.S)[0]
 code=r'''
 #include "kern_dsi_quiesce.hpp"

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Execute production mode/update/cursor admission and stop serialization."""
 from pathlib import Path
+from production_source import read_source
 import hashlib,re,subprocess,sys,tempfile
-root=Path(__file__).resolve().parents[1];s=(root/'WhateverXe/kern_xe.cpp').read_text()
-functions='\n'.join(re.search(r'(?:static bool|bool|uint32_t|void|int) (?:XE::)?'+name+r'\(.*?\n\}',s,re.S)[0]
+root=Path(__file__).resolve().parents[1];s=read_source(root/'WhateverXe/kern_xe.cpp')
+functions='\n'.join(re.search(r'(?:static bool|bool|uint32_t|void|int) (?:XE::)?'+name+r'\([^;{]*\{.*?\n\}',s,re.S)[0]
  for name in ['dsiCachePath','dsiLifecycleTarget','wrapDSISetDisplayMode','dsiNativeUpdateAllowed','dsiSharedWriterStopped','wrapDisplay13WMArmUpdate','beginDSINativeWriter','endDSINativeWriter','wrapDSICursorImage','wrapDSICursorState','beginDSIFramebufferWriter','wrapDSIFlipTransaction','wrapDSIGammaTransaction','wrapDSICscTransaction','wrapDSIPlaneGammaTransaction','wrapDSISetGammaTable','wrapDSISetAttribute','wrapDSISetConnectionAttribute','wrapDSISetPowerState','wrapDSISetStream'])
 functions=functions.replace('void XE::endDSINativeWriter(int token) {', 'void XE::endDSINativeWriter(int token) {\n struct EndScope {EndScope(){endingWriter=true;}~EndScope(){endingWriter=false;}} endScope;')
 scope=re.search(r'struct DSIModeScope \{.*?\n\};',s,re.S)[0]
@@ -11,7 +12,7 @@ if len(sys.argv)==2:
  binary=Path(sys.argv[1]).read_bytes()
  assert hashlib.sha256(binary).hexdigest()=='c004fc1ac9ee4157e2e12736f40fa6639bde025a279326beeb9dd48c9b445731'
  for name,width,count in [('processDSINativeWriters',20,2),('processDSINativeTransactions',17,5),('processDSINativeAttributes',20,4)]:
-  installer=re.search(r'bool XE::'+name+r'\(.*?\n\}',s,re.S)[0]
+  installer=re.search(r'bool XE::'+name+r'\([^;{]*\{.*?\n\}',s,re.S)[0]
   offsets=[int(x,0) for x in re.search(r'offsets\[\]=\{([^}]+)',installer)[1].split(',')]
   entries=re.search(r'entries\[\]\['+str(width)+r'\]=\{(.*?)\};',installer,re.S)[1]
   entries=[bytes(int(x,0) for x in row.split(',')) for row in re.findall(r'\{([^}]+)\}',entries)]

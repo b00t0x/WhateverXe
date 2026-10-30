@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Exercise the production surface/retirement adapters on the stop fixture's BAR."""
 from pathlib import Path
+from production_source import read_source
 import re,subprocess,tempfile
 root=Path(__file__).resolve().parents[1]
-s=(root/'WhateverXe/kern_xe.cpp').read_text()
+s=read_source(root/'WhateverXe/kern_xe.cpp')
 functions='\n'.join(re.search(r'bool XE::'+name+r'\(.*?\n\}',s,re.S)[0] for name in
  ('switchDSINativeSurface','dsiArmedBackingOwned','retireDSINativeBacking','publishDSINativeBacking','publishDSINativeMode'))
 state=re.search(r'struct DSIPendingBackingOwner \{.*?\n\};',s,re.S)[0]
@@ -12,7 +13,7 @@ published=re.search(r'static bool dsiPublishedTarget\(.*?\n\}',s,re.S)[0]
 # are rewritten. Allocation/PTE proof and CPU mapping have their own adapter test.
 q=(root/'tests/dsi_quiesce_adapter.py').read_text()
 q=q.split("code=r'''",1)[1].split("'''.replace",1)[0]
-prelude=q[:q.index('struct XE {')]
+prelude='#define DSI_SURFACE_REPLAY\n'+q[:q.index('struct XE {')]
 prelude=prelude.replace('#include "kern_dsi_boot.hpp"','#include "kern_dsi_boot.hpp"\n#include "kern_dsi_surface.hpp"\n#include "kern_dsi_test_image.hpp"\n#include "kern_dsi_native_backing.hpp"\n#include "kern_display13_clock.hpp"')
 b=(root/'tests/dsi_boot.cpp').read_text();prelude=prelude.replace('FIXTURE',b[b.index('struct IO {'):b.index('Boot capture(')])
 prelude=prelude.replace('bool armedOwner=false,failNativeRetire=false;unsigned nativeRetires=0;IOService *pendingFB=nullptr;bool dsiPendingTarget(IOService *fb){return fb && pendingFB==fb;}',state+'\nDSIPendingBackingOwner dsiPendingBacking;\nbool dsiPendingTarget(IOService *fb){return fb && dsiPendingBacking.framebuffer==fb;}')

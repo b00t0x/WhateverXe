@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """An unpublished DSI aperture stays unavailable while private scanout is armed."""
 from pathlib import Path
+from production_source import read_source
 import re,subprocess,tempfile
 root=Path(__file__).resolve().parents[1]
-s=(root/'WhateverXe/kern_xe.cpp').read_text()
+s=read_source(root/'WhateverXe/kern_xe.cpp')
 body=re.search(r'IOMemoryDescriptor \*XE::wrapAlderLakeNAperture\(.*?\n\}',s,re.S)[0]
 code=r'''
 #include "kern_display13_fb_memory.hpp"

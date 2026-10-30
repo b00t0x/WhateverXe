@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Run production lifecycle entry points; no DSI request may reach donor writes."""
 from pathlib import Path
+from production_source import read_source
 import re,subprocess,tempfile
 root=Path(__file__).resolve().parents[1]
-s=(root/'WhateverXe/kern_xe.cpp').read_text()
-functions='\n'.join(re.search(r'(?:static bool|uint32_t|void) (?:XE::)?'+name+r'\(.*?\n\}',s,re.S)[0]
+s=read_source(root/'WhateverXe/kern_xe.cpp')
+functions='\n'.join(re.search(r'(?:static bool|uint32_t|void) (?:XE::)?'+name+r'\([^;{]*\{.*?\n\}',s,re.S)[0]
  for name in ['dsiCachePath','dsiLifecycleTarget','wrapDisplay13TCSetMode','wrapAlderLakeNDisableDisplay'])
 code=r'''
 #include "kern_display13_fb_memory.hpp"

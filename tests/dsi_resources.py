@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Replay the production DSI resource publication boundary and lock order."""
 from pathlib import Path
+from production_source import read_source
 import re, subprocess, tempfile
 root=Path(__file__).resolve().parents[1]
-source=(root/'WhateverXe/kern_xe.cpp').read_text()
+source=read_source(root/'WhateverXe/kern_xe.cpp')
 body=re.search(r'bool XE::bindDSIResources\(.*?\n\}',source,re.S)[0]
 boot=(root/'tests/dsi_boot.cpp').read_text()
 io=boot[boot.index('struct IO {'):boot.index('Boot capture(')]
 code=r'''
 #include "kern_dsi_ggtt.hpp"
+#include "kern_dsi_backlight.hpp"
 #include "kern_display13_power_bridge.hpp"
 #include "kern_display13_fb_irq.hpp"
 #include "kern_xelp_combo_clock.hpp"
@@ -22,8 +24,9 @@ unsigned lockLevel=0;
 struct IORecursiveLock{};struct IOLock{};struct IOSimpleLock{};
 void IORecursiveLockLock(IORecursiveLock*){assert(lockLevel==0);lockLevel=1;}
 void IORecursiveLockUnlock(IORecursiveLock*){assert(lockLevel==1);lockLevel=0;}
-void IOLockLock(IOLock*){assert(lockLevel==1);lockLevel=2;}
-void IOLockUnlock(IOLock*){assert(lockLevel==2);lockLevel=1;}
+unsigned ownerParent=0;
+void IOLockLock(IOLock*){assert(lockLevel<=1);ownerParent=lockLevel;lockLevel=2;}
+void IOLockUnlock(IOLock*){assert(lockLevel==2);lockLevel=ownerParent;}
 bool IOSimpleLockLockDisableInterrupt(IOSimpleLock*){assert(lockLevel==2);lockLevel=3;return true;}
 void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock*,bool saved){assert(lockLevel==3 && saved);lockLevel=2;}
 struct IOService {alignas(8) uint8_t bytes[0x1C20]{};IOService *getMetaClass(){return this;}unsigned getClassSize(){return sizeof(bytes);}};
@@ -53,7 +56,8 @@ struct XE {
  bool dsiCommandTest=false;bool probeDSICommands(IOService*){assert(lockLevel==0);return true;}
  bool display13FBIRQReady=true,dsiNativeWriterHooksReady=true,dsiResourcesReady=false;IOService *adlnTopologyController;
  struct {unsigned dsi=1;} adlnOutputWiring;
- Profile dsiProfile;Boot dsiBoot;GGTTMode dsiGGTT;
+ Profile dsiProfile;Boot dsiBoot;GGTTMode dsiGGTT;Backlight dsiBacklight;
+ void publishDSIBacklight(){assert(lockLevel==0);}
  bool bindDSIResources(IOService *);
 };
 BODY
@@ -65,6 +69,8 @@ int main(){
  XE xe;xe.adlnTopologyController=&controller;xe.dsiProfile=profile();xelpMemory=map.memory;
  xe.dsiBoot=captureBoot(map,AlderLakeN::readDisplay(map,true),xe.dsiProfile,map.memory,true);
  assert(verifyBootPrefix(map,xe.dsiBoot,map.memory));
+ xe.dsiProfile.precision=8;xe.dsiProfile.minimum=6;
+ map.regs[Backlight::Control]=1U<<31;map.regs[Backlight::Period]=480;map.regs[Backlight::Duty]=240;
  map.regs[0x45454]=3;map.regs[0x42000]=0x8E380000;
  auto &b=c.bridge;auto &s=b.state;b.begun=true;b.selectedPorts=3;s.ready=true;s.allowed=Display13Power::All;
  const auto pg=Display13Power::dependencies(Display13Power::nativeScope(1));

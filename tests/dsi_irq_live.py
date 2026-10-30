@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Exercise the production memory-only DSI IRQ snapshot and lock lifetime."""
 from pathlib import Path
+from production_source import read_source
 import re, subprocess, tempfile
 root=Path(__file__).resolve().parents[1]
-s=(root/'WhateverXe/kern_xe.cpp').read_text()
+s=read_source(root/'WhateverXe/kern_xe.cpp')
 parts=[re.search(pattern,s,re.S)[0] for pattern in [
  r'struct Display13FBIRQContext \{.*?\n\};',
  r'static void adlnIRQRecord\(.*?\n\}',

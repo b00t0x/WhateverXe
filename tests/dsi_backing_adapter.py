@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Exercise the production pending-backing adapter with bounded native leaves."""
 from pathlib import Path
+from production_source import read_source
 import hashlib,re,subprocess,sys,tempfile
 root=Path(__file__).resolve().parents[1]
-s=(root/'WhateverXe/kern_xe.cpp').read_text()
+s=read_source(root/'WhateverXe/kern_xe.cpp')
 functions='\n'.join(re.search(r'(?:bool|uint32_t|void) XE::'+name+r'\(.*?\n\}',s,re.S)[0] for name in
  ['wrapDSIBackingAllocate','wrapDSIBackingFree','prepareDSINativeBacking','validateDSINativeBacking','paintDSINativeBacking','discardDSINativeBacking','probeDSINativeBacking'])
 state=re.search(r'struct DSIPendingBackingOwner \{.*?\n\};',s,re.S)[0]

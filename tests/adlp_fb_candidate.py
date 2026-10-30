@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Replay production board selection and WEX/provider binding for firmware-selected fixed HDMI."""
 from pathlib import Path
+from production_source import read_source
 import re,subprocess,tempfile
-r=Path(__file__).resolve().parents[1];s=(r/'WhateverXe/kern_xe.cpp').read_text()
+r=Path(__file__).resolve().parents[1];s=read_source(r/'WhateverXe/kern_xe.cpp')
 f='\n'.join(re.search(re.escape(sig)+r'.*?\n\}',s,re.S).group() for sig in ['Display13OutputWiring XE::display13BoardWiring(', 'bool XE::xelpBindProbe('])
 code=r'''
 #include <cassert>
@@ -21,7 +22,7 @@ struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegis
 XELP::ProbeConfig seen;unsigned calls=0;
 bool configure(void *c,const XELP::ProbeConfig *p){assert(c==(void*)1);seen=*p;++calls;return p->valid();}
 struct XE {
- bool dsiPanelOnly=false,dsiCommandTest=false,dsiPanelTest=false,dsiHostTest=false;
+ bool dsiPanelOnly=false,dsiCommandTest=false,dsiPanelTest=false,dsiHostTest=false,dsiStopTest=false,dsiPowerTest=false;
  XELP::Profile xeProfile=XELP::identify(0x46A68086,12,0x9A498086);
  XELP::VBT::Ports firmwarePorts;
  bool adlpDisplaySelected=true,adlsDisplaySelected=false,tglHDMIWiringApplied=false,tglTCWiringLoaded=false;

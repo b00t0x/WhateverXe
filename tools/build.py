@@ -63,7 +63,7 @@ def main():
    assert not any(x in unresolved for x in ['__ZN2XE','__ZN6XeHost','__ZN11DVMTCalcFix']), 'unresolved local implementation'
   manifest[name]={'identifier':ident,'version':version,'configuration':'RELEASE' if a.release else 'DEBUG','sha256':hashlib.sha256(exe.read_bytes()).hexdigest(),'source_sha256':{str(s.relative_to(ROOT)) if s.is_relative_to(ROOT) else 'Lilu/'+str(s.relative_to(lilu)):hashlib.sha256(s.read_bytes()).hexdigest() for s in sources}}
   if name=='AppleIntelTGLCompat':manifest[name]['personality_sha256']=hashlib.sha256((ROOT/'AppleIntelTGLCompat/GraphicsPolicy.plist').read_bytes()).hexdigest()
- manifest['headers']={str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for d in ['WhateverXe','AppleIntelTGLCompat'] for p in sorted((ROOT/d).glob('*.hpp'))}
+ manifest['headers']={str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for d in ['WhateverXe','AppleIntelTGLCompat'] for p in sorted((ROOT/d).iterdir()) if p.suffix in {'.hpp','.inc'}}
  (out/'build-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
  print(json.dumps({n:v['sha256'] for n,v in manifest.items() if n!='headers'},indent=2))
 if __name__=='__main__':main()

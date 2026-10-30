@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """Execute production firmware-copy and DSI pre-native handoff with mock IOKit."""
 from pathlib import Path
+from production_source import read_source
 import re, subprocess, tempfile
 root=Path(__file__).resolve().parents[1]
-source=(root/'WhateverXe/kern_xe.cpp').read_text()
+source=read_source(root/'WhateverXe/kern_xe.cpp')
 # Observation must precede the destructive external-output trial and must
 # use scratch storage, not publish the certificate to the live DSI owner.
-audit_start=source.index('void XE::auditDSIBoot(')
-audit_end=source.index('void XE::adlnBootstrap(',audit_start)
-audit_source=source[audit_start:audit_end]
+audit_source=re.search(r'void XE::auditDSIBoot\([^;{]*\{.*?\n\}',source,re.S)[0]
 assert 'if(!checkKernelArgument("-wex-dsi-audit"))return;' in audit_source
 assert 'scratch->boot,scratch->audit' in audit_source and '"WEXDSIBootAudit"' in audit_source
 assert 'dsiBoot=' not in audit_source and 'write(' not in audit_source
-bootstrap=source[audit_end:]
+bootstrap=re.search(r'void XE::adlnBootstrap\([^;{]*\{.*?\n\}',source,re.S)[0]
 assert bootstrap.index('auditDSIBoot(pci,') < bootstrap.index('Display13DSITrial::transfer(')
 functions=audit_source+'\n'+'\n'.join(re.search(r'bool XE::'+name+r'\(.*?\n\}',source,re.S)[0]
                     for name in ['prepareDSIFirmware','prepareDisplay13BootScanout'])

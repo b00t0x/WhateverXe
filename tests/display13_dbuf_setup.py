@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Exercise the production allocation adapter with real DBUF ownership."""
 from pathlib import Path
+from production_source import read_source
 import re, subprocess, tempfile
 r = Path(__file__).resolve().parents[1]
-s = (r / 'WhateverXe/kern_xe.cpp').read_text()
+s = read_source(r/'WhateverXe/kern_xe.cpp')
 guard = re.search(r'bool XE::dsiSharedWriterStopped\(.*?\n\}', s, re.S).group()
 body = re.search(r'void XE::adlnSetupDBUFPipe\(.*?\n\}', s, re.S).group()
 pipewm = re.search(r'void XE::wrapAlderLakeNPipeWMSetup\(.*?\n\}', s, re.S).group()
