@@ -7561,6 +7561,15 @@ uint32_t XE::wrapDSIGetModeInformation(IOService *fb,int32_t mode,void *raw) {
             *static_cast<XELP::DSI::AppleAdapter::ModeInformation *>(raw),rotated,selected->horizontalScaled,selected->verticalScaled))return kIOReturnNotReady;
         return result;
     }();
+    if(dsiModeTarget(fb)) {
+        DSIModeScope scope(fb);
+        for(unsigned i=0;scope.lock && i<dsiFixedMode.offerCount;++i)if(dsiFixedMode.offered[i].reservedA[0]==static_cast<uint32_t>(mode)) {
+            uint32_t receipt[12] {1,static_cast<uint32_t>(mode),result};
+            if(raw && !result)memcpy(receipt+3,raw,36);
+            char key[40];snprintf(key,sizeof(key),"WEXDSIModeInfo%u",i);
+            IORegistryEntry::getRegistryRoot()->setProperty(key,receipt,sizeof(receipt));break;
+        }
+    }
     recordDSIClient(fb,5,static_cast<uint32_t>(mode),result);
     return result;
 }
@@ -21471,6 +21480,13 @@ uint32_t XE::wrapTGLPixelInfo(void *fb, int mode, int depth, int aperture, void 
 	if (!result && info) memcpy(r + 6, info, 172);
 	char key[48]; snprintf(key, sizeof(key), "TGLPixelFB%uDepth%d", *reinterpret_cast<uint32_t *>(static_cast<uint8_t *>(fb) + 0x1DC), depth);
 	IORegistryEntry::getRegistryRoot()->setProperty(key, r, sizeof(r));
+    if(dsiModeTarget(static_cast<IOService *>(fb))) {
+        DSIModeScope scope(static_cast<IOService *>(fb));
+        for(unsigned i=0;scope.lock && i<dsiFixedMode.offerCount;++i)if(dsiFixedMode.offered[i].reservedA[0]==static_cast<uint32_t>(mode)) {
+            snprintf(key,sizeof(key),"WEXDSIPixelInfo%u",i);
+            IORegistryEntry::getRegistryRoot()->setProperty(key,r,sizeof(r));break;
+        }
+    }
 	return result;
 }
 IOMemoryDescriptor *XE::wrapTGLAperture(void *fb, int aperture) {
