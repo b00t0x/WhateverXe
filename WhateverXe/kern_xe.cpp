@@ -11608,7 +11608,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         }
         void delayUs(unsigned us){if(us>=1000)IOSleep((us+999)/1000);else IODelay(us);}
     } io{c.map,owned,irq.lock,dsiBoot.source.identity.pll};
-    uint64_t receipt[24] {1,1,0,power.cycles,power.sleeping};
+    uint64_t receipt[24] {1,1,0,power.cycles,power.sleeping},irqReceipt[24] {1};
     bool masked=false,restored=false,rearmed=false,cursor=false,complete=false;uint32_t master=0;
     auto stoppedPlane=power.plane;stoppedPlane.control&=~(1U<<31);
     receipt[5]=owned() && power.host.stopped && !power.host.started && !power.panel.attempted &&
@@ -11667,7 +11667,22 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
                 const auto after=irqIO.read(Display13FBIRQ::Master);
                 restored=after!=UINT32_MAX && (after&Display13FBIRQ::Enable);irq.state.enabled=restored;
                 if(!restored)irq.state.faulted=true;
-                if(restored && cursor && owned())rearmed=Display13FBIRQ::extendActivePipes(irqIO,irq.state,irq.admittedPipes)==Display13FBIRQ::Status::Complete && (irq.state.active&1);
+                if(restored && cursor && owned()) {
+                    const auto actual=Display13FBIRQ::readActivePipes(irqIO,irq.admittedPipes,irq.state.transcoders);
+                    irqReceipt[1]=irq.admittedPipes;irqReceipt[2]=irq.state.active;irqReceipt[3]=actual.active;
+                    irqReceipt[4]=static_cast<uint32_t>(actual.status);irqReceipt[5]=wells;
+                    for(unsigned p=0;p<3;++p)if(Display13FBIRQ::powered(wells,p)) {
+                        irqReceipt[6+3*p]=Display13Transcoder::control(irqIO,p,irq.state.transcoders);
+                        irqReceipt[7+3*p]=irqIO.read(Display13FBIRQ::PipeIIR(p)+4);
+                        irqReceipt[8+3*p]=irqIO.read(Display13FBIRQ::PipeIIR(p)-4);
+                    }
+                    const auto status=Display13FBIRQ::extendActivePipes(irqIO,irq.state,irq.admittedPipes);
+                    irqReceipt[15]=static_cast<uint32_t>(status);irqReceipt[16]=irq.state.active;
+                    irqReceipt[17]=static_cast<uint32_t>(irq.state.firstFailure);
+                    irqReceipt[18]=irq.state.failureRegister;irqReceipt[19]=irq.state.failureBits;
+                    irqReceipt[20]=irq.state.enabled;irqReceipt[21]=irq.state.faulted;
+                    rearmed=status==Display13FBIRQ::Status::Complete && (irq.state.active&1);
+                }
             }
             irq.quiescing=false;irq.blockedPipes=0;
             adlnIRQCache(controller,irqIO);IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
@@ -11687,6 +11702,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     if(acquired)reinterpret_cast<void (*)(IOWorkLoop *)>(adlnWorkLoopOpen)(loop);
     loop->release();IORecursiveLockUnlock(mutex);
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIRuntimePower",receipt,sizeof(receipt));
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIResumeIRQ",irqReceipt,sizeof(irqReceipt));
     publishDSIBacklight();
     return complete;
 }
