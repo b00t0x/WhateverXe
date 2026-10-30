@@ -303,6 +303,11 @@ int main() {
     assert(!associations(shared.controller,sizeof(shared.controller),shared.framebuffer,sizeof(shared.framebuffer),owner+8));
     put(shared.framebuffer,0x4348,uintptr_t(1));
     assert(!associations(shared.controller,sizeof(shared.controller),shared.framebuffer,sizeof(shared.framebuffer),owner));
+    put(shared.framebuffer,0x4340,uintptr_t(0x543200));
+    assert(!associations(shared.controller,sizeof(shared.controller),shared.framebuffer,sizeof(shared.framebuffer),owner,true));
+    assert(!associations(shared.controller,sizeof(shared.controller),shared.framebuffer,sizeof(shared.framebuffer),owner,true,0x543208));
+    assert(associations(shared.controller,sizeof(shared.controller),shared.framebuffer,sizeof(shared.framebuffer),owner,true,0x543200));
+    assert(!associations(shared.controller,sizeof(shared.controller),shared.framebuffer,sizeof(shared.framebuffer),0,true,0x543200));
     Fixture changedOwner;put(changedOwner.controller,0xC0,owner);changedOwner.changeOwner=true;
     assert(Display13FBMemory::inspect(changedOwner,changedOwner.controller,sizeof(changedOwner.controller),changedOwner.framebuffer,sizeof(changedOwner.framebuffer),0x10000000,memory,true,owner).status==Status::StateChanged);
     Fixture sysmem;put(sysmem.controller,0xE49,uint8_t(1));assert(sysmem.inspect().status==Status::Association);

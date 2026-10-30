@@ -27,6 +27,16 @@ int main() {
         offered.reservedA[0]=id;assert(!AppleAdapter::clientTiming(t,offered,0));
     }
     offered.reservedA[0]=0x80001001;assert(AppleAdapter::clientTiming(t,offered,1));
+    for(unsigned rotation:{0x30U,0x50U}) {
+        auto r=offered;r.scalerFlags=rotation;
+        assert(AppleAdapter::presentationTiming(t,r,1));
+        r.horizontalScaled=t.horizontalActive;r.verticalScaled=t.verticalActive;
+        assert(AppleAdapter::presentationTiming(t,r,1));
+        r.horizontalScaled=1620;r.verticalScaled=2880;
+        assert(!AppleAdapter::presentationTiming(t,r,1));
+        r=offered;r.scalerFlags=rotation;r.horizontalActive=1920;r.verticalActive=1080;
+        assert(!AppleAdapter::presentationTiming(t,r,1));
+    }
     assert(!AppleAdapter::acceptsMode(0x80001002,0x80001001));
     uint8_t edid[128];assert(AppleAdapter::makePanelEDID(p.mode,edid));
     unsigned sum=0;for(auto b:edid)sum+=b;assert(!(sum&255));

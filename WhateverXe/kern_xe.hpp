@@ -10,6 +10,7 @@
 
 #include "kern_tgl_tc_boot.hpp"
 #include "kern_dsi_boot.hpp"
+#include "kern_dsi_apple_timing.hpp"
 #include "kern_dsi_ggtt.hpp"
 #include "kern_dsi_surface.hpp"
 #include "kern_dsi_quiesce.hpp"
@@ -276,9 +277,11 @@ private:
     bool probeDSICommands(IOService *);
     mach_vm_address_t orgDSIBacking[2] {};
     bool processDSIBackingHooks(KernelPatcher &,size_t,mach_vm_address_t,size_t);
-    mach_vm_address_t dsiComputeGeometry {},dsiModeCPU[3] {};
+    mach_vm_address_t dsiComputeGeometry {},dsiModeCPU[4] {};
     bool publishDSINativeBacking();
     bool publishDSINativeMode(IOService *);
+    uint32_t setDSIPresentation(IOService *,uint32_t,const XELP::DSI::AppleAdapter::Timing &);
+    bool releaseDSILogical(IOService *);
     bool probeDSIModeGeometry(IOService *);
     bool prepareDSINativeBacking(IOService *);
     bool validateDSINativeBacking();

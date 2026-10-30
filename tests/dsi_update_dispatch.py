@@ -44,7 +44,11 @@ struct {IOLock *lock=nullptr;IOService *controller=nullptr;OSObject *dsiPort=nul
  struct {struct {bool faulted=false,suspended=false;}state;}bridge;struct {bool faulted=false;}dbuf;
  struct {IOService *memoryFramebuffer=nullptr;bool destroyingPath=false;}pipe[3];
  Display13Transcoder::Bindings transcoders;}display13FBPower;
-struct {uint32_t clientMode=0x10000;}dsiFixedMode;
+struct {uint32_t clientMode=0x10000;uintptr_t changingThread=0;bool presentationFault=false;}dsiFixedMode;
+const XELP::DSI::AppleAdapter::Timing *dsiPresentation(uint32_t mode){
+ static XELP::DSI::AppleAdapter::Timing t;
+ return XELP::DSI::AppleAdapter::acceptsMode(mode,dsiFixedMode.clientMode)?&t:nullptr;
+}
 IOService *panel=nullptr,*nativeFB=nullptr;bool dsiModeTarget(IOService *f){return f && f==panel;}
 constexpr uint32_t kIOReturnNotReady=0xe00002d8U,kIOReturnUnsupported=0xe00002c7U,kIOReturnSuccess=0;
 #define FunctionCast(f,p) reinterpret_cast<decltype(&f)>(p)
@@ -87,6 +91,8 @@ struct XE {
   return wakeOK;
  }
  bool dsiPanelOnly=false,publicationReady=false;bool publishDSINativeMode(IOService*){return publicationReady;}
+ uint32_t setDSIPresentation(IOService *fb,uint32_t mode,const XELP::DSI::AppleAdapter::Timing &){
+  assert(fbLock.depth && !owner);memcpy(reinterpret_cast<uint8_t *>(fb)+0x4250,&mode,sizeof(mode));return 0;}
  bool dsiNativeWriterHooksReady=true;uintptr_t orgDSICursor[2]{};
  uintptr_t orgDSIMode[6]{};
  static void recordDSIClient(IOService*,unsigned,uint64_t,uint32_t){};

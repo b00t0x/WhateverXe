@@ -6,14 +6,17 @@
 #include "kern_display13_fb_memory.hpp"
 namespace XELP { namespace DSI { namespace AppleAdapter {
 // The caller holds the FB mutex and validates object classes/ownership. No
-// scaled mode is admitted: native allocation would need a different contract.
+// resized mode is admitted. Quarter-turn preparation retains the physical
+// scanout; its separate logical buffer must be retired by the caller first.
 template<class Compute> bool prepareGeometry(void *fb,void *path,const Profile &profile,
-                                             const Timing &timing,Compute compute) {
+                                             const Timing &timing,Compute compute,bool presentation=false) {
     using Display13FBMemory::field;
     Timing expected;
-    if(!fb || !path || !makeTiming(profile,expected) || memcmp(&expected,&timing,sizeof(timing)) ||
+    if(!makeTiming(profile,expected))return false;
+    if(presentation && (timing.scalerFlags==0x30 || timing.scalerFlags==0x50))expected.scalerFlags=timing.scalerFlags;
+    if(!fb || !path || memcmp(&expected,&timing,sizeof(timing)) ||
        Display13FBMemory::singlePath<void *>(fb)!=path || field<uintptr_t>(fb,0x4340) ||
-       field<uintptr_t>(fb,0x4348))return false;
+       (!presentation && field<uintptr_t>(fb,0x4348)))return false;
     // Preserve the native CPU state if the donor produces an unsupported
     // transform. The helper writes only these geometry fields for this mode.
     uint8_t savedFB[0x30],savedPath[0x20];
@@ -28,7 +31,7 @@ template<class Compute> bool prepareGeometry(void *fb,void *path,const Profile &
         field<uint32_t>(fb,0x4314)==pitch*m.height && field<uint32_t>(fb,0x4320)==m.width &&
         field<uint32_t>(fb,0x4324)==m.height && field<uint32_t>(fb,0x4328)==m.width &&
         field<uint32_t>(fb,0x432C)==m.height && field<uint32_t>(fb,0x4334)==pitch &&
-        field<uint32_t>(fb,0x4338)==1 && !field<uint64_t>(path,0xF0) &&
+        field<uint32_t>(fb,0x4338)==(timing.scalerFlags ? 0x10U : 1U) && !field<uint64_t>(path,0xF0) &&
         field<uint32_t>(path,0xF8)==m.width && field<uint32_t>(path,0xFC)==m.height &&
         !field<uint64_t>(path,0x100) && field<uint32_t>(path,0x108)==m.width &&
         field<uint32_t>(path,0x10C)==m.height;

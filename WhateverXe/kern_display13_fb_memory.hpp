@@ -101,11 +101,11 @@ template<class T> inline T singlePath(const void *framebuffer) {
 // private object. Pool zero is the donor's pre-existing stolen allocation.
 inline bool associations(const void *controller, size_t controllerBytes,
                          const void *framebuffer, size_t framebufferBytes, uintptr_t expectedOwner=0,
-                         bool nativeSurface=false) {
+                         bool nativeSurface=false,uintptr_t logicalSurface=0) {
     if (!controller || !framebuffer || controllerBytes<0x1C20 || framebufferBytes<0x4B90 ||
         field<uintptr_t>(framebuffer,0x1D0)!=reinterpret_cast<uintptr_t>(controller) ||
         field<uintptr_t>(controller,0xC0)!=expectedOwner || field<uint8_t>(controller,0xE49) ||
-        field<uintptr_t>(framebuffer,0x4340) ||
+        field<uintptr_t>(framebuffer,0x4340)!=logicalSurface || (logicalSurface && !expectedOwner) ||
         (field<uintptr_t>(framebuffer,0x4348) && (!nativeSurface || !expectedOwner))) return false;
     const auto index=field<uint32_t>(framebuffer,0x1DC),count=field<uint32_t>(controller,0xD5C);
     return count && count<=3 && index<count &&
@@ -286,9 +286,9 @@ struct SurfaceReadout {
 // separately so publication during the inspection is detected.
 template<class IO> SurfaceReadout inspectSurfaceRecord(IO &io,const void *controller,size_t controllerBytes,
                     const void *fb,size_t fbBytes,uintptr_t owner,uint64_t reserve,uint64_t gpuLimit,
-                    const XELPMemory::Layout &memory,const void *surface,const void *attached) {
+                    const XELPMemory::Layout &memory,const void *surface,const void *attached,uintptr_t logicalSurface=0) {
     SurfaceReadout r;r.reserve=reserve;
-    if(!owner || !associations(controller,controllerBytes,fb,fbBytes,owner,true)) {
+    if(!owner || !associations(controller,controllerBytes,fb,fbBytes,owner,true,logicalSurface)) {
         r.status=SurfaceStatus::Association;return r;
     }
     if(field<const void *>(fb,0x4348)!=attached) {r.status=SurfaceStatus::Association;return r;}
@@ -325,16 +325,17 @@ template<class IO> SurfaceReadout inspectSurfaceRecord(IO &io,const void *contro
         }
         ++r.verifiedPages;
     }
-    if(!associations(controller,controllerBytes,fb,fbBytes,owner,true) ||
+    if(!associations(controller,controllerBytes,fb,fbBytes,owner,true,logicalSurface) ||
        field<const void *>(fb,0x4348)!=attached || memcmp(snapshot,surface,sizeof(snapshot)) || !io.memoryReady(r.map,r.memory,owner,r.bytes)) {
         r.status=SurfaceStatus::StateChanged;return r;
     }
     r.status=SurfaceStatus::Complete;return r;
 }
 template<class IO> SurfaceReadout inspectSurface(IO &io,const void *controller,size_t controllerBytes,
-                    const void *fb,size_t fbBytes,uintptr_t owner,uint64_t reserve,uint64_t gpuLimit,const XELPMemory::Layout &memory) {
+                    const void *fb,size_t fbBytes,uintptr_t owner,uint64_t reserve,uint64_t gpuLimit,const XELPMemory::Layout &memory,
+                    uintptr_t logicalSurface=0) {
     const auto surface=fb && fbBytes>=0x4B90 ? field<const void *>(fb,0x4348) : nullptr;
-    return inspectSurfaceRecord(io,controller,controllerBytes,fb,fbBytes,owner,reserve,gpuLimit,memory,surface,surface);
+    return inspectSurfaceRecord(io,controller,controllerBytes,fb,fbBytes,owner,reserve,gpuLimit,memory,surface,surface,logicalSurface);
 }
 // First DSI handoff: the real FB still owns stolen slot zero while the GPU
 // allocator owns a pending record beyond the reserved prefix. This proves

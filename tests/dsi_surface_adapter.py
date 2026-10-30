@@ -86,6 +86,7 @@ struct XE {
   c.pipe[0].wmLatch.status=Display13WM::Status::Complete;c.pipe[0].watermarkClockHz=358400000;
  }
  bool publishDSINativeBacking();bool publishDSINativeMode(IOService*);
+ bool releaseDSILogical(IOService *fb){return !Display13FBMemory::field<uintptr_t>(fb,0x4340);}
  bool switchDSINativeSurface();bool dsiArmedBackingOwned(IOService*,OSObject*);bool retireDSINativeBacking(IOService*,OSObject*);
 };
 '''

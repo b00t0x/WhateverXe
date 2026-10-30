@@ -31,7 +31,9 @@ code = r'''
 #include <vector>
 #include <cstdio>
 constexpr uint32_t kIOReturnSuccess=0,kIOReturnNotReady=0xe00002d8U,
- kIOReturnUnsupported=0xe00002c7U,kIOReturnBadArgument=0xe00002c2U;
+ kIOReturnUnsupported=0xe00002c7U,kIOReturnBadArgument=0xe00002c2U,kIOReturnNoResources=0xe00002bdU;
+void *current_thread(){return reinterpret_cast<void *>(1);}
+#define arrsize(x) (sizeof(x)/sizeof(*(x)))
 unsigned alive=0,calls[5]{};bool dataOK=true,arrayOK=true,publishOK=true,geometryOK=true,clearOK=true;
 struct Meta {unsigned getClassSize(){return 0x4b90;}} meta;
 struct OSObject {
@@ -47,7 +49,7 @@ struct OSData:OSObject {
 };
 struct OSArray:OSObject {
  std::vector<OSObject*> objects;
- static OSArray *withCapacity(unsigned n){assert(n==1);return arrayOK?new OSArray:nullptr;}
+ static OSArray *withCapacity(unsigned n){assert(n>=1 && n<=2);return arrayOK?new OSArray:nullptr;}
  bool setObject(OSObject *p){p->retain();objects.push_back(p);return true;}
  unsigned getCount(){return objects.size();}OSObject *getObject(unsigned i){return i<objects.size()?objects[i]:nullptr;}
  ~OSArray(){for(auto p:objects)p->release();}
@@ -56,6 +58,7 @@ struct IOService:OSObject {
  alignas(8) uint8_t storage[0x4c00]{};std::map<std::string,OSObject*> properties;
  bool setProperty(const char *k,OSObject *p){if(!publishOK)return false;p->retain();removeProperty(k);properties[k]=p;return true;}
  void setProperty(const char *,bool){}
+ bool setProperty(const char *k,const void *p,unsigned n){auto d=OSData::withBytes(p,n);bool ok=setProperty(k,d);d->release();return ok;}
  OSObject *getProperty(const char *k){auto i=properties.find(k);return i==properties.end()?nullptr:i->second;}
  void removeProperty(const char *k){auto i=properties.find(k);if(i!=properties.end()){i->second->release();properties.erase(i);}}
  ~IOService(){for(auto i:properties)i.second->release();}
@@ -215,6 +218,17 @@ int main(){
  assert(!XE::wrapDSIValidateMode(fb,static_cast<int32_t>(0x80003000),nullptr,&timing) && timing==dsiFixedMode.data->getBytesNoCopy());
  assert(!XE::wrapDSIGetModes(fb,&mode) && static_cast<uint32_t>(mode)==0x80003000);
  assert(!XE::wrapDSIGetCurrentMode(fb,&current,&depth) && static_cast<uint32_t>(current)==0x80003000);
+ // Rotation offers must survive validation without changing the retained wire mode.
+ auto rotated=offered;rotated.reservedA[0]=0x80005000;rotated.scalerFlags=0x30;
+ auto rotationList=OSArray::withCapacity(2);auto rotationData=OSData::withBytes(&rotated,sizeof(rotated));
+ rotationList->setObject(renewedData);rotationList->setObject(rotationData);
+ assert(!XE::wrapDSISetDetailedTimings(fb,rotationList));
+ assert(XE::wrapDSIGetModeCount(fb)==2);int32_t pair[2];assert(!XE::wrapDSIGetModes(fb,pair));
+ assert(static_cast<uint32_t>(pair[1])==rotated.reservedA[0]);
+ assert(!XE::wrapDSIValidateMode(fb,pair[1],nullptr,&timing));
+ assert(static_cast<const Timing *>(timing)->scalerFlags==0x30 && !dsiFixedMode.timing.scalerFlags);
+ assert(!XE::wrapDSIGetModeInformation(fb,pair[1],&info) && info.width==1080 && info.height==1920);
+ rotationData->release();rotationList->release();
  renewedData->bytes[64]^=1;
  assert(XE::wrapDSISetDetailedTimings(fb,renewed)==kIOReturnUnsupported && dsiFixedMode.clientMode==0x80003000);
  renewedData->release();renewed->release();

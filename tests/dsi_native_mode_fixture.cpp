@@ -114,7 +114,11 @@ int main(int argc,char **argv) {
         for(uint32_t rotation:{0x30U,0x50U})for(bool hidpi:{false,true}) {
             auto presentation=t;presentation.scalerFlags=rotation;
             if(hidpi){presentation.horizontalScaled=1620;presentation.verticalScaled=2880;}
-            compute(fb,&presentation);
+            put(fb,0x4348,uintptr_t(0x12345000));
+            if(hidpi) {
+                assert(!AppleAdapter::prepareGeometry(fb,path,p,presentation,compute,true));
+                compute(fb,&presentation); // reference only; not admitted by the production adapter
+            } else assert(AppleAdapter::prepareGeometry(fb,path,p,presentation,compute,true));
             assert(field<uint32_t>(fb,0x430C)==(hidpi?1620U:1080U));
             assert(field<uint32_t>(fb,0x4310)==(hidpi?2880U:1920U));
             for(unsigned offset:{0x4320U,0x4328U})assert(field<uint32_t>(fb,offset)==1080);
@@ -126,7 +130,7 @@ int main(int argc,char **argv) {
             auto record=field<NativeBacking::Record *>(fb,0x4340);
             assert(record && record->pitch==(hidpi?6528U:4352U));
             assert(record->bytes==record->pitch*(hidpi?2880U:1920U));
-            assert(!field<uintptr_t>(fb,0x4348)); // Logical allocation does not own the scanout.
+            assert(field<uintptr_t>(fb,0x4348)==0x12345000); // Logical allocation preserves the scanout.
             releaseLogical(fb);assert(!field<uintptr_t>(fb,0x4340));
         }
         // A failing accelerator callback still publishes the heap record.

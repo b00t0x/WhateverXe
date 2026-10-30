@@ -50,6 +50,15 @@ inline bool clientTiming(const Timing &fixed,const Timing &offered,unsigned inde
 inline bool acceptsMode(uint32_t mode,uint32_t clientMode) {
     return mode==FixedModeID || mode==clientMode;
 }
+// Presentation changes never alter the qualified DSI wire timing. Initially
+// admit only native-size quarter-turns; scaled sources are a separate stage.
+inline bool presentationTiming(const Timing &fixed,const Timing &offered,unsigned index) {
+    if(offered.scalerFlags!=0x30 && offered.scalerFlags!=0x50)return false;
+    if((offered.horizontalScaled || offered.verticalScaled) &&
+       (offered.horizontalScaled!=fixed.horizontalActive || offered.verticalScaled!=fixed.verticalActive))return false;
+    auto native=offered;native.scalerFlags=0;native.horizontalScaled=0;native.verticalScaled=0;
+    return clientTiming(fixed,native,index);
+}
 // Synthetic Apple enumeration descriptor with timing from the panel profile.
 // EDID wire layout reference: Linux v6.12 include/drm/drm_edid.h. This is not
 // an EDID read from the panel and does not advertise DP/HDMI, HDR or DPMS.
