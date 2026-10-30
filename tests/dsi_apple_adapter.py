@@ -66,7 +66,7 @@ struct IOService:OSObject {
 };
 struct IORegistryEntry {void setProperty(const char *key,OSData *d){assert(!strcmp(key,"WEXDSITimingRejected") && d->getLength()==160);}
  static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}
- void setProperty(const char *key,const void *p,unsigned n){if(!strcmp(key,"WEXDSITimingList")){assert(n<=32*160 && !(n%160));return;}if(!strcmp(key,"WEXDSITimingRejected")){assert(n==160);return;}assert(n==128);if(!strcmp(key,"WEXDSITimingOffer"))return;const auto w=static_cast<const uint64_t *>(p);assert(w[0]==1 && w[1]<13 && w[2]);}};
+ void setProperty(const char *key,const void *p,unsigned n){if(!strncmp(key,"WEXDSIModeInfo",14)){assert(n==48);return;}if(!strcmp(key,"WEXDSITimingList")){assert(n<=32*160 && !(n%160));return;}if(!strcmp(key,"WEXDSITimingRejected")){assert(n==160);return;}assert(n==128);if(!strcmp(key,"WEXDSITimingOffer"))return;const auto w=static_cast<const uint64_t *>(p);assert(w[0]==1 && w[1]<13 && w[2]);}};
 struct IORecursiveLock {unsigned depth=0;};struct IOLock {unsigned depth=0;};
 void IORecursiveLockLock(IORecursiveLock *l){++l->depth;}void IORecursiveLockUnlock(IORecursiveLock *l){assert(l->depth);--l->depth;}
 void IOLockLock(IOLock *l){++l->depth;}void IOLockUnlock(IOLock *l){assert(l->depth);--l->depth;}
