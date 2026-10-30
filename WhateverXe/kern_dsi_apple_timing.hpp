@@ -34,10 +34,11 @@ inline bool annotateMode(const Mode &m,ModeInformation &info) {
     info.flags|=0x02000407;
     return true;
 }
-// The observed Big Sur detailed-mode namespace carries the array index in
-// the low ten bits. Admit a client ID only after its full timing is matched.
+// CoreDisplay can replace the reserved client IDs when rebuilding its mode
+// list. Treat reserved IDs as opaque: the complete
+// timing, not an assumed generation/index bit layout, qualifies this alias.
 inline bool clientTiming(const Timing &fixed,const Timing &offered,unsigned index) {
-    if(index>=1024 || offered.reservedA[0]!=(0x80001000U|index) || offered.signalLevels>1)return false;
+    if(index>=1024 || offered.reservedA[0]<0x80000000U || offered.reservedA[0]==UINT32_MAX || offered.signalLevels>1)return false;
     const uint64_t rounded=((fixed.pixelClock+5000)/10000)*10000;
     if(offered.pixelClock!=rounded || offered.minPixelClock!=rounded || offered.maxPixelClock!=rounded ||
        rounded<fixed.minPixelClock || rounded>fixed.maxPixelClock)return false;

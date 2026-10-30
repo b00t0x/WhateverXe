@@ -207,6 +207,17 @@ int main(){
  assert(!XE::wrapDSIGetModeInformation(fb,mode,&info) && info.width==1080 && info.height==1920 && !info.depth);
  offeredData->bytes[64]^=1;
  assert(XE::wrapDSISetDetailedTimings(fb,list)==kIOReturnUnsupported && dsiFixedMode.clientMode==0x80001001);
+ offered.reservedA[0]=0x80003000;
+ auto renewed=OSArray::withCapacity(1);auto renewedData=OSData::withBytes(&offered,sizeof(offered));renewed->setObject(renewedData);
+ assert(!XE::wrapDSISetDetailedTimings(fb,renewed) && dsiFixedMode.clientMode==0x80003000);
+ assert(dsiModeCoherent(fb) && renewed->refs==1);
+ assert(XE::wrapDSIValidateMode(fb,static_cast<int32_t>(0x80001001),nullptr,&timing)==kIOReturnBadArgument);
+ assert(!XE::wrapDSIValidateMode(fb,static_cast<int32_t>(0x80003000),nullptr,&timing) && timing==dsiFixedMode.data->getBytesNoCopy());
+ assert(!XE::wrapDSIGetModes(fb,&mode) && static_cast<uint32_t>(mode)==0x80003000);
+ assert(!XE::wrapDSIGetCurrentMode(fb,&current,&depth) && static_cast<uint32_t>(current)==0x80003000);
+ renewedData->bytes[64]^=1;
+ assert(XE::wrapDSISetDetailedTimings(fb,renewed)==kIOReturnUnsupported && dsiFixedMode.clientMode==0x80003000);
+ renewedData->release();renewed->release();
  wrongData->release();offeredData->release();list->release();
  fb->removeProperty("IOFBDetailedTimings");assert(!XE::wrapDSIGetModeCount(fb) && dsiFixedMode.array->refs==1);
  assert(XE::wrapDSIValidateMode(fb,mode,nullptr,nullptr)==kIOReturnNotReady);

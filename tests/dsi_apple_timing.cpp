@@ -1,6 +1,7 @@
 #include "kern_dsi_apple_timing.hpp"
 #include <cassert>
 #include <cstdio>
+#include <initializer_list>
 using namespace XELP::DSI;
 int main() {
     Profile p;p.status=ProfileStatus::Valid;p.mode={135255,1080,46,22,2,1920,82,40,2,86,154};
@@ -17,7 +18,14 @@ int main() {
         auto corrupt=offered;reinterpret_cast<uint8_t*>(&corrupt)[offset]^=0x80;
         assert(!AppleAdapter::clientTiming(t,corrupt,0));
     }
-    assert(!AppleAdapter::clientTiming(t,offered,1));
+    assert(AppleAdapter::clientTiming(t,offered,1)); // IDs are opaque, not array positions.
+    assert(!AppleAdapter::clientTiming(t,offered,1024));
+    for(uint32_t id:{0x80002000U,0x80003000U,0x80005007U}) {
+        offered.reservedA[0]=id;assert(AppleAdapter::clientTiming(t,offered,0));
+    }
+    for(uint32_t id:{0U,AppleAdapter::FixedModeID,0x7FFFFFFFU,UINT32_MAX}) {
+        offered.reservedA[0]=id;assert(!AppleAdapter::clientTiming(t,offered,0));
+    }
     offered.reservedA[0]=0x80001001;assert(AppleAdapter::clientTiming(t,offered,1));
     assert(!AppleAdapter::acceptsMode(0x80001002,0x80001001));
     uint8_t edid[128];assert(AppleAdapter::makePanelEDID(p.mode,edid));
