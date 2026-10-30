@@ -7291,7 +7291,11 @@ bool XE::processDisplay13DSIModes(KernelPatcher &patcher,size_t index,mach_vm_ad
     if(detailedFn!=address+0x2FFCA || sourceFn!=address+0x30AD8 ||
        memcmp(reinterpret_cast<void *>(detailedFn),detailedEntry,sizeof(detailedEntry)) ||
        memcmp(reinterpret_cast<void *>(sourceFn),sourceEntry,sizeof(sourceEntry)))return false;
+    const char *pixel="__ZN21AppleIntelFramebuffer19getPixelInformationEiiiP18IOPixelInformation";
+    const auto pixelFn=patcher.solveSymbol<mach_vm_address_t>(index,pixel,address,size);patcher.clearError();
+    if(pixelFn!=address+0x324A4 || memcmp(reinterpret_cast<void *>(pixelFn),entry,sizeof(entry)))return false;
     KernelPatcher::RouteRequest routes[]={
+        {pixel,wrapDSIPixelInfo,orgDSIPixelInfo},
         {detailed,wrapDSIValidateDetailed,orgDSIDetailedValidation},
         {source,wrapDSIValidateSource,orgDSISourceValidation},
         {scaler,wrapDSIScalerSupport,orgDSIScalerSupport},
@@ -7549,6 +7553,18 @@ uint32_t XE::wrapDSIGetModeCount(IOService *fb) {
     recordDSIClient(fb,4,0,result);
     return result;
 }
+uint32_t XE::wrapDSIPixelInfo(IOService *fb,int32_t mode,int32_t depth,int32_t aperture,void *info) {
+    const auto result=FunctionCast(wrapDSIPixelInfo,callbackXE->orgDSIPixelInfo)(fb,mode,depth,aperture,info);
+    if(dsiModeTarget(fb)) {
+        static uint32_t sequence=0;uint64_t record[28] {1,__sync_add_and_fetch(&sequence,1),
+            static_cast<uint32_t>(mode),static_cast<uint32_t>(depth),static_cast<uint32_t>(aperture),result};
+        if(info && !result)memcpy(record+6,info,172);
+        char key[40];snprintf(key,sizeof(key),"WEXDSIPixelCall%u",static_cast<unsigned>(record[1])%32);
+        IORegistryEntry::getRegistryRoot()->setProperty(key,record,sizeof(record));
+    }
+    return result;
+}
+
 // Observe native mode admission separately from the later published mode list.
 uint32_t XE::wrapDSIValidateDetailed(IOService *fb,void *raw,uint64_t size) {
     uint64_t record[60] {};const bool observe=dsiModeTarget(fb) && raw && size==204;
