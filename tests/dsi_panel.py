@@ -20,6 +20,7 @@ using namespace XELP::DSI;
 IO_FIXTURE
 PROFILE_FIXTURE
 struct Sim:IO {
+ uint32_t expectedDuty=UINT32_MAX;
  bool owned=true,freezeFrame=false,stuckStop=false,stuckStart=false,stuckCommand=false;
  uint32_t drop=UINT32_MAX,elapsed=0,headers=0,payload=0;unsigned irqDepth=0;
  std::vector<uint32_t> packets,gpioTrace;
@@ -52,6 +53,7 @@ struct Sim:IO {
   if(!freezeFrame && us>=1000 && (conf&0xC0000000U)==0xC0000000U){++regs[0x70040];regs[0x701AC]=regs[0x7019C];}
  }
  bool gpio(unsigned role,unsigned value){
+  if(role==2 && value && expectedDuty!=UINT32_MAX)assert(regs[Backlight::Duty]==expectedDuty);
   ++irqDepth;const auto r=Panel::gpio(*this,role,value);--irqDepth;
   if(r.complete)gpioTrace.push_back(role*2+value);return r.complete;
  }
@@ -85,6 +87,14 @@ void stop(Fixture &f,bool success=true) {
 }
 int main(int argc,char **argv){
  {Fixture f;stop(f);}
+ for(bool drop:{false,true}){Fixture f;Backlight light;Panel::RetainedHost host;
+  f.io.regs[Backlight::Control]=0x80000000;f.io.regs[Backlight::Period]=480;f.io.regs[Backlight::Duty]=154;
+  assert(light.capture(f.p,0x80000000,480,154));assert(light.request(32768));
+  f.io.expectedDuty=240;if(drop)f.io.drop=Backlight::Duty;
+  Panel::cycle(f.io,f.link,f.p,0x94000008,0,f.result,host,nullptr,&light);
+  assert(f.result.complete()==!drop);
+  if(drop)assert(light.faulted && f.io.gpioTrace.back()!=5);
+ }
  {Fixture f;f.io.stuckCommand=true;stop(f,false);assert(f.io.gpioTrace==std::vector<uint32_t>({4}));}
  {Fixture f;f.p.sequences.sequence[11]=f.p.sequences.sequence[4];stop(f,false);assert(f.io.writes.empty());}
 

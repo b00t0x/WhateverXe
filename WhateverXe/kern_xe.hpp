@@ -16,6 +16,7 @@
 #include "kern_dsi_clock.hpp"
 #include "kern_dsi_commands.hpp"
 #include "kern_dsi_panel.hpp"
+#include "kern_dsi_backlight.hpp"
 #include "kern_dsi_restart.hpp"
 #include "kern_tgl_tc_native.hpp"
 #include "kern_tgl_native_fia.hpp"
@@ -151,6 +152,9 @@ private:
     bool dsiStopAttempted {},dsiIRQParked {},dsiDDIReleased {},dsiMemoryReleased {};
     bool quiesceDSIPath(IOService *,IOService *,OSObject *,bool retain=false);
     bool resumeDSIPath(IOService *,IOService *,OSObject *);
+    XELP::DSI::Backlight dsiBacklight;
+    uint32_t setDSIBrightness(IOService *,uintptr_t);
+    void publishDSIBacklight();
     bool processDSIPathDisposal(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     bool disposeDSIPath(IOService *,OSObject *);
     mach_vm_address_t dsiFreePlane {},dsiFreeScaler {},dsiDetachPath {},dsiRemovePath {},dsiPipeMap {};

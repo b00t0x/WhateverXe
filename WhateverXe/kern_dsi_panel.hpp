@@ -5,6 +5,7 @@
 #define KERN_DSI_PANEL_HPP
 #include "kern_dsi_commands.hpp"
 #include "kern_dsi_surface.hpp"
+#include "kern_dsi_backlight.hpp"
 namespace XELP { namespace DSI { namespace Panel {
 struct GPIOResult {uint32_t role {},value {},reg {},before {},after {},writes {};bool complete {};};
 template<class IO> GPIOResult gpio(IO &io,unsigned role,unsigned value) {
@@ -74,7 +75,7 @@ struct Shutdown {
 // IO::gpio serializes HPD writes; no delays may run under that IRQ lock.
 // A failed transaction is never retried and must retain all resources.
 template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const Profile &profile,
-                             uint32_t planeControl,uint32_t surface,Result &r,Lifecycle &lifecycle,const Shutdown *shutdown=nullptr) {
+                             uint32_t planeControl,uint32_t surface,Result &r,Lifecycle &lifecycle,const Shutdown *shutdown=nullptr,Backlight *backlight=nullptr) {
     Readout current=link;
     if(r.attempted)return;
     r.attempted=true;
@@ -171,7 +172,10 @@ template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const P
     if(!write(0x70180,planeControl) || !write(0x7019C,surface) ||
        !wait(0x70180,UINT32_MAX,planeControl,0) || !frame() ||
        !wait(0x701AC,UINT32_MAX,surface,0))return;
-    r.stage=Stage::BacklightOn;if(!delay(1) || !sequence(6))return;
+    r.stage=Stage::BacklightOn;
+    // Restore a deferred brightness before enabling the panel's backlight GPIO.
+    if(backlight && !backlight->apply(io)){r.error=Error::Readback;return;}
+    if(!delay(1) || !sequence(6))return;
     if(!held() || !Surface::source(io,current) || port.failed || r.host.pending ||
        !read(0x6B0D0,credits) || !read(0x6B0D8,lp) ||
        (credits&0x1FFF)!=0x1040 || (lp&0x30001))return;

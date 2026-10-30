@@ -7730,6 +7730,45 @@ uint32_t XE::wrapDSISetAttribute(IOService *fb,uint32_t attribute,uintptr_t valu
     recordDSIClient(fb,7,attribute,result);
     return result;
 }
+void XE::publishDSIBacklight() {
+    auto &c=display13FBPower;if(!c.lock)return;
+    IOLockLock(c.lock);const auto &b=dsiBacklight;
+    uint64_t receipt[]={1,b.initialized,b.faulted,b.requested,b.applied,b.pwm.period,b.minimum,
+        b.control,b.requests,b.writes,dsiRuntimePower.sleeping};
+    IOLockUnlock(c.lock);
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIBacklight",receipt,sizeof(receipt));
+}
+// The caller holds the same framebuffer mutex as stop/resume. Deferred requests
+// update only software; the panel-on sequence applies PWM before its enable GPIO.
+uint32_t XE::setDSIBrightness(IOService *fb,uintptr_t value) {
+    auto &c=display13FBPower;
+    if(value>XELP::DSI::Backlight::Maximum)return kIOReturnBadArgument;
+    if(!c.lock || !dsiModeTarget(fb))return kIOReturnNotReady;
+    const bool awake=dsiNativeUpdateAllowed(fb);
+    IOLockLock(c.lock);
+    const bool owned=dsiResourcesReady && dsiBacklight.initialized && !dsiRuntimePower.failed &&
+        !dsiBacklight.faulted && !c.memoryFaulted && !c.clockFaulted && !c.watermarkFaulted &&
+        !c.bridge.state.faulted && !c.bridge.state.suspended && !c.dbuf.faulted &&
+        c.pipe[0].memoryFramebuffer==fb && !c.pipe[0].destroyingPath &&
+        Display13FBMemory::field<IOService *>(fb,0x1D0)==c.controller &&
+        c.controller==adlnTopologyController && adlnWriterMappingBound();
+    const bool deferred=owned && dsiPowerTest && dsiRuntimePower.sleeping && dsiStopAttempted &&
+        dsiStop.complete() && dsiPanelStop.complete && dsiIRQParked && !dsiMemoryReleased && !dsiDDIReleased;
+    struct IO:Display13FBBootIO {
+        bool owned;IO(IOMemoryMap *m,bool o):Display13FBBootIO{m},owned(o){}
+        bool ready(){return owned;}
+        void write(uint32_t reg,uint32_t value) {
+            if(owned && reg==XELP::DSI::Backlight::Duty && readable(reg))
+                *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg)=value;
+        }
+    } io{c.map,owned && awake && !dsiStopAttempted};
+    const bool accepted=owned && (deferred || (io.ready() && c.bridge.outputHeld(io,0,0))) && dsiBacklight.request(value);
+    const bool complete=accepted && (deferred || dsiBacklight.apply(io));
+    // The donor getter returns this 16-bit requested value with range 0..65535.
+    if(complete)*reinterpret_cast<uint32_t *>(static_cast<uint8_t *>(c.controller)+0xE58)=dsiBacklight.requested;
+    IOLockUnlock(c.lock);publishDSIBacklight();
+    return complete?kIOReturnSuccess:kIOReturnNotReady;
+}
 uint32_t XE::wrapDSISetConnectionAttribute(IOService *fb,int32_t connection,uint32_t attribute,uintptr_t value) {
     recordDSIClient(fb,8,attribute,UINT32_MAX);
     const auto result=[&]() -> uint32_t {
@@ -7739,8 +7778,9 @@ uint32_t XE::wrapDSISetConnectionAttribute(IOService *fb,int32_t connection,uint
             DSIModeScope scope(fb);if(!scope.lock)return kIOReturnNotReady;
             if(dsiLifecycleTarget(fb,Display13FBMemory::singlePath<OSObject *>(fb))) {
                 if(connection!=0)return kIOReturnUnsupported;
+                if(attribute==0x626B6C74)return callbackXE->setDSIBrightness(fb,value);
                 // Controller depth and gamma scales/flush have qualified native
-                // CPU/color paths. In particular ignore, bklt, pnlt, psr?, powr,
+                // CPU/color paths. In particular ignore, pnlt, psr?, powr,
                 // probe and DP-link configuration must never reach native DSI.
                 switch(attribute) {
                     case 0x00647064: // controller depth
@@ -11296,7 +11336,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         void write(uint32_t r,uint32_t v) {
             if(readable(r) && (XELP::DSI::Restart::writable(r,pll) || r==0x6B100 || r==0x6B104 ||
                r==0xC4030 || r==0xC7204 || r==0x70180 || r==0x7019C || r==0x7B008 ||
-               r==0x70080 || r==0x70088 || r==0x70084))
+               r==0x70080 || r==0x70088 || r==0x70084 || r==XELP::DSI::Backlight::Duty))
                 *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+r)=v;
         }
         bool gpio(unsigned role,unsigned value) {
@@ -11338,7 +11378,8 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
                     source=XELP::DSI::Restart::expected(source,state);return source.complete();
                 }
             } lifecycle{clock.allocation,reinterpret_cast<uintptr_t>(controller),power.host};
-            XELP::DSI::Panel::cycle(io,c.bootDSI,dsiProfile,power.plane.control,power.plane.surface,power.panel,lifecycle,&dsiPanelStop);
+            XELP::DSI::Panel::cycle(io,c.bootDSI,dsiProfile,power.plane.control,power.plane.surface,power.panel,lifecycle,&dsiPanelStop,
+                dsiBacklight.initialized?&dsiBacklight:nullptr);
             if(power.panel.complete() && owned() && XELP::DSI::Surface::matches(io,power.plane,true)) {
                 io.write(0x70080,power.cursorControl);io.write(0x70088,power.cursorPosition);io.write(0x70084,power.cursorBase);
                 const auto before=io.read(0x70040);
@@ -11383,6 +11424,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     if(acquired)reinterpret_cast<void (*)(IOWorkLoop *)>(adlnWorkLoopOpen)(loop);
     loop->release();IORecursiveLockUnlock(mutex);
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIRuntimePower",receipt,sizeof(receipt));
+    publishDSIBacklight();
     return complete;
 }
 
@@ -12477,6 +12519,15 @@ bool XE::bindDSIResources(IOService *controller) {
     if(ready)dsiPublishIRQLive();
     if(ready && dsiCommandTest)ready=probeDSICommands(controller);
     if(ready && dsiPanelTest)ready=probeDSIPanel(controller);
+    if(ready) {
+        IOLockLock(c.lock);
+        using Light=XELP::DSI::Backlight;
+        if(dsiBacklight.capture(dsiProfile,io.read(Light::Control),io.read(Light::Period),io.read(Light::Duty))) {
+            *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(controller)+0xE58)=dsiBacklight.requested;
+            *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(controller)+0xE60)=dsiBacklight.pwm.period;
+        }
+        IOLockUnlock(c.lock);publishDSIBacklight();
+    }
     return ready;
 }
 

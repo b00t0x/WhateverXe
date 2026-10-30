@@ -93,6 +93,7 @@ struct XE {
  uintptr_t orgDSIAttributes[4]{};
  static uint32_t wrapDSISetStream(IOService*,IOService*,OSObject*,const void*);
  static uint32_t wrapDSISetAttribute(IOService*,uint32_t,uintptr_t);
+ uint32_t setDSIBrightness(IOService*,uintptr_t value){assert(fbLock.depth && !owner);return value<=65535?0U:kIOReturnUnsupported;}
  static uint32_t wrapDSISetConnectionAttribute(IOService*,int32_t,uint32_t,uintptr_t);
  static uint32_t wrapDSISetPowerState(IOService*,uint32_t);
  uintptr_t orgDSITransaction[5]{};
@@ -325,12 +326,17 @@ int main(){
   Case c;expectedAttribute=attr;expectedValue=txOptions;expectedConnection=0;
   assert(XE::wrapDSISetConnectionAttribute(&c.fb,0,attr,expectedValue)==0xe0000122U && !display13FBPower.dsiNativeWriters);
   assert(XE::wrapDSISetConnectionAttribute(&c.fb,1,attr,expectedValue)==kIOReturnUnsupported);}
- for(unsigned attr:{0x706F7772U,0x70777273U,0x73707772U,0x64706F77U,0x706E6C70U,0x626B6C74U,0x706E6C74U,
+ for(unsigned attr:{0x706F7772U,0x70777273U,0x73707772U,0x64706F77U,0x706E6C70U,0x706E6C74U,
                     0x00696772U,0x7073723FU,0x70726F62U,0x64706972U,0xDEADBEEFU}){
   Case c;const auto before=attrCalls[0]+attrCalls[1]+attrCalls[2];const auto original=c.fb;
   assert(XE::wrapDSISetAttribute(&c.fb,attr,0)==kIOReturnUnsupported);
   assert(XE::wrapDSISetConnectionAttribute(&c.fb,0,attr,0)==kIOReturnUnsupported);
   assert(attrCalls[0]+attrCalls[1]+attrCalls[2]==before && !memcmp(&c.fb,&original,sizeof(c.fb)) && !display13FBPower.memoryFaulted);}
+ {Case c;const auto before=attrCalls[1];
+  assert(XE::wrapDSISetConnectionAttribute(&c.fb,0,0x626B6C74,12345)==0);
+  assert(XE::wrapDSISetConnectionAttribute(&c.fb,0,0x626B6C74,0x100000001ULL)==kIOReturnUnsupported);
+  assert(XE::wrapDSISetConnectionAttribute(&c.fb,1,0x626B6C74,0)==kIOReturnUnsupported);
+  assert(attrCalls[1]==before && !display13FBPower.dsiNativeWriters);}
  for(unsigned old=0;old<3;++old)for(unsigned state=0;state<4;++state){Case c;put(&c.fb,0x4284,old);const auto before=attrCalls[2];
   const auto expected=old==2 && state==2?kIOReturnSuccess:kIOReturnUnsupported;
   assert(XE::wrapDSISetPowerState(&c.fb,state)==expected && attrCalls[2]==before);
