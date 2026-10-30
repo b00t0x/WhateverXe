@@ -3,6 +3,7 @@
   "-wex-dsi-adopt": [],
   "-wex-dsi-panel-only": [],
   "-wex-dsi-command-test": [],
+  "-wex-dsi-panel-test": [],
   "-wex-adln-config-stage": [
     "-adlnconfigstage",
     "-n97configstage"

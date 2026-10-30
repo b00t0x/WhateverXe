@@ -49,6 +49,7 @@ XELPMemory::Layout xelpMemory;
 unsigned published=0;
 void dsiPublishIRQLive(){assert(lockLevel==0 && display13FBIRQ.controller && display13FBIRQ.lock);++published;}
 struct XE {
+ bool dsiPanelTest=false;bool probeDSIPanel(IOService*){assert(lockLevel==0);return true;}
  bool dsiCommandTest=false;bool probeDSICommands(IOService*){assert(lockLevel==0);return true;}
  bool display13FBIRQReady=true,dsiNativeWriterHooksReady=true,dsiResourcesReady=false;IOService *adlnTopologyController;
  struct {unsigned dsi=1;} adlnOutputWiring;

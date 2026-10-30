@@ -3873,6 +3873,7 @@ Display13OutputWiring XE::display13BoardWiring(IOService *provider) {
         board.dsi=1;
         dsiPanelOnly=checkKernelArgument("-wex-dsi-panel-only");
         dsiCommandTest=checkKernelArgument("-wex-dsi-command-test");
+        dsiPanelTest=checkKernelArgument("-wex-dsi-panel-test");
         IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPanelOnly",dsiPanelOnly);
         if(!board.described())return {};
     }
@@ -12128,6 +12129,77 @@ bool XE::probeDSICommands(IOService *controller) {
     return complete;
 }
 
+// Bootstrap-only panel sequence experiment. Keep the host/PHY/PLL alive so
+// GPIO and long-packet failures are distinguishable from cold host startup.
+bool XE::probeDSIPanel(IOService *controller) {
+    auto &c=display13FBPower;auto &clock=comboClockTransaction;auto &irq=display13FBIRQ;
+    if(!controller || !c.lock || !clock.lock || !irq.lock)return false;
+    IORecursiveLockLock(clock.lock);IOLockLock(c.lock);
+    const auto owned=[&]() {
+        return controller==c.controller && controller==adlnTopologyController &&
+            dsiResourcesReady && !dsiStopAttempted && adlnOutputWiring.dsi==1 &&
+            !c.engineEnabled && !c.memoryFaulted && !c.clockFaulted &&
+            !c.bridge.state.faulted && !c.bridge.state.suspended && !clock.thread &&
+            clock.allocation.external[0]==reinterpret_cast<uintptr_t>(controller) &&
+            clock.allocation.binding[0]==dsiBoot.source.identity.pll+1 &&
+            irq.controller==controller && !irq.state.begun && !irq.state.enabled &&
+            !irq.quiescing && !irq.handlers && !irq.softwareHandlers;
+    };
+    struct IO : Display13FBBootIO {
+        decltype(owned) &owns;IOSimpleLock *irqLock;
+        uint32_t writes {},gpios {};XELP::DSI::Panel::GPIOResult lastGPIO;
+        IO(IOMemoryMap *m,decltype(owned) &q,IOSimpleLock *l):Display13FBBootIO{m},owns(q),irqLock(l) {}
+        bool ready() {
+            if(!owns() || !readable(0x45404))return false;
+            const auto wells=read(0x45404);return wells!=UINT32_MAX && (wells&0x403)==0x403;
+        }
+        void write(uint32_t reg,uint32_t value) {
+            switch(reg) {
+                case 0x6B100:case 0x6B104:case 0xC4030:case 0xC7204:
+                case 0x70180:case 0x7019C:case 0x7B008:
+                    *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg)=value;++writes;break;
+            }
+        }
+        bool gpio(unsigned role,unsigned value) {
+            // Only this short RMW is under the IRQ lock. All VBT delays and
+            // FIFO/frame polling execute with interrupts enabled.
+            const auto saved=IOSimpleLockLockDisableInterrupt(irqLock);
+            lastGPIO=XELP::DSI::Panel::gpio(*this,role,value);
+            IOSimpleLockUnlockEnableInterrupt(irqLock,saved);
+            if(lastGPIO.complete)++gpios;
+            return lastGPIO.complete;
+        }
+        void delayUs(unsigned us){IODelay(us);}
+    } io{c.map,owned,irq.lock};
+    uint64_t record[32] {1};
+    record[1]=io.ready() && !dsiPanelTrial.attempted && dsiProfile.valid() &&
+        !dsiCommandHost.faulted && !dsiCommandHost.pending &&
+        c.bridge.outputHeld(io,0,0) && XELP::DSI::bootUnchanged(io,dsiBoot,xelpMemory);
+    if(record[1]) {
+        record[20]=io.read(0xC7204);record[22]=io.read(0xC4030);
+        record[24]=io.read(0xC7200);record[28]=io.read(0x70040);
+        XELP::DSI::Panel::cycle(io,dsiBoot.source,dsiProfile,dsiBoot.control,dsiBoot.surface,dsiPanelTrial);
+        record[21]=io.ready()?io.read(0xC7204):UINT32_MAX;
+        record[23]=io.ready()?io.read(0xC4030):UINT32_MAX;
+        record[25]=io.ready()?io.read(0xC7200):UINT32_MAX;
+        record[26]=io.ready()?io.read(0x6B0D0):UINT32_MAX;
+        record[27]=io.ready()?io.read(0x6B0D8):UINT32_MAX;
+        record[29]=io.ready()?io.read(0x70040):UINT32_MAX;
+        record[30]=io.ready() && XELP::DSI::bootUnchanged(io,dsiBoot,xelpMemory);
+    }
+    const auto &r=dsiPanelTrial;const auto &h=r.host;
+    record[2]=static_cast<uint32_t>(r.stage);record[3]=static_cast<uint32_t>(r.error);
+    record[4]=r.reg;record[5]=r.value;record[6]=io.writes;record[7]=r.waitUs;
+    record[8]=static_cast<uint32_t>(h.error);record[9]=h.pending;record[10]=h.sequenceId;
+    record[11]=h.operationOffset;record[12]=h.headers;record[13]=h.payloadWords;
+    record[14]=h.waitedUs;record[15]=h.completedOperations;record[16]=io.gpios;
+    record[17]=io.lastGPIO.role;record[18]=io.lastGPIO.value;record[19]=io.lastGPIO.complete;
+    const bool complete=record[1] && r.complete() && record[30];record[31]=complete;
+    IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPanelTrial",record,sizeof(record));
+    return complete;
+}
+
 // Called outside the owner lock, before native engine/probe/IRQ users start.
 // The lock order matches clock clients: Combo clock -> display owner -> IRQ.
 // Failure retains any already acquired boot power references for cleanup.
@@ -12173,7 +12245,8 @@ bool XE::bindDSIResources(IOService *controller) {
     }
     IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
     if(ready)dsiPublishIRQLive();
-    if(ready && dsiCommandTest)return probeDSICommands(controller);
+    if(ready && dsiCommandTest)ready=probeDSICommands(controller);
+    if(ready && dsiPanelTest)ready=probeDSIPanel(controller);
     return ready;
 }
 
