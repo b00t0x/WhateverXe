@@ -195,7 +195,24 @@ int main() {
          reg==DSBInterrupt(1,0) || reg==DSBInterrupt(1,1) || reg==DSBInterrupt(1,2));
      for(auto pair:before)if(std::find(io.writes.begin(),io.writes.end(),pair.first)==io.writes.end())assert(io.r[pair.first]==pair.second);
      io.writes.clear();assert(extendActivePipes(io,state,3)==Status::Complete && io.writes.empty());
-     io.r[0x71008]=0;assert(extendActivePipes(io,state,3)==Status::Topology && io.writes.empty());
+     io.r[0x71008]=0;assert(extendActivePipes(io,state,3)==Status::Complete && state.active==3 && io.writes.empty());
+    }
+    // Wake DSI A while a stopped USB-C peer C retains its armed bank.
+    // No peer notification, pending completion, master or GT may be reset.
+    {IO io;State state;state.transcoders.dsi0Pipe=0;io.r[0x70008]=0;
+     io.r[0x7B008]=0;io.r[0x6B400]=6;io.r[0x72008]=0xC0000000;
+     assert(enable(io,state,0,NativeGT,4,2)==Status::Complete);
+     io.r[0x72008]=0;io.r[0x7B008]=0xC0000000;io.r[0x6B400]=0x80000006;
+     io.r[PipeIIR(2)]=8;io.r[DSBInterrupt(2,0)]|=1;
+     io.r[Master]|=1U<<18;io.r[GfxMaster]|=NativeGT;
+     const auto before=io.r;io.writes.clear();
+     assert(readActivePipes(io,7,state.transcoders).active==1);
+     assert(extendActivePipes(io,state,7)==Status::Complete && state.active==5 && !state.faulted);
+     for(auto reg:io.writes)assert(reg==PipeIIR(0)-4 || reg==PipeIIR(0)+4 ||
+         reg==DSBInterrupt(0,0) || reg==DSBInterrupt(0,1) || reg==DSBInterrupt(0,2));
+     for(auto pair:before)if(std::find(io.writes.begin(),io.writes.end(),pair.first)==io.writes.end())assert(io.r[pair.first]==pair.second);
+     io.r[0x71008]=0xC0000000;io.r[0x72008]=0xC0000000;
+     assert(extendActivePipes(io,state,7)==Status::Complete && state.active==7);
     }
     {IO io;io.wells=0x403;io.reads.clear();assert(readActivePipes(io,3).active==1);
      assert(std::find(io.reads.begin(),io.reads.end(),0x71008)==io.reads.end());

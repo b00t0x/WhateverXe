@@ -275,7 +275,10 @@ template<class IO> Status extendActivePipes(IO &io,State &s,uint32_t allowed) {
     if(!s.begun || !s.enabled || s.faulted)return Status::Unavailable;
     const auto actual=readActivePipes(io,allowed,s.transcoders);
     if(actual.status!=Status::Complete)return actual.status;
-    if(s.active&~actual.active)return Status::Topology;
+    // s.active tracks armed IRQ banks, not currently running transcoders.
+    // Native display-off may stop a peer while retaining its powered bank.
+    // Preserve that bank and pending completions until explicit retirement;
+    // it must not prevent another pipe from being rearmed during wake.
     const auto master=io.read(Master),gfx=io.read(GfxMaster);
     if(master==UINT32_MAX || gfx==UINT32_MAX || !(master&Enable) || !(gfx&Enable))return Status::Readback;
     const auto added=actual.active&~s.active;
