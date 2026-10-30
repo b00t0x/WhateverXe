@@ -53,6 +53,8 @@ static void record(uint32_t code,uint32_t detail=0,const char *label=nullptr,con
 }
 static void tryArm() {
  if(armed || ready[2]!=63)return;
+ if(!nvram)nvram=OSDynamicCast(IODTNVRAM,IORegistryEntry::fromPath("IODeviceTree:/options"));
+ if(!nvram){ready[6]=2;publish();return;}
  auto d=OSDynamicCast(OSData,nvram->getProperty(armKey));
  if(!d || d->getLength()!=sizeof(uint64_t) || memcmp(d->getBytesNoCopy(),&journal.run,sizeof(uint64_t)))return;
  armed=true;record(1,0,"probe");
@@ -91,11 +93,11 @@ void install(KernelPatcher &p) {
  const uint8_t syncBytes[]={0x55,0x48,0x89,0xe5,0x53,0x50,0x48,0x83,0xbf,0x88,0,0,0,0};
  if(!sync || memcmp(reinterpret_cast<void *>(sync),syncBytes,sizeof(syncBytes))){p.clearError();publish();return;}
  syncNvram=reinterpret_cast<decltype(syncNvram)>(sync);
- nvram=OSDynamicCast(IODTNVRAM,IORegistryEntry::fromPath("/options",gIODTPlane));
+ // NVRAM may not be published when Lilu routes the kernel; resolve it on arm.
  lock=IOLockAlloc();traceSymbol=OSSymbol::withCString(traceKey);
  journal.magic=0x57585344;journal.version=1;journal.run=mach_absolute_time()^base;ready[1]=journal.run;
  snapshots[0]=OSData::withBytes(&journal,sizeof(journal));snapshots[1]=OSData::withBytes(&journal,sizeof(journal));
- if(!nvram || !lock || !traceSymbol || !snapshots[0] || !snapshots[1]){publish();return;}
+ if(!lock || !traceSymbol || !snapshots[0] || !snapshots[1]){ready[6]=1;publish();return;}
  KernelPatcher::RouteRequest routes[]={
   {"_reboot_kernel",wrapReboot,orgReboot},
   {"_IOSystemShutdownNotification",wrapNotify,orgNotify},
@@ -105,9 +107,9 @@ void install(KernelPatcher &p) {
   {"__ZN14IOPMrootDomain25handlePlatformHaltRestartEj",wrapPlatform,orgPlatform}
  };
  // Resolve all targets before any routing. A partial install stays unarmed.
- for(auto &r:routes)if(!p.solveSymbol(KernelPatcher::KernelID,r.symbol)){p.clearError();publish();return;}
+ for(auto &r:routes)if(!p.solveSymbol(KernelPatcher::KernelID,r.symbol)){ready[6]=3;ready[7]=static_cast<uint64_t>(p.getError());p.clearError();publish();return;}
  if(p.routeMultiple(KernelPatcher::KernelID,routes,arrsize(routes)))ready[2]=63;
- else p.clearError();
+ else {ready[6]=4;ready[7]=static_cast<uint64_t>(p.getError());p.clearError();}
  publish();
 }
 }
