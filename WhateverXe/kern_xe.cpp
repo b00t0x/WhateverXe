@@ -4678,7 +4678,7 @@ struct DSIFixedModeOwner {
     OSData *data {};
     XELP::DSI::Mode mode;
     XELP::DSI::AppleAdapter::Timing timing;
-    XELP::DSI::AppleAdapter::Timing presentation,offered[8];
+    XELP::DSI::AppleAdapter::Timing presentation,requested,offered[8];
     unsigned offerCount {};
     uint32_t activeMode {XELP::DSI::AppleAdapter::FixedModeID};
     uintptr_t changingThread {},logical {};
@@ -4698,9 +4698,20 @@ static uintptr_t dsiLogicalSurface(const void *fb) {
 static const XELP::DSI::AppleAdapter::Timing *dsiPresentation(uint32_t mode) {
     auto &o=dsiFixedMode;
     if(o.changingThread && o.presentationReady && mode==o.activeMode)return &o.presentation;
-    for(unsigned i=0;i<o.offerCount;++i)if(o.offered[i].reservedA[0]==mode)return &o.offered[i];
-    if(o.presentationReady && mode==o.activeMode)return &o.presentation;
-    return XELP::DSI::AppleAdapter::acceptsMode(mode,o.clientMode) ? &o.timing : nullptr;
+    const XELP::DSI::AppleAdapter::Timing *selected=nullptr;
+    for(unsigned i=0;i<o.offerCount;++i)if(o.offered[i].reservedA[0]==mode){selected=&o.offered[i];break;}
+    if(!selected && XELP::DSI::AppleAdapter::acceptsMode(mode,o.clientMode))selected=&o.timing;
+    if(!selected && o.presentationReady && mode==o.activeMode)selected=&o.presentation;
+    if(!selected)return nullptr;
+    // Big Sur supplies UI rotation separately from its detailed-timing list.
+    // Convert that selected orientation to the donor's pixel-info/geometry
+    // contract without altering the immutable portrait wire timing.
+    auto rotation=o.framebuffer ? OSDynamicCast(OSNumber,o.framebuffer->getProperty("IOFBTransform")) : nullptr;
+    if(!rotation)return selected;
+    const auto transform=rotation->unsigned64BitValue();
+    if(transform!=0 && transform!=3 && transform!=5)return nullptr;
+    o.requested=*selected;o.requested.scalerFlags=static_cast<uint32_t>(transform<<4);
+    return &o.requested;
 }
 static void dsiAdvertiseRotation(IOService *fb) {
     auto data=OSDynamicCast(OSData,fb->getProperty("IOFBScalerInfo"));
@@ -7356,7 +7367,7 @@ bool XE::releaseDSIFixedMode(IOService *fb) {
     auto array=o.array;auto data=o.data;
     __atomic_store_n(&o.framebuffer,static_cast<IOService *>(nullptr),__ATOMIC_RELEASE);
     o.array=nullptr;o.data=nullptr;o.mode={};o.timing={};o.clientMode=XELP::DSI::AppleAdapter::FixedModeID;
-    o.presentation={};o.offerCount=0;o.activeMode=o.clientMode;o.presentationReady=false;o.presentationFault=false;o.changingThread=0;
+    o.presentation={};o.requested={};o.offerCount=0;o.activeMode=o.clientMode;o.presentationReady=false;o.presentationFault=false;o.changingThread=0;
     OSSafeReleaseNULL(array);OSSafeReleaseNULL(data);fb->release();return true;
 }
 

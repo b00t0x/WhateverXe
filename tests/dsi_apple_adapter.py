@@ -41,6 +41,7 @@ struct OSObject {
  void retain(){assert(refs);++refs;}void release(){assert(refs);if(!--refs)delete this;}
  Meta *getMetaClass(){return &meta;}
 };
+struct OSNumber:OSObject {uint64_t value=0;uint64_t unsigned64BitValue(){return value;}};
 struct OSData:OSObject {
  std::vector<uint8_t> bytes;
  static OSData *withBytes(const void *p,unsigned n){if(!dataOK)return nullptr;auto d=new OSData;
@@ -229,6 +230,17 @@ int main(){
  assert(static_cast<const Timing *>(timing)->scalerFlags==0x30 && !dsiFixedMode.timing.scalerFlags);
  assert(!XE::wrapDSIGetModeInformation(fb,pair[1],&info) && info.width==1080 && info.height==1920);
  rotationData->release();rotationList->release();
+ // Big Sur keeps timing flags zero and publishes UI rotation separately.
+ auto orientation=new OSNumber;fb->setProperty("IOFBTransform",orientation);
+ for(auto transform:{3ULL,5ULL,0ULL}) {
+  orientation->value=transform;
+  assert(!XE::wrapDSIValidateMode(fb,static_cast<int32_t>(offered.reservedA[0]),nullptr,&timing));
+  assert(static_cast<const Timing *>(timing)->scalerFlags==transform*16);
+  assert(!dsiFixedMode.timing.scalerFlags && static_cast<const Timing *>(timing)->horizontalActive==1080);
+ }
+ orientation->value=7;
+ assert(XE::wrapDSIValidateMode(fb,static_cast<int32_t>(offered.reservedA[0]),nullptr,&timing)==kIOReturnBadArgument);
+ fb->removeProperty("IOFBTransform");orientation->release();
  renewedData->bytes[64]^=1;
  assert(XE::wrapDSISetDetailedTimings(fb,renewed)==kIOReturnUnsupported && dsiFixedMode.clientMode==0x80003000);
  renewedData->release();renewed->release();
