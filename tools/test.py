@@ -16,6 +16,7 @@ if a.donor:jobs += [('dsi_update_dispatch_native',[sys.executable,str(R/'tests/d
 if a.donor:jobs += [('dsi_path_disposal_native',[sys.executable,str(R/'tests/dsi_path_disposal.py'),str(a.donor.resolve())],None)]
 if a.donor:jobs += [('dsi_surface_native',[sys.executable,str(R/'tests/dsi_surface.py'),str(a.donor.resolve())],None)]
 if a.donor:jobs += [('dsi_native_cache_native',[sys.executable,str(R/'tests/dsi_native_cache.py'),str(a.donor.resolve())],None)]
+if a.donor:jobs += [('dsi_native_mode_native',[sys.executable,str(R/'tests/dsi_native_mode.py'),str(a.donor.resolve())],None)]
 if a.donor:jobs += [('dsi_boot_probe_native',[sys.executable,str(R/'tests/dsi_boot_probe.py'),str(a.donor.resolve())],None)]
 if a.donor:jobs += [('dsi_port_adapter_native',[sys.executable,str(R/'tests/dsi_port_adapter.py'),str(a.donor.resolve())],None)]
 if a.donor:jobs += [('dsi_apple_adapter_native',[sys.executable,str(R/'tests/dsi_apple_adapter.py'),str(a.donor.resolve())],None)]

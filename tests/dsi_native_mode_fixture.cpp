@@ -1,6 +1,8 @@
 // Execute the real donor CPU helper when its exact binary is supplied.
 #include "kern_dsi_native_mode.hpp"
+#include "kern_dsi_native_backing.hpp"
 #include <cassert>
+#include <cstdlib>
 #include <cstdio>
 #include <vector>
 #include <fstream>
@@ -12,8 +14,27 @@ template<class T>void put(void *p,unsigned offset,T value){memcpy(static_cast<ui
 unsigned notifications=0;
 void notify(void *){++notifications;}
 void zero(void *p,size_t n){memset(p,0,n);}
+unsigned logicalAllocations=0,logicalFrees=0,recordAllocations=0,recordFrees=0;
+uint32_t logicalResult=0;
+bool failRecord=false;
+void *allocateRecord(size_t bytes) {
+    assert(bytes==64);if(failRecord)return nullptr;
+    ++recordAllocations;return malloc(bytes);
+}
+void freeRecord(void *p,size_t bytes) {assert(p && bytes==64);++recordFrees;free(p);}
+uint32_t logicalCallback(void *,const void *selector,void *,void *raw,void *,void *,void *) {
+    auto &r=*static_cast<NativeBacking::Record *>(raw);
+    if(selector==reinterpret_cast<void *>(1)) {
+        ++logicalAllocations;assert(r.kind==2 && r.columns && r.rows);
+        if(logicalResult)return logicalResult;
+        r.pitch=r.columns*128;r.gpu=0x100000;r.map=0x200000;r.memory=0x300000;
+    } else {assert(selector==reinterpret_cast<void *>(2));++logicalFrees;}
+    return 0;
+}
 void patchCall(uint8_t *image,unsigned call,uintptr_t function) {
-    const unsigned stub=0x200000;image[stub]=0x48;image[stub+1]=0xB8;
+    static unsigned nextStub=0x200000;
+    const unsigned stub=nextStub;nextStub+=16;assert(nextStub<0x201000);
+    image[stub]=0x48;image[stub+1]=0xB8;
     memcpy(image+stub+2,&function,8);image[stub+10]=0xFF;image[stub+11]=0xE0;
     const int32_t delta=stub-call-5;assert(image[call]==0xE8);memcpy(image+call+1,&delta,4);
 }
@@ -77,7 +98,45 @@ int main(int argc,char **argv) {
         assert(adjust(controller,fb,path,true,nullptr)==135255000);
         put(scaler,0x4C,0U); // Disabled boot scaler also leaves Hz unchanged.
         assert(adjust(controller,fb,path,false,nullptr)==135255000);
-        assert(notifications==4);munmap(image,0x400000);puts("DSI native mode geometry and logical-buffer replay passed");
+        assert(notifications==4);
+        // Quarter-turns use a separate GPU logical buffer, not a rotated
+        // hardware scanout. Exercise the exact geometry/allocation/release
+        // bodies; only kernel heap and accelerator allocation are mocked.
+        patchCall(image,0x31790,reinterpret_cast<uintptr_t>(allocateRecord));
+        patchCall(image,0x317A5,reinterpret_cast<uintptr_t>(zero));
+        patchCall(image,0x330E3,reinterpret_cast<uintptr_t>(freeRecord));
+        uintptr_t gpuVtable[0x6C0/8]{};gpuVtable[0x6B8/8]=reinterpret_cast<uintptr_t>(logicalCallback);
+        auto gpuObject=gpuVtable;put(controller,0xC0,&gpuObject);
+        put(fb,0x420C,2U);put(fb,0x4AD8,uintptr_t(1));put(fb,0x4AE0,uintptr_t(2));
+        put(scaler,0x10,fb);
+        const auto allocateLogical=reinterpret_cast<uint32_t(*)(void*)>(image+0x31726);
+        const auto releaseLogical=reinterpret_cast<void(*)(void*)>(image+0x33062);
+        for(uint32_t rotation:{0x30U,0x50U})for(bool hidpi:{false,true}) {
+            auto presentation=t;presentation.scalerFlags=rotation;
+            if(hidpi){presentation.horizontalScaled=1620;presentation.verticalScaled=2880;}
+            compute(fb,&presentation);
+            assert(field<uint32_t>(fb,0x430C)==(hidpi?1620U:1080U));
+            assert(field<uint32_t>(fb,0x4310)==(hidpi?2880U:1920U));
+            for(unsigned offset:{0x4320U,0x4328U})assert(field<uint32_t>(fb,offset)==1080);
+            for(unsigned offset:{0x4324U,0x432CU})assert(field<uint32_t>(fb,offset)==1920);
+            assert(field<uint32_t>(fb,0x4338)==(hidpi?0x30U:0x10U));
+            assert(field<uint32_t>(fb,0x4334)==(hidpi?6528U:4352U));
+            assert(field<uint32_t>(path,0xF8)==1080 && field<uint32_t>(path,0xFC)==1920);
+            assert(allocateLogical(fb)==0);
+            auto record=field<NativeBacking::Record *>(fb,0x4340);
+            assert(record && record->pitch==(hidpi?6528U:4352U));
+            assert(record->bytes==record->pitch*(hidpi?2880U:1920U));
+            assert(!field<uintptr_t>(fb,0x4348)); // Logical allocation does not own the scanout.
+            releaseLogical(fb);assert(!field<uintptr_t>(fb,0x4340));
+        }
+        // A failing accelerator callback still publishes the heap record.
+        // A future mode adapter must explicitly retire it before rollback.
+        logicalResult=0xE00002BD;assert(allocateLogical(fb)==logicalResult);
+        assert(field<uintptr_t>(fb,0x4340));releaseLogical(fb);
+        logicalResult=0;failRecord=true;assert(allocateLogical(fb)==0xE00002BD);
+        assert(!field<uintptr_t>(fb,0x4340));
+        assert(logicalAllocations==5 && logicalFrees==5 && recordAllocations==5 && recordFrees==5);
+        munmap(image,0x400000);puts("DSI native geometry: fixed scanout, quarter-turn logical buffers, HiDPI and failure cleanup replay passed");
     }
     puts("DSI native mode preparation rollback and admission passed");
 }
