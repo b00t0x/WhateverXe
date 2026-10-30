@@ -7667,6 +7667,13 @@ uint32_t XE::setDSIPresentation(IOService *fb,uint32_t mode,const XELP::DSI::App
     IOLockUnlock(c.lock);if(!idle)return kIOReturnNotReady;
     o.changingThread=reinterpret_cast<uintptr_t>(current_thread());
     uint64_t receipt[16] {1,mode,requested.scalerFlags,oldMode,old.scalerFlags};
+    uint64_t gpuState[13] {1};
+    const auto captureGPU=[&](unsigned base) {
+        const unsigned offsets[]={0x1264,0x1268,0x128C,0x1290,0x1294,0x12D8};
+        if(pipe->getMetaClass()->getClassSize()>=0x12DC)
+            for(unsigned i=0;i<arrsize(offsets);++i)gpuState[base+i]=field<uint32_t>(pipe,offsets[i]);
+    };
+    captureGPU(1);
     const auto apply=[&](uint32_t selected,const XELP::DSI::AppleAdapter::Timing &timing) -> bool {
         if(!releaseDSILogical(fb))return false;
         auto cpu=o.timing;cpu.scalerFlags=timing.scalerFlags;
@@ -7700,6 +7707,8 @@ uint32_t XE::setDSIPresentation(IOService *fb,uint32_t mode,const XELP::DSI::App
     }
     receipt[11]=field<uint32_t>(fb,0x4338);receipt[12]=field<uintptr_t>(fb,0x4348);
     receipt[13]=o.presentationFault;receipt[14]=field<uint32_t>(path,0xF8);receipt[15]=field<uint32_t>(path,0xFC);
+    captureGPU(7);
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPresentationGPU",gpuState,sizeof(gpuState));
     o.changingThread=0;
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPresentation",receipt,sizeof(receipt));
     return changed ? kIOReturnSuccess : kIOReturnNotReady;
@@ -11989,7 +11998,7 @@ void XE::display13WMArmUpdate(IOService *fb) {
 		// Retain the software source/destination geometry with the first
 		// failed latch. OS orientation is independent of DSI wire timing;
 		// distinguish a native scaling request from a link/stride mismatch.
-		uint64_t geometry[48] {2,pipe,c.pipe[pipe].wm[0].width,c.pipe[pipe].wm[0].height,
+		uint64_t geometry[56] {3,pipe,c.pipe[pipe].wm[0].width,c.pipe[pipe].wm[0].height,
 			c.pipe[pipe].wm[0].htotal,c.pipe[pipe].wm[0].pixelHz,actualHz};
 		const unsigned fbOffsets[]={0x430C,0x4310,0x4314,0x4320,0x4324,0x4328,0x432C,0x4334,0x4338};
 		for(unsigned i=0;i<arrsize(fbOffsets);++i)geometry[7+i]=Display13FBMemory::field<uint32_t>(fb,fbOffsets[i]);
@@ -12014,6 +12023,12 @@ void XE::display13WMArmUpdate(IOService *fb) {
 		if(Display13FBIRQ::powered(geometryIO.read(0x45404),pipe)) {
 			const unsigned registers[]={0x70180,0x70188,0x7018C,0x70190,0x7019C,0x701A4,0x701AC,0x6001C};
 			for(unsigned i=0;i<arrsize(registers);++i)geometry[38+i]=geometryIO.read(registers[i]+0x1000*pipe);
+		}
+		if(dsiModeTarget(fb) && dsiPendingTarget(fb) && dsiPendingBacking.pipe &&
+		   dsiPendingBacking.pipe->getMetaClass()->getClassSize()>=0x12DC) {
+			const unsigned offsets[]={0x1264,0x1268,0x128C,0x1290,0x1294,0x12D8};
+			for(unsigned i=0;i<arrsize(offsets);++i)
+				geometry[48+i]=Display13FBMemory::field<uint32_t>(dsiPendingBacking.pipe,offsets[i]);
 		}
 		adlnPublishMemory("N97FBWMGeometryFailure",pipe,geometry,sizeof(geometry),true);
 		uint64_t cursor[8] {1,pipe};Display13FBDBUFIO readout {c.map};

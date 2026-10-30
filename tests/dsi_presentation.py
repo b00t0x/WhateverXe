@@ -14,7 +14,8 @@ code=r'''
 using Display13FBMemory::field;
 using XELP::DSI::AppleAdapter::Timing;
 using XELP::DSI::NativeBacking::Record;
-struct IOService {alignas(8) uint8_t bytes[0x4B90]{};};
+struct IOService {alignas(8) uint8_t bytes[0x4B90]{};IOService *getMetaClass(){return this;}unsigned getClassSize(){return sizeof(bytes);}};
+template<class T,unsigned N>constexpr unsigned arrsize(T(&)[N]){return N;}
 using OSObject=IOService;
 template<class T>void put(void *p,unsigned offset,T value){memcpy(static_cast<uint8_t *>(p)+offset,&value,sizeof(value));}
 struct IOLock {unsigned depth=0;};
@@ -23,7 +24,7 @@ void *current_thread(){return reinterpret_cast<void *>(1);}
 constexpr uint32_t kIOReturnNotReady=0xE00002D8,kIOReturnSuccess=0;
 uint64_t receiptCopy[16]{};
 struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}
- void setProperty(const char *,const void *p,unsigned n){assert(n==sizeof(receiptCopy));memcpy(receiptCopy,p,n);}};
+ void setProperty(const char *,const void *p,unsigned n){assert(n==sizeof(receiptCopy) || n==13*sizeof(uint64_t));if(n==sizeof(receiptCopy))memcpy(receiptCopy,p,n);}};
 struct {IOService *framebuffer=nullptr;Timing timing,presentation;XELP::DSI::Mode mode;
  uint32_t clientMode=0x80001000,activeMode=0;uintptr_t logical=0,changingThread=0;
  bool presentationReady=false,presentationFault=false;}dsiFixedMode;
