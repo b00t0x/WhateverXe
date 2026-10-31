@@ -285,7 +285,7 @@ private:
     bool probeDSIModeGeometry(IOService *);
     bool prepareDSINativeBacking(IOService *);
     bool validateDSINativeBacking();
-    bool paintDSINativeBacking(unsigned);
+    bool initializeDSINativeBacking();
     bool switchDSINativeSurface();
     bool dsiArmedBackingOwned(IOService *,OSObject *);
     bool retireDSINativeBacking(IOService *,OSObject *);

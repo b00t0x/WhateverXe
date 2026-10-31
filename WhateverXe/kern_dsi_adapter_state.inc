@@ -14,7 +14,7 @@ struct DSIPendingBackingOwner {
     bool allocating {},freeing {},allocated {},freed {},armed {},published {},modeReady {};
     uint32_t nativeResult {};
     Display13FBMemory::SurfaceReadout proof;
-    XELP::DSI::TestImage::Result image;
+    bool initialized {};
 };
 static DSIPendingBackingOwner dsiPendingBacking;
 static bool dsiPendingTarget(IOService *fb) {

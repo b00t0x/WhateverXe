@@ -6,7 +6,7 @@ import hashlib,re,subprocess,sys,tempfile
 root=Path(__file__).resolve().parents[1]
 s=read_source(root/'WhateverXe/kern_xe.cpp')
 functions='\n'.join(re.search(r'(?:bool|uint32_t|void) XE::'+name+r'\(.*?\n\}',s,re.S)[0] for name in
- ['wrapDSIBackingAllocate','wrapDSIBackingFree','prepareDSINativeBacking','validateDSINativeBacking','paintDSINativeBacking','discardDSINativeBacking','probeDSINativeBacking'])
+ ['wrapDSIBackingAllocate','wrapDSIBackingFree','prepareDSINativeBacking','validateDSINativeBacking','initializeDSINativeBacking','discardDSINativeBacking','probeDSINativeBacking'])
 state=re.search(r'struct DSIPendingBackingOwner \{.*?\n\};',s,re.S)[0]
 if len(sys.argv)>1:
  b=Path(sys.argv[1]).read_bytes();assert hashlib.sha256(b).hexdigest()=='bd1a21f5e622aadabdab6441f6b5c38ed73fa3053c783fdf0fb7e4b309f273d0'
@@ -18,7 +18,6 @@ if len(sys.argv)>1:
  assert 'routeMultipleShort' in installer
 code=r'''
 #include "kern_dsi_native_backing.hpp"
-#include "kern_dsi_test_image.hpp"
 #include "kern_dsi_quiesce.hpp"
 #include "kern_dsi_clock.hpp"
 #include <cassert>
@@ -59,7 +58,7 @@ using IOService=OSObject;using IOMemoryDescriptor=OSObject;
 #define OSDynamicCast(T,p) static_cast<T *>(p)
 uint64_t receipt[16]{};
 struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry root;return &root;}
- void setProperty(const char *name,const void *p,unsigned n){if(!strcmp(name,"WEXDSIImage")){assert(n==48);return;}assert(!strcmp(name,"WEXDSIBackingTrial") && n==sizeof(receipt));memcpy(receipt,p,n);}};
+ void setProperty(const char *name,const void *p,unsigned n){assert(!strcmp(name,"WEXDSIBackingTrial") && n==sizeof(receipt));memcpy(receipt,p,n);}};
 OSObject nativeMapping,nativeMemory,nativeDescriptor;
 IOService *modeFB=nullptr;bool dsiModeTarget(IOService *fb){return fb && modeFB==fb;}
 struct DSIModeScope {IORecursiveLock *lock;explicit DSIModeScope(IOService *fb):lock(field<IORecursiveLock*>(fb,0x4220)){if(lock)++fbDepth;}
@@ -102,7 +101,7 @@ struct XE {
  static bool dsiNativeUpdateAllowed(IOService *fb){assert(fbDepth);return available && !dsiPendingTarget(fb);}
  static uint32_t wrapDSIBackingAllocate(OSObject*,void*,uint32_t);
  static uint32_t wrapDSIBackingFree(OSObject*,void*,uint32_t);
- bool paintDSINativeBacking(unsigned);Session dsiSession;
+ bool initializeDSINativeBacking();Session dsiSession;
  bool publishDSINativeBacking(){assert(gpuDepth==1 && fbDepth && !ownerDepth);return true;}
  bool switchDSINativeSurface(){assert(gpuDepth==1 && fbDepth && !ownerDepth);return true;}
  bool probeDSIModeGeometry(IOService*){assert(fbDepth && !ownerDepth && !gpuDepth);return true;}
@@ -135,10 +134,11 @@ struct Case {
  void discard(){assert(xe.discardDSINativeBacking(&fb));}
 };
 int main(){
- {Case c;failCPUMap=true;assert(!c.xe.prepareDSINativeBacking(&c.fb));assert(!dsiPendingBacking.image.complete && !cpuMaps);c.discard();}
- {Case c;assert(c.xe.prepareDSINativeBacking(&c.fb));
-  assert(dsiPendingBacking.image.complete && dsiPendingBacking.image.bytes==sizeof(cpuImage) && dsiPendingBacking.image.digest==0xf89939c5 && !cpuMaps);
-  c.discard();assert(!dsiPendingBacking.image.complete);}
+ {Case c;failCPUMap=true;assert(!c.xe.prepareDSINativeBacking(&c.fb));assert(!dsiPendingBacking.initialized && !cpuMaps);c.discard();}
+ {Case c;memset(cpuImage,0xA5,sizeof(cpuImage));assert(c.xe.prepareDSINativeBacking(&c.fb));
+  assert(dsiPendingBacking.initialized && !cpuMaps);
+  for(auto pixel:cpuImage)assert(pixel==0);
+  c.discard();assert(!dsiPendingBacking.initialized);}
 
  {Case c;const auto a=allocCalls,f=freeCalls;DSIModeScope scope(&c.fb);
   available=false;c.xe.probeDSINativeBacking(&c.fb);assert(!c.xe.dsiBackingAttempted && allocCalls==a && receipt[2]==1);

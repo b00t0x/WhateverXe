@@ -10,7 +10,6 @@
 #include "kern_dsi_native_cache.hpp"
 #include "kern_dsi_native_backing.hpp"
 #include "kern_dsi_native_mode.hpp"
-#include "kern_dsi_test_image.hpp"
 #include "kern_xe.hpp"
 #include "kern_framebuffer_donor.hpp"
 #include "kern_xelp_os.hpp"

@@ -14,7 +14,7 @@ published=re.search(r'static bool dsiPublishedTarget\(.*?\n\}',s,re.S)[0]
 q=(root/'tests/dsi_quiesce_adapter.py').read_text()
 q=q.split("code=r'''",1)[1].split("'''.replace",1)[0]
 prelude='#define DSI_SURFACE_REPLAY\n'+q[:q.index('struct XE {')]
-prelude=prelude.replace('#include "kern_dsi_boot.hpp"','#include "kern_dsi_boot.hpp"\n#include "kern_dsi_surface.hpp"\n#include "kern_dsi_test_image.hpp"\n#include "kern_dsi_native_backing.hpp"\n#include "kern_display13_clock.hpp"')
+prelude=prelude.replace('#include "kern_dsi_boot.hpp"','#include "kern_dsi_boot.hpp"\n#include "kern_dsi_surface.hpp"\n#include "kern_dsi_native_backing.hpp"\n#include "kern_display13_clock.hpp"')
 b=(root/'tests/dsi_boot.cpp').read_text();prelude=prelude.replace('FIXTURE',b[b.index('struct IO {'):b.index('Boot capture(')])
 prelude=prelude.replace('bool armedOwner=false,failNativeRetire=false;unsigned nativeRetires=0;IOService *pendingFB=nullptr;bool dsiPendingTarget(IOService *fb){return fb && pendingFB==fb;}',state+'\nDSIPendingBackingOwner dsiPendingBacking;\nbool dsiPendingTarget(IOService *fb){return fb && dsiPendingBacking.framebuffer==fb;}')
 prelude=prelude.replace('#include "kern_dsi_native_backing.hpp"','#include "kern_dsi_native_backing.hpp"\n#include "kern_dsi_native_mode.hpp"')
@@ -24,7 +24,7 @@ prelude=prelude.replace('struct {uintptr_t record=0;}scanout;','Display13FBMemor
 prelude=prelude.replace('struct {bool ready=true;}dsiFixedMode;','struct {bool ready=true;AppleAdapter::Timing timing;}dsiFixedMode;')
 prelude=prelude.replace(' void retain(){',' uint32_t callPlatformFunction(const char*,bool,void*,void*,void*,void*);\n void retain(){')
 prelude=prelude[:prelude.index('void tick(unsigned us)')]+published+r'''
-uint64_t elapsed=0;unsigned gpuDepth=1;bool failPaint=false,failDiscard=false;unsigned discards=0;
+uint64_t elapsed=0;unsigned gpuDepth=1;bool failDiscard=false;unsigned discards=0;
 template<class T>void put(void *p,unsigned o,T v){memcpy(static_cast<uint8_t*>(p)+o,&v,sizeof(v));}
 void *current_thread(){return reinterpret_cast<void*>(1);}
 void clock_get_uptime(uint64_t *v){*v=elapsed*1000;}void absolutetime_to_nanoseconds(uint64_t t,uint64_t *v){*v=t;}
@@ -60,15 +60,13 @@ uint32_t logical(IOService*){assert(!gpuDepth && locks==std::vector<unsigned>{1}
 void initial(IOService *fb,uint32_t arg){assert(!gpuDepth && locks==std::vector<unsigned>{1} && !arg);++cpuInitial;
  put(fb,0x4000,0U);put(fb,0x4008,UINT32_MAX);put(fb,0x400C,UINT32_MAX);put(fb,0x4200,1U);}
 void caps(IOService *fb){assert(!gpuDepth && locks==std::vector<unsigned>{1});++cpuCaps;put(fb,0x402C,1U);}
-uint64_t receipt[24]{};
+uint64_t receipt[18]{};
 struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}
  void setProperty(const char *name,const void *p,unsigned n){if(!strcmp(name,"WEXDSISurface")){assert(n==sizeof(receipt));memcpy(receipt,p,n);}else assert(n==96);}};
 struct XE {
  bool dsiNativeWriterHooksReady=true,dsiResourcesReady=true,dsiCacheHooksReady=true,dsiBackingHooksReady=true;
  bool dsiStopAttempted=false,dsiIRQParked=false,dsiDDIReleased=false;
  Profile dsiProfile;Boot dsiBoot;Quiesce::Result dsiStop;Clock::Result dsiClockStop;Session dsiSession;Session::Cleanup dsiCleanup;
- bool paintDSINativeBacking(unsigned phase){assert(phase==1 && locks==std::vector<unsigned>{1} && gpuDepth==1);
-  if(failPaint)return false;dsiPendingBacking.image.digest=0x686999c5;return true;}
  bool discardDSINativeBacking(IOService *fb){assert(locks==std::vector<unsigned>{1} && !gpuDepth && !dsiPendingBacking.armed && dsiPendingTarget(fb));
   ++discards;if(failDiscard)return false;dsiPendingBacking={};return true;}
  uintptr_t dsiComputeGeometry=reinterpret_cast<uintptr_t>(compute),orgAlderLakeNScanoutFree=reinterpret_cast<uintptr_t>(freeSlot);
@@ -114,7 +112,7 @@ case=case.replace('xe.adlnTopologyController=&controller;','').replace('put(&con
   assert(AppleAdapter::makeTiming(xe.dsiProfile,dsiFixedMode.timing));
   put(&fb,0x4A00,1U);put(&fb,0x4A08,&path);put(&controller,0xDF5,uint8_t(3));put(&controller,0xDF4,uint8_t(1));put(&controller,0xDF0,1U);
   put(&controller,0x1A10,1U);put(&fb,0x4288,uint8_t(0));failSlotReturn=failCache=failLogical=failModeDBUF=false;slotReturns=cpuInitial=cpuCaps=0;
-  o.image.complete=true;o.image.digest=0xf89939c5;elapsed=0;gpuDepth=1;failPaint=failDiscard=false;discards=0;memset(receipt,0,sizeof(receipt));
+  o.initialized=true;elapsed=0;gpuDepth=1;failDiscard=false;discards=0;memset(receipt,0,sizeof(receipt));
 ''')
 code=prelude+functions+'\n'+case+r'''
  bool run(){locks={1};bool result=xe.switchDSINativeSurface();assert(locks==std::vector<unsigned>{1});locks.clear();dsiPendingBacking.allocating=false;gpuDepth=0;return result;}
@@ -123,16 +121,18 @@ code=prelude+functions+'\n'+case+r'''
  ~Case(){assert(locks.empty());dsiPendingBacking={};}
 };
 int main(){
- {Case c;assert(c.run());assert(receipt[11]==unsigned(Surface::Status::Complete) && receipt[12]==17 && receipt[20]);
-  assert(receipt[10]==0xf89939c5 && receipt[17]==0x686999c5 && receipt[19]>receipt[18]);
+ {Case c;dsiPendingBacking.initialized=false;const auto before=c.map.bar;assert(!c.run());
+  assert(c.map.bar==before && !dsiPendingBacking.armed);}
+ {Case c;assert(c.run());assert(receipt[0]==2 && receipt[10]==unsigned(Surface::Status::Complete) && receipt[11]==17);
+  assert(receipt[17]>receipt[16]);
   assert(c.map.reg(0x7019C)==c.record.gpu && c.map.reg(0x701AC)==c.record.gpu && c.map.reg(0x70188)==34);
   assert(c.xe.dsiSession.state==SessionState::Streaming && dsiPendingBacking.armed && c.xe.dsiArmedBackingOwned(&c.fb,&c.path));
   assert(!c.retire() && !discards);c.stopped();assert(c.retire() && discards==1 && !dsiPendingTarget(&c.fb));
   assert(c.xe.dsiSession.state==SessionState::Released && c.xe.dsiCleanup.retiredBacking==reinterpret_cast<uintptr_t>(&c.xe.dsiBoot));}
- for(unsigned fail=0;fail<3;++fail){Case c;
-  if(fail==0)c.map.freeze=true;else if(fail==1)failPaint=true;else display13FBIRQ.state.enabled=false;
+ for(unsigned fail=0;fail<2;++fail){Case c;
+  if(fail==0)c.map.freeze=true;else display13FBIRQ.state.enabled=false;
   const auto before=c.map.bar;assert(!c.run());
-  if(fail==2){assert(!dsiPendingBacking.armed && c.map.bar==before && c.xe.dsiSession.state==SessionState::Unbound);continue;}
+  if(fail==1){assert(!dsiPendingBacking.armed && c.map.bar==before && c.xe.dsiSession.state==SessionState::Unbound);continue;}
   assert(dsiPendingBacking.armed && c.xe.dsiSession.state==SessionState::Faulted && !c.retire() && !discards);
   c.stopped();failDiscard=true;assert(!c.retire() && dsiPendingBacking.armed && c.xe.dsiSession.state==SessionState::Released);
   assert(c.xe.dsiArmedBackingOwned(&c.fb,&c.path));failDiscard=false;assert(c.retire() && discards==2);}
@@ -152,7 +152,7 @@ int main(){
   if(!failure)assert(dsiPublishedTarget(&c.fb) && dsiPendingBacking.modeReady && Display13FBMemory::field<uint32_t>(&c.fb,0x4330)==c.record.gpu);
   locks.clear();
  }
- puts("PASS production DSI surface: actual MMIO allowlist/WM/latch, second image frame, GPU/owner/IRQ locking, retained partial switches and stopped cleanup retry");
+ puts("PASS production DSI surface: actual MMIO allowlist/WM/latch, GPU/owner/IRQ locking, retained partial switches and stopped cleanup retry");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='dsi-surface-adapter-') as directory:

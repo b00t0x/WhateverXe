@@ -48,7 +48,7 @@ uint32_t XE::wrapDSIBackingAllocate(OSObject *pipe,void *record,uint32_t flags) 
         o.pinnedMap->retain();o.pinnedMemory->retain();
     }
     return o.allocated && callbackXE->validateDSINativeBacking() &&
-        callbackXE->paintDSINativeBacking(0) && callbackXE->switchDSINativeSurface() &&
+        callbackXE->initializeDSINativeBacking() && callbackXE->switchDSINativeSurface() &&
         callbackXE->publishDSINativeBacking() ? result : kIOReturnNotReady;
 }
 
@@ -208,45 +208,40 @@ bool XE::validateDSINativeBacking() {
 // Mapping and writes remain inside the same native GPU lock as the allocator
 // and full PTE proof. The GPU map is IGAccelMemoryMap, not IOMemoryMap: create
 // a separate CPU mapping from its validated SysMemory descriptor.
-bool XE::paintDSINativeBacking(unsigned phase) {
+bool XE::initializeDSINativeBacking() {
     auto &o=dsiPendingBacking;
-    o.image={};
-    if(!o.allocating || !o.allocated || (o.armed && dsiSession.state!=XELP::DSI::SessionState::Streaming) || !o.record || !o.pinnedMemory ||
+    if(!o.allocating || !o.allocated || o.armed || !o.record || !o.pinnedMemory ||
        o.thread!=reinterpret_cast<uintptr_t>(current_thread()) ||
        !XELP::DSI::NativeBacking::allocated(*o.record,dsiProfile,o.proof))return false;
+    o.initialized=false;
     auto descriptor=OSDynamicCast(IOMemoryDescriptor,Display13FBMemory::field<OSObject *>(o.pinnedMemory,0xD0));
     if(!descriptor || descriptor->getLength()<o.proof.bytes)return false;
-    const auto shape=XELP::DSI::TestImage::layout(dsiProfile.mode.width,dsiProfile.mode.height,
-        static_cast<uint32_t>(o.proof.pitch),o.proof.bytes);
-    if(!shape.valid())return false;
     auto map=descriptor->createMappingInTask(kernel_task,0,kIOMapAnywhere,0,o.proof.bytes);
     if(!map)return false;
     const auto address=map->getVirtualAddress();
     if(address && map->getLength()==o.proof.bytes && !(address&4095)) {
-        o.image=XELP::DSI::TestImage::paint(reinterpret_cast<volatile uint32_t *>(address),map->getLength(),shape,phase);
-        if(o.image.complete) {
-            for(uint64_t offset=0;offset<o.proof.bytes;offset+=64)
-                asm volatile("clflush (%0)"::"r"(address+offset):"memory");
-            asm volatile("mfence":::"memory");
-        }
+        // Clear the entire allocation, including tile padding, before it can
+        // become visible. Black is independent of the Y-tile pixel swizzle.
+        memset(reinterpret_cast<void *>(address),0,o.proof.bytes);
+        for(uint64_t offset=0;offset<o.proof.bytes;offset+=64)
+            asm volatile("clflush (%0)"::"r"(address+offset):"memory");
+        asm volatile("mfence":::"memory");
+        o.initialized=true;
     }
     map->release();
-    uint64_t receipt[] {1,phase,o.image.complete,o.image.bytes,o.image.digest,o.proof.gpu};
-    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIImage",receipt,sizeof(receipt));
-    return o.image.complete;
+    return o.initialized;
 }
 
 // The allocator's native GPU lock and FB mutex span this transaction. The
 // owner lock protects shared clock/DDB/IRQ association; no IRQ spinlock spans
-// the bounded frame wait. Keep backing private in P2: normal native flips and
-// mode-success publication belong to the desktop adapter.
+// the bounded frame wait. Publish the backing only after the plane has latched.
 bool XE::switchDSINativeSurface() {
     using namespace XELP::DSI;
     auto &o=dsiPendingBacking;auto &c=display13FBPower;auto &irq=display13FBIRQ;
     auto fb=o.framebuffer;
-    if(!fb || !o.image.complete || !o.allocating || !o.allocated || o.armed || !o.record || !c.lock ||
+    if(!fb || !o.initialized || !o.allocating || !o.allocated || o.armed || !o.record || !c.lock ||
        o.thread!=reinterpret_cast<uintptr_t>(current_thread()) || dsiSession.state!=SessionState::Unbound)return false;
-    uint64_t receipt[24] {1,1};
+    uint64_t receipt[18] {2,1};
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSISurface",receipt,sizeof(receipt));
     auto path=Display13FBMemory::singlePath<OSObject *>(fb);
     IOLockLock(c.lock);
@@ -314,35 +309,19 @@ bool XE::switchDSINativeSurface() {
             if(!o.armed)dsiSession={};
         }
         receipt[3]=ddb;receipt[4]=cursorDDB;receipt[5]=hz;receipt[6]=wm.allocation;
-        receipt[7]=next.control;receipt[8]=next.stride;receipt[9]=next.surface;receipt[10]=o.image.digest;
+        receipt[7]=next.control;receipt[8]=next.stride;receipt[9]=next.surface;
     }
-    receipt[11]=static_cast<uint32_t>(result.status);receipt[12]=result.writes;
-    receipt[13]=static_cast<uint32_t>(result.wm.status);receipt[14]=static_cast<uint32_t>(result.latch.status);
-    receipt[15]=static_cast<uint32_t>(dsiSession.state);receipt[16]=o.armed;
+    receipt[10]=static_cast<uint32_t>(result.status);receipt[11]=result.writes;
+    receipt[12]=static_cast<uint32_t>(result.wm.status);receipt[13]=static_cast<uint32_t>(result.latch.status);
+    receipt[14]=static_cast<uint32_t>(dsiSession.state);receipt[15]=o.armed;
+    receipt[16]=result.latch.frameBefore;receipt[17]=result.latch.frameAfter;
+    // Surface::change already proves frame progress, the live surface and
+    // source/owner stability before completing the session transaction.
     const bool switched=result.status==Surface::Status::Complete;
     IOLockUnlock(c.lock);
-    // A second pattern changes the contents of the same owned live surface.
-    // Keep native GPU serialization, flush it, then prove scanout advances.
-    bool updated=false;
-    if(switched && paintDSINativeBacking(1)) {
-        IOLockLock(c.lock);
-        receipt[17]=o.image.digest;receipt[18]=io.read(0x70040);
-        for(unsigned us=0;us<=100000;us+=1000) {
-            receipt[19]=io.read(0x70040);
-            const uint32_t frames=static_cast<uint32_t>(receipt[19]-receipt[18]);
-            if(frames && frames<0x80000000U) {
-                updated=owned() && Surface::source(io,c.bootDSI) &&
-                    Surface::word(io,0x701AC,UINT32_MAX,static_cast<uint32_t>(o.proof.gpu));break;
-            }
-            if(!owned() || receipt[19]==UINT32_MAX)break;
-            io.delayUs(1000);
-        }
-        IOLockUnlock(c.lock);
-    }
-    if(switched && !updated)dsiSession.abort(dsiSession.ticket(),SessionError::Switch);
-    receipt[1]=2;receipt[20]=updated;receipt[21]=static_cast<uint32_t>(dsiSession.state);
+    receipt[1]=2;
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSISurface",receipt,sizeof(receipt));
-    return switched && updated;
+    return switched;
 }
 
 // Still inside allocateScanoutMemory's GPU lock and the FB mutex. Transfer
@@ -577,7 +556,7 @@ bool XE::discardDSINativeBacking(IOService *fb) {
         owner=o.accelerator;pipe=o.pipe;record=o.record;mapping=o.pinnedMap;memory=o.pinnedMemory;
         __atomic_store_n(&o.framebuffer,static_cast<IOService *>(nullptr),__ATOMIC_RELEASE);
         __atomic_store_n(&o.pipe,static_cast<OSObject *>(nullptr),__ATOMIC_RELEASE);
-        o.accelerator=nullptr;o.record=nullptr;o.pinnedMap=o.pinnedMemory=nullptr;__atomic_store_n(&o.thread,uintptr_t(0),__ATOMIC_RELEASE);o.allocated=o.freed=o.published=o.modeReady=false;o.nativeResult=0;o.proof={};o.image={};
+        o.accelerator=nullptr;o.record=nullptr;o.pinnedMap=o.pinnedMemory=nullptr;__atomic_store_n(&o.thread,uintptr_t(0),__ATOMIC_RELEASE);o.allocated=o.freed=o.published=o.modeReady=false;o.nativeResult=0;o.proof={};o.initialized=false;
     }
     IOFree(record,sizeof(XELP::DSI::NativeBacking::Record));
     if(mapping)mapping->release();if(memory)memory->release();if(pipe)pipe->release();owner->release();fb->release();return true;
