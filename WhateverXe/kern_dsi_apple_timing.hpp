@@ -93,7 +93,7 @@ inline bool makePanelEDID(const Mode &m,uint8_t (&edid)[128]) {
     d[11]=((m.hfront>>8)<<6)|((m.hsync>>8)<<4)|((m.vfront>>4)<<2)|(m.vsync>>4);
     d[12]=m.widthMM;d[13]=m.heightMM;d[14]=((m.widthMM>>8)<<4)|(m.heightMM>>8);
     d[17]=0x18; // separate negative sync, matching the fixed Apple timing
-    edid[75]=0xFC;memcpy(edid+77,"WEX DSI VBT\n  ",13);
+    edid[75]=0xFC;memcpy(edid+77,"MIPI DSI\n    ",13);
     edid[93]=0x10;edid[111]=0x10; // unused descriptor slots
     uint8_t sum=0;for(unsigned i=0;i<127;++i)sum+=edid[i];edid[127]=static_cast<uint8_t>(0-sum);
     return true;

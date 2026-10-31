@@ -62,7 +62,7 @@ int main() {
     assert(((d[10]>>4)|(((d[11]>>2)&3)<<4))==40 && ((d[10]&15)|((d[11]&3)<<4))==2);
     assert(d[12]==86 && d[13]==154 && !d[14] && d[17]==0x18);
     for(unsigned i=35;i<38;i++)assert(!edid[i]);for(unsigned i=38;i<54;i++)assert(edid[i]==1);
-    assert(edid[75]==0xFC && !memcmp(edid+77,"WEX DSI VBT",11));
+    assert(edid[75]==0xFC && !memcmp(edid+77,"MIPI DSI\n    ",13));
     auto bad=p.mode;bad.width=4096;assert(!AppleAdapter::makePanelEDID(bad,edid));
     bad=p.mode;bad.vfront=64;assert(!AppleAdapter::makePanelEDID(bad,edid));
     bad=p.mode;bad.clockKHz=10001;assert(AppleAdapter::makePanelEDID(bad,edid));
