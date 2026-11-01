@@ -16,7 +16,13 @@
 namespace ShutdownObserver {
 static const char *traceKey="4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:wex-shutdown-trace";
 struct Event { uint32_t code, detail; uint64_t time, pc; char label[24]; };
-struct Journal { uint32_t magic, version; uint64_t run; uint32_t count, dropped, failed, reserved; Event events[32]; };
+struct Journal {
+ uint32_t magic, version; uint64_t run; uint32_t count, dropped, failed, reserved; Event events[32];
+ // Latest hwShutdown entry/return. The port snapshot is memory-only; it
+ // distinguishes retained software ownership from a missing native return.
+ uint32_t display[2][48];
+};
+static_assert(sizeof(Journal)==1952,"bounded NVRAM journal");
 static Journal journal {};
 static IODTNVRAM *nvram;
 static OSData *snapshots[2];
@@ -31,6 +37,8 @@ static int (*orgSync)(proc_t,void *,int *);
 static void (*orgHaltLog)(const char *,const void *,uint64_t);
 static int (*orgPEHalt)(unsigned int,uint32_t);
 static void (*orgPlatform)(void *,unsigned int);
+static uint32_t (*orgDisplayShutdown)(void *,void *);
+static DisplaySnapshot displaySnapshot;
 // _sync starts with a RIP-relative LEA. Lilu copies prologues verbatim,
 // so replay that exact prefix with its original callback address explicitly.
 extern "C" {
@@ -42,7 +50,8 @@ __attribute__((naked,noinline)) static int syncBridge(proc_t,void *,int *) {
 static void publish() { IORegistryEntry::getRegistryRoot()->setProperty("WEXShutdownObserver",ready,sizeof(ready)); }
 // All call sites precede the final platform power-off. Refuse an interrupt-off
 // context; never take a blocking diagnostic lock or allocate journal storage here.
-static void record(uint32_t code,uint32_t detail=0,const char *label=nullptr,const void *pc=nullptr) {
+static void record(uint32_t code,uint32_t detail=0,const char *label=nullptr,const void *pc=nullptr,
+                   const uint32_t *display=nullptr) {
  if(!armed || !ml_get_interrupts_enabled())return;
  if(!IOLockTryLock(lock)){OSIncrementAtomic(reinterpret_cast<volatile SInt32 *>(&journal.dropped));return;}
  if(journal.count>=128){IOLockUnlock(lock);return;}
@@ -50,6 +59,10 @@ static void record(uint32_t code,uint32_t detail=0,const char *label=nullptr,con
  e.code=code;e.detail=detail;e.time=mach_absolute_time();e.pc=reinterpret_cast<uint64_t>(pc);
  if(label)strlcpy(e.label,label,sizeof(e.label));
  ++journal.count;
+ if(display && (code==70 || code==71)) {
+  auto dst=journal.display[code-70];memcpy(dst,display,sizeof(journal.display[0]));
+  dst[0]=journal.count;dst[3]=detail;
+ }
  auto data=snapshots[journal.count%2];
  memcpy(const_cast<void *>(data->getBytesNoCopy()),&journal,sizeof(journal));
  const bool written=nvram->setProperty(traceSymbol,data);
@@ -80,6 +93,13 @@ static int wrapSync(proc_t p,void *a,int *r) { record(30);int v=orgSync(p,a,r);r
 static int wrapReboot(int howto,char *message) { record(10,howto);return orgReboot(howto,message); }
 static void wrapNotify(int stage) { record(20,stage);orgNotify(stage);record(21,stage); }
 static void wrapPlatform(void *self,unsigned int type) { record(60,type);orgPlatform(self,type);record(61,type); }
+static uint32_t wrapDisplayShutdown(void *controller,void *fb) {
+ if(!armed || !displaySnapshot || !ml_get_interrupts_enabled())return orgDisplayShutdown(controller,fb);
+ uint32_t state[48] {};displaySnapshot(controller,fb,state);record(70,0,"hwShutdown",nullptr,state);
+ const auto result=orgDisplayShutdown(controller,fb);
+ bzero(state,sizeof(state));displaySnapshot(controller,fb,state);record(71,result,"hwShutdown",nullptr,state);
+ return result;
+}
 static int wrapPEHalt(unsigned int type,uint32_t details) { if(type==0 || type==1 || type==3)record(50,type);int v=orgPEHalt(type,details);if(type==0 || type==1 || type==3)record(51,type);return v; }
 static void wrapHaltLog(const char *what,const void *pc,uint64_t time) {
  orgHaltLog(what,pc,time);
@@ -112,7 +132,7 @@ void install(KernelPatcher &p) {
  syncNvram=reinterpret_cast<decltype(syncNvram)>(sync);
  // NVRAM may not be published when Lilu routes the kernel; resolve it on arm.
  lock=IOLockAlloc();traceSymbol=OSSymbol::withCString(traceKey);
- journal.magic=0x57585344;journal.version=1;journal.run=mach_absolute_time()^base;ready[1]=journal.run;
+ journal.magic=0x57585344;journal.version=2;journal.run=mach_absolute_time()^base;ready[1]=journal.run;
  snapshots[0]=OSData::withBytes(&journal,sizeof(journal));snapshots[1]=OSData::withBytes(&journal,sizeof(journal));
  if(!lock || !traceSymbol || !snapshots[0] || !snapshots[1]){ready[6]=1;publish();return;}
  KernelPatcher::RouteRequest routes[]={
@@ -140,5 +160,22 @@ void install(KernelPatcher &p) {
  if(p.routeMultipleShort(KernelPatcher::KernelID,routes,arrsize(routes))){ready[2]=63;sysctl_register_oid(&sysctl__debug_wex_shutdown_arm);}
  else {ready[6]=4;ready[7]=static_cast<uint64_t>(p.getError());p.clearError();}
  publish();
+}
+void installFramebuffer(KernelPatcher &p,size_t index,mach_vm_address_t address,size_t size,DisplaySnapshot snapshot) {
+ // Reuse the explicitly enabled, exact-kernel observer. This optional route
+ // never becomes a prerequisite for normal framebuffer operation.
+ if(ready[2]!=63 || !snapshot)return;
+ const char *symbol="__ZN31AppleIntelFramebufferController10hwShutdownEP21AppleIntelFramebuffer";
+ const uint8_t entry[]={0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xec,0x18};
+ const auto target=p.solveSymbol<mach_vm_address_t>(index,symbol,address,size);p.clearError();
+ const auto delta=static_cast<int64_t>(reinterpret_cast<uintptr_t>(wrapDisplayShutdown)-(target+5));
+ bool known=size>0x51d4b && target==address+0x5173a &&
+  !memcmp(reinterpret_cast<const void *>(target),entry,sizeof(entry)) && delta==static_cast<int32_t>(delta);
+ if(known) {
+  KernelPatcher::RouteRequest route(symbol,wrapDisplayShutdown,orgDisplayShutdown);
+  known=p.routeMultipleShort(index,&route,1,address,size);p.clearError();
+  if(known)displaySnapshot=snapshot;
+ }
+ IORegistryEntry::getRegistryRoot()->setProperty("WEXShutdownDisplayObserver",known);
 }
 }

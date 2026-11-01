@@ -11,6 +11,7 @@
 #include "kern_dsi_native_backing.hpp"
 #include "kern_dsi_native_mode.hpp"
 #include "kern_xe.hpp"
+#include "kern_shutdown_observer.hpp"
 #include "kern_framebuffer_donor.hpp"
 #include "kern_xelp_os.hpp"
 #include "kern_alderlake_n.hpp"
@@ -11890,6 +11891,26 @@ bool XE::processTGLAccelerator(KernelPatcher &patcher, size_t index, mach_vm_add
 
 // One entry owns donor ABI/lifecycle repairs for every hardware backend.
 // Backend installers cannot independently opt into or replace these hooks.
+void XE::snapshotDisplay13Shutdown(void *controller,void *fb,uint32_t *out) {
+ // Diagnostics must neither enter a gated native call nor wait behind the
+ // shutdown path. No MMIO, power transitions, or register serializers here.
+ auto &c=display13FBPower;
+ out[1]=1;out[2]=UINT32_MAX;
+ if(!c.lock || !IOLockTryLock(c.lock))return;
+ if(controller!=c.controller || !fb || !c.tcSupported) {IOLockUnlock(c.lock);return;}
+ out[2]=Display13FBMemory::field<uint32_t>(fb,0x1DC);
+ out[4]=1;out[5]=c.clockFaulted;out[6]=c.tcBankFaulted;out[7]=c.bridge.state.faulted;
+ for(unsigned tc=0;tc<4;++tc) {
+  auto &m=c.tcMode[tc];auto port=c.tcObject[tc];auto row=out+8+10*tc;
+  row[0]=port?Display13FBMemory::field<uint32_t>(port,0x550):UINT32_MAX;
+  row[1]=static_cast<uint32_t>(m.phase);row[2]=m.disconnectPending;row[3]=m.ownership.active;
+  row[4]=m.accessLease.domains;row[5]=m.auxLease.domains;
+  row[6]=c.bridge.nativeDDIRefs(tc+3);row[7]=c.bridge.nativeAUXRefs(tc+3);
+  row[8]=c.tcBusy[tc];row[9]=c.tcSignalReady[tc];
+ }
+ IOLockUnlock(c.lock);
+}
+
 bool XE::processFramebufferKext(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
  if(framebufferDonorAttempted)return framebufferBackendInstalled;
  framebufferDonorAttempted=true;
@@ -11901,6 +11922,8 @@ bool XE::processFramebufferKext(KernelPatcher &patcher,size_t index,mach_vm_addr
  KernelPatcher::RouteRequest gate(symbol,wrapFramebufferStart,orgFramebufferStart);
  const bool routed=patcher.routeMultiple(index,&gate,1,address,size);patcher.clearError();
  if(!routed)return false;
+ if(display13FramebufferRequested)
+  ShutdownObserver::installFramebuffer(patcher,index,address,size,snapshotDisplay13Shutdown);
  framebufferDonorCommonReady=processFramebufferCommon(patcher,index,address,size);
  // Install hardware routes even after a common failure so their diagnostics
  // remain available. The common start gate never enters native startup then.
