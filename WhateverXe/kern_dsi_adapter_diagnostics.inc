@@ -68,7 +68,8 @@ bool XE::probeDSICommands(IOService *controller) {
 // Bootstrap-only panel sequence experiment. By default retain host/PHY/PLL;
 // the optional host trial rebuilds them before panel INIT_OTP. Neither path
 // releases shared resources or enables runtime power transitions.
-bool XE::probeDSIPanel(IOService *controller) {
+bool XE::probeDSIPanel(IOService *controller,bool prepareExternalClock) {
+    const bool restart=dsiHostTest || prepareExternalClock;
     auto &c=display13FBPower;auto &clock=comboClockTransaction;auto &irq=display13FBIRQ;
     if(!controller || !c.lock || !clock.lock || !irq.lock)return false;
     IORecursiveLockLock(clock.lock);IOLockLock(c.lock);
@@ -110,7 +111,7 @@ bool XE::probeDSIPanel(IOService *controller) {
             return lastGPIO.complete;
         }
         void delayUs(unsigned us){IODelay(us);}
-    } io{c.map,owned,irq.lock,dsiHostTest,dsiBoot.source.identity.pll};
+    } io{c.map,owned,irq.lock,restart,dsiBoot.source.identity.pll};
     Display13Clock::Change bootCDClock;
     struct Lifecycle {
         bool enabled,prepareExternal;XELPComboClock::ClockAllocation &allocation;uintptr_t owner;
@@ -144,7 +145,7 @@ bool XE::probeDSIPanel(IOService *controller) {
             if(!XELP::DSI::Restart::start(io,allocation,owner,state))return false;
             source=XELP::DSI::Restart::expected(source,state);return source.complete();
         }
-    } lifecycle{dsiHostTest,!dsiPanelOnly,clock.allocation,reinterpret_cast<uintptr_t>(controller),dsiHostRestart,bootCDClock};
+    } lifecycle{restart,!dsiPanelOnly,clock.allocation,reinterpret_cast<uintptr_t>(controller),dsiHostRestart,bootCDClock};
     uint64_t record[32] {1};
     record[1]=io.ready() && !dsiPanelTrial.attempted && dsiProfile.valid() &&
         !dsiCommandHost.faulted && !dsiCommandHost.pending &&
@@ -175,14 +176,14 @@ bool XE::probeDSIPanel(IOService *controller) {
     record[17]=io.lastGPIO.role;record[18]=io.lastGPIO.value;record[19]=io.lastGPIO.complete;
     const bool complete=record[1] && r.complete() && record[30];record[31]=complete;
     const auto &host=dsiHostRestart;const auto &p=host.config;
-    uint64_t hostRecord[20] {1,dsiHostTest,static_cast<uint32_t>(host.stage),static_cast<uint32_t>(host.error),
+    uint64_t hostRecord[20] {1,restart,static_cast<uint32_t>(host.stage),static_cast<uint32_t>(host.error),
         host.reg,host.value,host.writes,host.waitUs,host.stopped,host.started,host.pll,
         p.pll.cfg0(),p.pll.cfg1(),p.link.clockTiming,p.link.dataTiming,p.hsTimeout,p.lpTimeout,p.taTimeout,
         record[30],complete};
     IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPanelTrial",record,sizeof(record));
-    if(dsiHostTest)IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIHostRestart",hostRecord,sizeof(hostRecord));
-    if(dsiHostTest && !dsiPanelOnly)
+    if(restart)IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIHostRestart",hostRecord,sizeof(hostRecord));
+    if(restart && !dsiPanelOnly)
         IORegistryEntry::getRegistryRoot()->setProperty("N97FBDSIBootCDClock",&bootCDClock,sizeof(bootCDClock));
     return complete;
 }

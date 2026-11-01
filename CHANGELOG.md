@@ -10,6 +10,8 @@ Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphi
 
 ### Fixed
 
+- Prepare the shared display clock automatically for MIPI DSI with external outputs, avoiding startup and hotplug freezes when the optional host trial is disabled.
+
 - Accept compatible MIPI DSI firmware layouts before BDB 256, inline panel-reset sequences, and the second native panel GPIO bank.
 - Publish MIPI DSI timings that exceed base EDID limits through a DisplayID extension, preserving the firmware link timing.
 - Allow frame-period-based command completion waits while MIPI DSI video is active, fixing display wake timeouts for panels with a separate display-on sequence.

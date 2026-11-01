@@ -112,7 +112,7 @@ ADL-P/RPL-Pは物理IDと検出したGPU資源を自動で使用します。devi
 
 内蔵ディスプレイの輝度調整には、OpenCoreへ`SSDT-PNLF`を追加してください。
 
-DSI profileはfirmware VBT（BDB 236–256）から読み取り、native panel GPIOの1組目・2組目と、初期化列に組み込まれたreset操作に対応します。基本EDIDの表現範囲を超えるタイミングはDisplayID拡張で記述し、物理パネルのタイミングは保持します。single-link・4-lane・RGB888 video modeの制約は維持します。
+DSI profileはfirmware VBT（BDB 236–256）から読み取り、native panel GPIOの1組目・2組目と、初期化列に組み込まれたreset操作に対応します。基本EDIDの表現範囲を超えるタイミングはDisplayID拡張で記述し、物理パネルのタイミングは保持します。single-link・4-lane・RGB888 video modeの制約は維持します。 外部出力が有効な場合は、native mode開始前に必要な共有表示clockを準備します。この準備に `-wex-dsi-host-test` は不要です。
 
 ### DVMT
 

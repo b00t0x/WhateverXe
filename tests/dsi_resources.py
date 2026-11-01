@@ -13,6 +13,8 @@ code=r'''
 #include "kern_dsi_backlight.hpp"
 #include "kern_display13_power_bridge.hpp"
 #include "kern_display13_fb_irq.hpp"
+#include "kern_display13_fb_topology.hpp"
+#include "kern_display13_clock.hpp"
 #include "kern_xelp_combo_clock.hpp"
 #include <cassert>
 #include <cstdio>
@@ -52,10 +54,11 @@ XELPMemory::Layout xelpMemory;
 unsigned published=0;
 void dsiPublishIRQLive(){assert(lockLevel==0 && display13FBIRQ.controller && display13FBIRQ.lock);++published;}
 struct XE {
- bool dsiPanelTest=false;bool probeDSIPanel(IOService*){assert(lockLevel==0);return true;}
+ bool dsiPanelTest=false,dsiPanelOnly=false,cycleOK=true;unsigned cycles=0;bool externalPreparation=false;
+ bool probeDSIPanel(IOService*,bool prepare){assert(lockLevel==0);++cycles;externalPreparation=prepare;return cycleOK;}
  bool dsiCommandTest=false;bool probeDSICommands(IOService*){assert(lockLevel==0);return true;}
  bool display13FBIRQReady=true,dsiNativeWriterHooksReady=true,dsiResourcesReady=false;IOService *adlnTopologyController;
- struct {unsigned dsi=1;} adlnOutputWiring;
+ Display13OutputWiring adlnOutputWiring;
  Profile dsiProfile;Boot dsiBoot;GGTTMode dsiGGTT;Backlight dsiBacklight;
  void publishDSIBacklight(){assert(lockLevel==0);}
  bool bindDSIResources(IOService *);
@@ -66,7 +69,7 @@ int main(){
  auto ptr=&irqLock;memcpy(controller.bytes+0x90,&ptr,sizeof(ptr));
  auto &c=display13FBPower;auto &irq=display13FBIRQ;auto &clock=comboClockTransaction;
  c.lock=&ownerLock;c.controller=&controller;c.map=&map;clock.lock=&clockLock;
- XE xe;xe.adlnTopologyController=&controller;xe.dsiProfile=profile();xelpMemory=map.memory;
+ XE xe;xe.adlnOutputWiring.dsi=1;xe.adlnOutputWiring.valid=true;xe.adlnTopologyController=&controller;xe.dsiProfile=profile();xelpMemory=map.memory;
  xe.dsiBoot=captureBoot(map,AlderLakeN::readDisplay(map,true),xe.dsiProfile,map.memory,true);
  assert(verifyBootPrefix(map,xe.dsiBoot,map.memory));
  xe.dsiProfile.precision=8;xe.dsiProfile.minimum=6;
@@ -101,6 +104,25 @@ int main(){
  assert(!xe.bindDSIResources(&controller) && !lockLevel && map.writes==std::vector<uint32_t>{0x42084});
  assert(xe.dsiGGTT.ready() && xe.dsiGGTT.writes==1 && xe.dsiBoot.dpt==(1U<<30));
  assert(b.pgRefs[0]==1 && b.ddiRefs[0]==1); // publication did not acquire/release someone else's lease
+ // Actual production dispatch: future hotplug requires preparation even
+ // without a host-test argument; panel-only and an already-high clock do not.
+ for(unsigned scenario=0;scenario<6;++scenario) {
+  clock.allocation={};irq={};c.transcoders={};c.bootDSI={};c.memoryFaulted=false;
+  xe.dsiResourcesReady=false;xe.dsiGGTT={};xe.dsiBoot=initialBoot;xe.cycles=0;xe.externalPreparation=false;
+  xe.adlnOutputWiring.hdmi=scenario==0?2:0;xe.adlnOutputWiring.ddc[1]=scenario==0?2:0;
+  xe.adlnOutputWiring.dp=xe.adlnOutputWiring.typeC=scenario==0?0:8;
+  xe.dsiPanelOnly=scenario==2;xe.cycleOK=scenario!=4;
+  map=Map{};map.regs[0x45454]=3;map.regs[0x42000]=0x8E380000;
+  map.regs[Display13Clock::DSSM]=2U<<29;map.regs[Display13Clock::Squash]=0;
+  map.regs[Display13Clock::PLL]=scenario==3?0xC0000022:0xC000000E;
+  map.regs[Display13Clock::Control]=scenario==3?0x380518:0x780164;
+  if(scenario==5)map.regs[Display13Clock::PLL]=UINT32_MAX;
+  assert(xe.bindDSIResources(&controller)==(scenario!=4 && scenario!=5));
+  const bool needsCycle=scenario==0 || scenario==1 || scenario==4;
+  assert(xe.cycles==unsigned(needsCycle) && xe.externalPreparation==needsCycle && !lockLevel);
+ }
+ xe.adlnOutputWiring.hdmi=xe.adlnOutputWiring.ddc[1]=xe.adlnOutputWiring.dp=xe.adlnOutputWiring.typeC=0;
+ xe.dsiPanelOnly=false;xe.cycleOK=true;
  for(bool lost:{false,true}){
   clock.allocation={};irq={};c.transcoders={};c.bootDSI={};c.memoryFaulted=false;
   xe.dsiResourcesReady=false;xe.dsiGGTT={};xe.dsiBoot=initialBoot;

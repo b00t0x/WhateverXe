@@ -272,7 +272,7 @@ private:
     XELP::DSI::Panel::Shutdown dsiPanelStop;
     XELP::DSI::Restart::State dsiHostRestart;
     XELP::DSI::Panel::Result dsiPanelTrial;
-    bool probeDSIPanel(IOService *);
+    bool probeDSIPanel(IOService *,bool prepareExternalClock=false);
     XELP::DSI::Host dsiCommandHost;
     bool probeDSICommands(IOService *);
     mach_vm_address_t orgDSIBacking[2] {};

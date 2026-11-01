@@ -289,10 +289,18 @@ bool XE::bindDSIResources(IOService *controller) {
         }
         IOSimpleLockUnlockEnableInterrupt(irqLock,saved);
     }
+    // External hotplug may request a different CDCLK divider. Prepare it
+    // before native display users start; this is not an opt-in host trial.
+    bool prepareExternalClock=false;
+    if(ready && !dsiPanelOnly && Display13FBTopology::multiOutputWiring(adlnOutputWiring)) {
+        const auto current=Display13Clock::read(io);
+        ready=current.status==Display13Clock::Status::Complete;
+        prepareExternalClock=ready && current.nativeHz()!=current.nativeMaxHz();
+    }
     IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
     if(ready)dsiPublishIRQLive();
     if(ready && dsiCommandTest)ready=probeDSICommands(controller);
-    if(ready && dsiPanelTest)ready=probeDSIPanel(controller);
+    if(ready && (dsiPanelTest || prepareExternalClock))ready=probeDSIPanel(controller,prepareExternalClock);
     if(ready) {
         IOLockLock(c.lock);
         using Light=XELP::DSI::Backlight;
