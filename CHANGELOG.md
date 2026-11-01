@@ -10,6 +10,8 @@ Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphi
 
 ### Fixed
 
+- Recognize omitted Alder Lake-H/P/U and Raptor Lake-H/P/U PCI IDs in both WhateverXe and Compat, including the single-DIMM `4626` identity, on Big Sur through Tahoe. Reuse the existing family backends and hardware-resource checks; ID groupings follow Linux i915.
+
 - Fix MIPI DSI brightness decoding for nonzero VBT panel indices and accept extended generic-DTD records using their declared stride.
 - Accept compatible later BDB layouts and omitted panel lifecycle sequences, following Intel's Linux VBT interpretation while retaining command-drain and ownership checks.
 - Replace fixed DSI pixel/port-clock ceilings with PLL and register feasibility checks; describe higher clocks with DisplayID when needed.

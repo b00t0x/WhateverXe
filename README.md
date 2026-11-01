@@ -51,7 +51,7 @@ for OS coverage and remaining problems.
 - Other supported Tiger Lake-U/H35 configurations, including 96-EU graphics.
 - Tiger Lake-H45 (GT1): `9A60`, `9A68`, `9A70`.
 - Other supported Alder Lake-N configurations and Twin Lake.
-- Other Alder Lake-H/P/U and Raptor Lake-H/P/U configurations with supported fixed HDMI or fixed TC DisplayPort wiring.
+- Other Alder Lake-H/P/U and Raptor Lake-H/P/U configurations with supported fixed HDMI or fixed TC DisplayPort wiring. The [device table](docs/device-selection.md#automatic-selection) includes memory-configuration variants such as `4626`; both WhateverXe and WhateverXe Graphics must recognize the physical ID.
 - Experimental internal eDP on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P/U: a single firmware-described Combo A/B panel with PPS0 and PCH PWM brightness. This path has local CPU and donor replay coverage only; use the corresponding WhateverXe Graphics release with this plugin. See [display limits](docs/device-selection.md#display-limits).
 - Other supported Alder Lake-S configurations, Alder Lake-HX, Raptor Lake-S and Raptor Lake-HX.
 

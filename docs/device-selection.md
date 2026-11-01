@@ -11,10 +11,16 @@ IDs are Tiger Lake `9A40`, `9A49`, `9A60`, `9A68`, `9A70`, `9A78` and Alder Lake
 
 | Family | Accepted IDs |
 | --- | --- |
-| ADL-H / P / U | `46A3`, `46A6`, `46A8`, `46AA`, `46B3`, `46C3` |
-| RPL-H / P / U | `A7A0`, `A7A1`, `A7A8`–`A7AD` |
+| ADL-H / P / U | `4626`, `4628`, `462A`, `46A0`–`46A3`, `46A6`, `46A8`, `46AA`, `46B0`–`46B3`, `46C0`–`46C3` |
+| RPL-H / P / U | `A720`, `A721`, `A7A0`, `A7A1`, `A7A8`–`A7AD` |
 | ADL-S / HX | `4680`, `4682`, `4688`, `468A`, `468B`, `4690`, `4692`, `4693` |
 | RPL-S / HX | `A780`, `A781`, `A782`, `A783`, `A788`, `A789`, `A78A`, `A78B` |
+
+Memory configuration can change the physical PCI ID, for example `46A6` to
+`4626` on an Alder Lake-H system with one DIMM. Both IDs select the same
+family backend without a device-id override. Install matching updated
+WhateverXe and WhateverXe Graphics components; the Compat provider also
+validates the physical ID. Other added IDs have CPU coverage only.
 
 All PCI revisions use the selected family backend. Hardware test coverage is
 recorded separately and does not gate selection. A stepping-specific branch
