@@ -9,6 +9,7 @@ code=r'''
 #include <cassert>
 #include <cstring>
 #include "kern_shutdown_tc_observation.hpp"
+namespace ShutdownTCObservation {State storage;}
 #include "kern_tgl_port_map.hpp"
 struct Lock{bool busy=false;};bool IOLockTryLock(Lock*l){if(l->busy)return false;l->busy=true;return true;}void IOLockUnlock(Lock*l){assert(l->busy);l->busy=false;}
 struct TGLTCNativeBinding{template<class T>static T field(void*p,unsigned off){T v;memcpy(&v,(char*)p+off,sizeof(v));return v;}};
@@ -43,6 +44,17 @@ with tempfile.TemporaryDirectory() as d:
  d=Path(d);(d/'test.cpp').write_text(code)
  subprocess.run(['clang++','-std=c++14','-O1','-fsanitize=address,undefined','-I'+str(r/'WhateverXe'),str(d/'test.cpp'),'-o',str(d/'test')],check=True)
  subprocess.run([str(d/'test')],check=True)
+# Match the kernel's separate-translation-unit compilation model. An inline
+# local-static singleton is TU-local with -fapple-kext, unlike the userland test.
+with tempfile.TemporaryDirectory() as tmp:
+ d=Path(tmp)
+ (d/'writer.cpp').write_text('#include "kern_shutdown_tc_observation.hpp"\nnamespace ShutdownTCObservation {State storage;}\nvoid enable(){ShutdownTCObservation::state().enabled=true;}')
+ (d/'reader.cpp').write_text('#include "kern_shutdown_tc_observation.hpp"\nvoid observe(){ShutdownTCObservation::record(0x163894,1,false);}')
+ (d/'main.cpp').write_text('#include <cassert>\n#include "kern_shutdown_tc_observation.hpp"\nvoid enable();void observe();extern "C" int main(){enable();observe();assert(ShutdownTCObservation::sample(0x163894,false)==0x100000001ULL);return 0;}')
+ for name in ['writer','reader','main']:
+  subprocess.run(['clang++','-std=c++17','-O2','-fapple-kext','-fno-exceptions','-fno-rtti','-I'+str(r/'WhateverXe'),'-c',str(d/(name+'.cpp')),'-o',str(d/(name+'.o'))],check=True)
+ subprocess.run(['clang++',*[str(d/(n+'.o')) for n in ['writer','reader','main']],'-o',str(d/'cross-tu')],check=True)
+ subprocess.run([str(d/'cross-tu')],check=True)
 assert 'ready[2]!=63' in o and 'record(72,0,"display preflight"' in o
 assert 'finishDisplay13TCShutdown' not in wrapper and 'record(' not in snapshot
 print('PASS Display12 passive cache, memory-only sampler, busy-lock bypass, original shutdown result/call count')

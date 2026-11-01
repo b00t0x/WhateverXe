@@ -14,6 +14,7 @@
 #include <sys/sysctl.h>
 #include <sys/errno.h>
 #include <kern/clock.h>
+namespace ShutdownTCObservation { State storage; }
 namespace ShutdownObserver {
 static const char *traceKey="4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:wex-shutdown-trace";
 struct Event { uint32_t code, detail; uint64_t time, pc; char label[24]; };

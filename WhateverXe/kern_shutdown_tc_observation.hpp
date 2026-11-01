@@ -8,7 +8,9 @@ struct State {
  uint32_t sequence {}, mode0[4] {}, modeResult[4] {};
  uint64_t reads[4] {}, writes[4] {}; // FIA1..3 ownership, FIA1 topology
 };
-inline State &state() {static State s;return s;}
+// -fapple-kext does not coalesce inline-function local statics across TUs.
+extern State storage;
+inline State &state() {return storage;}
 inline unsigned index(uint32_t reg) {
  if(reg==0x1638A0)return 3;
  if(reg>=0x163894 && reg<=0x163A94 && !((reg-0x163894)%0x100))return (reg-0x163894)/0x100;
