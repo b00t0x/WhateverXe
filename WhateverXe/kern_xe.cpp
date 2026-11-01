@@ -10082,6 +10082,12 @@ void XE::wrapAlderLakeNEngineDisable(void *power) {
 
 void XE::wrapAlderLakeNPowerOverride(void *power,bool enable) {
 	auto &c=display13FBPower;if(!c.lock || power!=c.power || !c.controller)return;
+	// The last hwShutdown can suspend the power banks before returning.
+	// Return idle TC PHY ownership while its access lease is still usable.
+	// Ordinary display/system sleep override calls keep their existing policy.
+	if(!enable && callbackXE->display13ShutdownPowerCaller &&
+	   reinterpret_cast<uintptr_t>(__builtin_return_address(0))==callbackXE->display13ShutdownPowerCaller)
+		finishDisplay13TCShutdown(c.controller);
 	// override(true) is only reached by the donor's simulator backend; our
 	// physical object has simulator=0. Do not force unrelated DDI/AUX domains.
 	if(!enable)wrapAlderLakeNEngineDisable(power);
@@ -11889,17 +11895,74 @@ bool XE::processTGLAccelerator(KernelPatcher &patcher, size_t index, mach_vm_add
 			return true;
 }
 
-// One entry owns donor ABI/lifecycle repairs for every hardware backend.
-// Backend installers cannot independently opt into or replace these hooks.
+bool XE::processDisplay13Shutdown(KernelPatcher &p,size_t index,mach_vm_address_t address,size_t size) {
+ const char *symbol="__ZN31AppleIntelFramebufferController10hwShutdownEP21AppleIntelFramebuffer";
+ const uint8_t entry[]={0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xec,0x18};
+ const uint8_t powerCall[]={0xe8,0x3b,0x97,0,0};
+ const auto target=p.solveSymbol<mach_vm_address_t>(index,symbol,address,size);p.clearError();
+ const auto delta=static_cast<int64_t>(reinterpret_cast<uintptr_t>(wrapDisplay13Shutdown)-(target+5));
+ bool known=size>0x51d4b && target==address+0x5173a &&
+  !memcmp(reinterpret_cast<const void *>(target),entry,sizeof(entry)) &&
+  !memcmp(reinterpret_cast<const void *>(address+0x51d24),powerCall,sizeof(powerCall)) && delta==static_cast<int32_t>(delta);
+ if(known) {
+  KernelPatcher::RouteRequest route(symbol,wrapDisplay13Shutdown,orgDisplay13Shutdown);
+  known=p.routeMultipleShort(index,&route,1,address,size);p.clearError();
+  if(known)display13ShutdownPowerCaller=address+0x51d29;
+ }
+ IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13ShutdownReady",known);
+ return known;
+}
+
+void XE::finishDisplay13TCShutdown(void *controller) {
+ auto self=callbackXE;auto &c=display13FBPower;
+ if(!c.lock || !self->display13FBTCHooksReady)return;
+ IOLockLock(c.lock);
+ if(controller!=c.controller || !c.tcSupported || !c.bridge.begun || c.bridge.state.suspended) {IOLockUnlock(c.lock);return;}
+ // Native mode0 resets the port outside the owner lock. Serialize against
+ // hotplug on the same workloop, using the existing nonblocking gate API.
+ auto gate=c.workLoop;bool acquired=false;
+ bool gated=gate && Display13FBMemory::field<IOWorkLoop *>(controller,0xE00)==gate &&
+  self->adlnWorkLoopInGate && self->adlnWorkLoopTryClose && self->adlnWorkLoopOpen;
+ if(gated && !reinterpret_cast<bool (*)(const IOWorkLoop *)>(self->adlnWorkLoopInGate)(gate))
+  gated=acquired=reinterpret_cast<bool (*)(IOWorkLoop *)>(self->adlnWorkLoopTryClose)(gate);
+ uint32_t record[8] {1,static_cast<uint32_t>(gated),0,0,0,0,0,0};
+ if(gated)for(unsigned tc=0;tc<4;++tc) {
+  auto port=c.tcObject[tc];
+  // Other framebuffers may not have shut down yet. Their live references
+  // remain intact; a later hwShutdown handles them after link/PLL stop.
+  if(!port || c.tcBusy[tc] || c.tcSignalReady[tc] ||
+     c.bridge.nativeDDIRefs(tc+3) || c.bridge.nativeAUXRefs(tc+3))continue;
+  port->retain();record[2]|=1U<<tc;IOLockUnlock(c.lock);
+  const auto result=wrapDisplay13TCMode(port,0);port->release();IOLockLock(c.lock);
+  record[4+tc]=result;if(!result)record[3]|=1U<<tc;
+ }
+ self->display13ShutdownTrace=(record[1]<<1)|(record[2]<<8)|(record[3]<<16);
+ IOLockUnlock(c.lock);
+ if(acquired)reinterpret_cast<void (*)(IOWorkLoop *)>(self->adlnWorkLoopOpen)(gate);
+ IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13TCShutdown",record,sizeof(record));
+}
+
+uint32_t XE::wrapDisplay13Shutdown(void *controller,void *fb) {
+ ShutdownObserver::framebuffer(false,controller,fb,0,snapshotDisplay13Shutdown);
+ const auto result=FunctionCast(wrapDisplay13Shutdown,callbackXE->orgDisplay13Shutdown)(controller,fb);
+ // hwShutdown is called by the donor only for system power-off/restart.
+ // A disconnected sink's hotplug path already does this; a connected sink
+ // still needs mode0 after its scanout/link stop, even while another FB lives.
+ if(!result)finishDisplay13TCShutdown(controller);
+ ShutdownObserver::framebuffer(true,controller,fb,result,snapshotDisplay13Shutdown);
+ return result;
+}
+
 void XE::snapshotDisplay13Shutdown(void *controller,void *fb,uint32_t *out) {
  // Diagnostics must neither enter a gated native call nor wait behind the
  // shutdown path. No MMIO, power transitions, or register serializers here.
  auto &c=display13FBPower;
- out[1]=1;out[2]=UINT32_MAX;
+ out[1]=2;out[2]=UINT32_MAX;
  if(!c.lock || !IOLockTryLock(c.lock))return;
  if(controller!=c.controller || !fb || !c.tcSupported) {IOLockUnlock(c.lock);return;}
  out[2]=Display13FBMemory::field<uint32_t>(fb,0x1DC);
- out[4]=1;out[5]=c.clockFaulted;out[6]=c.tcBankFaulted;out[7]=c.bridge.state.faulted;
+ out[4]=1|(c.bridge.state.suspended?4U:0U)|callbackXE->display13ShutdownTrace;
+ out[5]=c.clockFaulted;out[6]=c.tcBankFaulted;out[7]=c.bridge.state.faulted;
  for(unsigned tc=0;tc<4;++tc) {
   auto &m=c.tcMode[tc];auto port=c.tcObject[tc];auto row=out+8+10*tc;
   row[0]=port?Display13FBMemory::field<uint32_t>(port,0x550):UINT32_MAX;
@@ -11911,6 +11974,8 @@ void XE::snapshotDisplay13Shutdown(void *controller,void *fb,uint32_t *out) {
  IOLockUnlock(c.lock);
 }
 
+// One entry owns donor ABI/lifecycle repairs for every hardware backend.
+// Backend installers cannot independently opt into or replace these hooks.
 bool XE::processFramebufferKext(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
  if(framebufferDonorAttempted)return framebufferBackendInstalled;
  framebufferDonorAttempted=true;
@@ -11923,7 +11988,7 @@ bool XE::processFramebufferKext(KernelPatcher &patcher,size_t index,mach_vm_addr
  const bool routed=patcher.routeMultiple(index,&gate,1,address,size);patcher.clearError();
  if(!routed)return false;
  if(display13FramebufferRequested)
-  ShutdownObserver::installFramebuffer(patcher,index,address,size,snapshotDisplay13Shutdown);
+  processDisplay13Shutdown(patcher,index,address,size);
  framebufferDonorCommonReady=processFramebufferCommon(patcher,index,address,size);
  // Install hardware routes even after a common failure so their diagnostics
  // remain available. The common start gate never enters native startup then.

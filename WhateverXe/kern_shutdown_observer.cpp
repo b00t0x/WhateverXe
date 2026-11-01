@@ -37,8 +37,6 @@ static int (*orgSync)(proc_t,void *,int *);
 static void (*orgHaltLog)(const char *,const void *,uint64_t);
 static int (*orgPEHalt)(unsigned int,uint32_t);
 static void (*orgPlatform)(void *,unsigned int);
-static uint32_t (*orgDisplayShutdown)(void *,void *);
-static DisplaySnapshot displaySnapshot;
 // _sync starts with a RIP-relative LEA. Lilu copies prologues verbatim,
 // so replay that exact prefix with its original callback address explicitly.
 extern "C" {
@@ -93,12 +91,10 @@ static int wrapSync(proc_t p,void *a,int *r) { record(30);int v=orgSync(p,a,r);r
 static int wrapReboot(int howto,char *message) { record(10,howto);return orgReboot(howto,message); }
 static void wrapNotify(int stage) { record(20,stage);orgNotify(stage);record(21,stage); }
 static void wrapPlatform(void *self,unsigned int type) { record(60,type);orgPlatform(self,type);record(61,type); }
-static uint32_t wrapDisplayShutdown(void *controller,void *fb) {
- if(!armed || !displaySnapshot || !ml_get_interrupts_enabled())return orgDisplayShutdown(controller,fb);
- uint32_t state[48] {};displaySnapshot(controller,fb,state);record(70,0,"hwShutdown",nullptr,state);
- const auto result=orgDisplayShutdown(controller,fb);
- bzero(state,sizeof(state));displaySnapshot(controller,fb,state);record(71,result,"hwShutdown",nullptr,state);
- return result;
+void framebuffer(bool returned,void *controller,void *fb,uint32_t result,DisplaySnapshot snapshot) {
+ if(!armed || !snapshot || !ml_get_interrupts_enabled())return;
+ uint32_t state[48] {};snapshot(controller,fb,state);
+ record(returned?71:70,result,"hwShutdown",nullptr,state);
 }
 static int wrapPEHalt(unsigned int type,uint32_t details) { if(type==0 || type==1 || type==3)record(50,type);int v=orgPEHalt(type,details);if(type==0 || type==1 || type==3)record(51,type);return v; }
 static void wrapHaltLog(const char *what,const void *pc,uint64_t time) {
@@ -160,22 +156,5 @@ void install(KernelPatcher &p) {
  if(p.routeMultipleShort(KernelPatcher::KernelID,routes,arrsize(routes))){ready[2]=63;sysctl_register_oid(&sysctl__debug_wex_shutdown_arm);}
  else {ready[6]=4;ready[7]=static_cast<uint64_t>(p.getError());p.clearError();}
  publish();
-}
-void installFramebuffer(KernelPatcher &p,size_t index,mach_vm_address_t address,size_t size,DisplaySnapshot snapshot) {
- // Reuse the explicitly enabled, exact-kernel observer. This optional route
- // never becomes a prerequisite for normal framebuffer operation.
- if(ready[2]!=63 || !snapshot)return;
- const char *symbol="__ZN31AppleIntelFramebufferController10hwShutdownEP21AppleIntelFramebuffer";
- const uint8_t entry[]={0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xec,0x18};
- const auto target=p.solveSymbol<mach_vm_address_t>(index,symbol,address,size);p.clearError();
- const auto delta=static_cast<int64_t>(reinterpret_cast<uintptr_t>(wrapDisplayShutdown)-(target+5));
- bool known=size>0x51d4b && target==address+0x5173a &&
-  !memcmp(reinterpret_cast<const void *>(target),entry,sizeof(entry)) && delta==static_cast<int32_t>(delta);
- if(known) {
-  KernelPatcher::RouteRequest route(symbol,wrapDisplayShutdown,orgDisplayShutdown);
-  known=p.routeMultipleShort(index,&route,1,address,size);p.clearError();
-  if(known)displaySnapshot=snapshot;
- }
- IORegistryEntry::getRegistryRoot()->setProperty("WEXShutdownDisplayObserver",known);
 }
 }

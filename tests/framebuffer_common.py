@@ -60,10 +60,7 @@ struct KernelPatcher {
 };
 bool tglInstallSonomaSurfaceABI(KernelPatcher&,size_t,uintptr_t,size_t,bool){return surfaceOK;}
 bool xelpInstallNVRAMABI(KernelPatcher&,size_t,uintptr_t,size_t){return nvramOK;}
-namespace ShutdownObserver {
-unsigned calls=0;
-void installFramebuffer(KernelPatcher&,size_t,uintptr_t,size_t,void(*)(void*,void*,uint32_t*)){++calls;}
-}
+unsigned shutdownCalls=0;
 struct XE {
  bool framebufferDonorAttempted=false,framebufferDonorCommonReady=false,framebufferBackendInstalled=false;
  bool display13FramebufferRequested=false,tglPlatformNVRAMReady=false,tglProbeReady=false,tglFramebufferInitReady=false;
@@ -73,7 +70,7 @@ struct XE {
  uintptr_t xelpProviderProbe=0x2000,xelpProviderConfigureProbe=0x3000;
  unsigned commonRuntimeCalls=0,backendCalls=0,startCalls=0;bool stopDuringStart=false,nativeOK=true;
  bool processFramebufferKext(KernelPatcher&,size_t,uintptr_t,size_t);
- static void snapshotDisplay13Shutdown(void*,void*,uint32_t*){}
+ bool processDisplay13Shutdown(KernelPatcher&,size_t,uintptr_t,size_t){++shutdownCalls;return true;}
  bool processFramebufferCommon(KernelPatcher&,size_t,uintptr_t,size_t);
  bool processFramebufferDonorRuntime(KernelPatcher&,size_t,uintptr_t,size_t){++commonRuntimeCalls;return runtimeOK;}
  bool processFramebufferAGDC(KernelPatcher&,size_t,uintptr_t,size_t){return agdcOK;}
@@ -103,13 +100,13 @@ int main(int argc,char **argv){
   else memcpy(image.data()+span.first,span.second.data(),span.second.size());
  }
  for(bool display13:{false,true})for(unsigned failure=0;failure<14;++failure){
-  ShutdownObserver::calls=0;
+  shutdownCalls=0;
   auto b=image;uintptr_t pure=0x1234;memcpy(b.data()+0xccad0+0x188,&pure,sizeof(pure));
   XE x;callbackXE=&x;x.display13FramebufferRequested=display13;KernelPatcher p;
   surfaceOK=failure!=5;nvramOK=failure!=6;x.runtimeOK=failure!=7;x.agdcOK=failure!=8;x.backendOK=failure!=9;x.trainingOK=failure!=10;x.stopDuringStart=failure==11;x.nativeOK=failure!=12;
   if(failure>=1&&failure<=4)p.failAt=failure;
   bool handled=x.processFramebufferKext(p,1,(uintptr_t)b.data(),b.size());
-  assert(ShutdownObserver::calls==(display13 && failure!=1?1U:0U));
+  assert(shutdownCalls==(display13 && failure!=1?1U:0U));
   assert(handled==(failure!=1));
   IOService c;
   if(failure==13){XELPComboClock::ClockSnapshot clocks;clocks.layout=XELPComboClock::Layout::Display13;
@@ -124,7 +121,7 @@ int main(int argc,char **argv){
    assert(XE::wrapFramebufferStart(&c,&c) && x.startCalls==1);}
   const auto calls=p.attempts,backends=x.backendCalls;
   x.processFramebufferKext(p,1,(uintptr_t)b.data(),b.size());
-  assert(ShutdownObserver::calls==(display13 && failure!=1?1U:0U));
+  assert(shutdownCalls==(display13 && failure!=1?1U:0U));
   assert(p.attempts==calls&&x.backendCalls==backends); // no second trampoline
  }
  puts("PASS common-before-backend order, single ownership, partial failures and mandatory native-start gate");
