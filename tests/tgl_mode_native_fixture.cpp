@@ -1,5 +1,3 @@
-#include "kern_shutdown_tc_observation.hpp"
-namespace ShutdownTCObservation {State storage;}
 #include "kern_alderlake_s.hpp"
 #include <cassert>
 #include "kern_tgl_native_fia.hpp"

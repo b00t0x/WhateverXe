@@ -60,7 +60,6 @@ struct KernelPatcher {
 };
 bool tglInstallSonomaSurfaceABI(KernelPatcher&,size_t,uintptr_t,size_t,bool){return surfaceOK;}
 bool xelpInstallNVRAMABI(KernelPatcher&,size_t,uintptr_t,size_t){return nvramOK;}
-namespace ShutdownObserver {template<class...T>void installDisplay12(T...) {}}
 unsigned shutdownCalls=0;
 struct XE {
  bool framebufferDonorAttempted=false,framebufferDonorCommonReady=false,framebufferBackendInstalled=false;
@@ -71,7 +70,6 @@ struct XE {
  uintptr_t xelpProviderProbe=0x2000,xelpProviderConfigureProbe=0x3000;
  unsigned commonRuntimeCalls=0,backendCalls=0,startCalls=0;bool stopDuringStart=false,nativeOK=true;
  bool processFramebufferKext(KernelPatcher&,size_t,uintptr_t,size_t);
- static void snapshotDisplay12Shutdown(void*,void*,uint32_t*){}
  bool processDisplay13Shutdown(KernelPatcher&,size_t,uintptr_t,size_t){++shutdownCalls;return true;}
  bool processFramebufferCommon(KernelPatcher&,size_t,uintptr_t,size_t);
  bool processFramebufferDonorRuntime(KernelPatcher&,size_t,uintptr_t,size_t){++commonRuntimeCalls;return runtimeOK;}

@@ -11,8 +11,6 @@
 #include "kern_dsi_native_backing.hpp"
 #include "kern_dsi_native_mode.hpp"
 #include "kern_xe.hpp"
-#include "kern_shutdown_observer.hpp"
-#include "kern_shutdown_tc_observation.hpp"
 #include "kern_framebuffer_donor.hpp"
 #include "kern_xelp_os.hpp"
 #include "kern_alderlake_n.hpp"
@@ -11937,42 +11935,18 @@ void XE::finishDisplay13TCShutdown(void *controller) {
   const auto result=wrapDisplay13TCMode(port,0);port->release();IOLockLock(c.lock);
   record[4+tc]=result;if(!result)record[3]|=1U<<tc;
  }
- self->display13ShutdownTrace=(record[1]<<1)|(record[2]<<8)|(record[3]<<16);
  IOLockUnlock(c.lock);
  if(acquired)reinterpret_cast<void (*)(IOWorkLoop *)>(self->adlnWorkLoopOpen)(gate);
  IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13TCShutdown",record,sizeof(record));
 }
 
 uint32_t XE::wrapDisplay13Shutdown(void *controller,void *fb) {
- ShutdownObserver::framebuffer(false,controller,fb,0,snapshotDisplay13Shutdown);
  const auto result=FunctionCast(wrapDisplay13Shutdown,callbackXE->orgDisplay13Shutdown)(controller,fb);
  // hwShutdown is called by the donor only for system power-off/restart.
  // A disconnected sink's hotplug path already does this; a connected sink
  // still needs mode0 after its scanout/link stop, even while another FB lives.
  if(!result)finishDisplay13TCShutdown(controller);
- ShutdownObserver::framebuffer(true,controller,fb,result,snapshotDisplay13Shutdown);
  return result;
-}
-
-void XE::snapshotDisplay13Shutdown(void *controller,void *fb,uint32_t *out) {
- // Diagnostics must neither enter a gated native call nor wait behind the
- // shutdown path. No MMIO, power transitions, or register serializers here.
- auto &c=display13FBPower;
- out[1]=2;out[2]=UINT32_MAX;
- if(!c.lock || !IOLockTryLock(c.lock))return;
- if(controller!=c.controller || !fb || !c.tcSupported) {IOLockUnlock(c.lock);return;}
- out[2]=Display13FBMemory::field<uint32_t>(fb,0x1DC);
- out[4]=1|(c.bridge.state.suspended?4U:0U)|callbackXE->display13ShutdownTrace;
- out[5]=c.clockFaulted;out[6]=c.tcBankFaulted;out[7]=c.bridge.state.faulted;
- for(unsigned tc=0;tc<4;++tc) {
-  auto &m=c.tcMode[tc];auto port=c.tcObject[tc];auto row=out+8+10*tc;
-  row[0]=port?Display13FBMemory::field<uint32_t>(port,0x550):UINT32_MAX;
-  row[1]=static_cast<uint32_t>(m.phase);row[2]=m.disconnectPending;row[3]=m.ownership.active;
-  row[4]=m.accessLease.domains;row[5]=m.auxLease.domains;
-  row[6]=c.bridge.nativeDDIRefs(tc+3);row[7]=c.bridge.nativeAUXRefs(tc+3);
-  row[8]=c.tcBusy[tc];row[9]=c.tcSignalReady[tc];
- }
- IOLockUnlock(c.lock);
 }
 
 // One entry owns donor ABI/lifecycle repairs for every hardware backend.
@@ -11990,8 +11964,7 @@ bool XE::processFramebufferKext(KernelPatcher &patcher,size_t index,mach_vm_addr
  if(!routed)return false;
  if(display13FramebufferRequested)
   processDisplay13Shutdown(patcher,index,address,size);
- else
-  ShutdownObserver::installDisplay12(patcher,index,address,size,snapshotDisplay12Shutdown);
+
  framebufferDonorCommonReady=processFramebufferCommon(patcher,index,address,size);
  // Install hardware routes even after a common failure so their diagnostics
  // remain available. The common start gate never enters native startup then.
@@ -16403,7 +16376,6 @@ uint32_t XE::wrapTGLSetPortMode(void *port, uint32_t mode) {
   IORegistryEntry::getRegistryRoot()->setProperty("TGLModeResultCorrection",record,sizeof(record));
  }
 
- ShutdownTCObservation::mode(traceDDI,mode,result);
 	tglAUXRecord(port, 1, true, result, mode, 0);
 	tglConnectionRecord(port, 2, true, result, mode, caller);
 	auto bytes = static_cast<uint8_t *>(port);
@@ -16661,43 +16633,6 @@ void XE::tglBeginTCColdProtection(void *controller) {
  }
  if(auto live=OSSerializer::forTarget(nullptr,tglTCBootstrapSerialize)) {
   IORegistryEntry::getRegistryRoot()->setProperty("TGLTCBootstrapTrial",live);live->release();
- }
-}
-
-void XE::snapshotDisplay12Shutdown(void *controller,void *fb,uint32_t *out) {
- // The native hwShutdown call owns these live objects; the preflight uses
- // the already-running controller. getPortByDDI is a qualified memory-only
- // table lookup. No register reads, native power calls or blocking locks here.
- auto self=callbackXE;auto &f=self->tglTCNativeFunctions;auto &cold=tglTCBootstrap;
- out[1]=3;out[2]=UINT32_MAX;
- if(!controller)controller=self->tglObservationController;
- if(!controller || !f.complete() || *f.controllerSlot!=controller)return;
- auto power=TGLTCNativeBinding::field<void *>(controller,0xC8);
- if(!power || TGLTCNativeBinding::field<void *>(power,0x10)!=controller)return;
- out[4]=1;out[2]=fb?TGLTCNativeBinding::field<uint32_t>(fb,0x1DC):UINT32_MAX;
- out[5]=out[6]=out[7]=UINT32_MAX;
- if(cold.controller==controller && cold.lock && IOLockTryLock(cold.lock)) {
-  out[4]|=2;out[5]=static_cast<uint32_t>(cold.cold.phase);out[6]=cold.cold.total;out[7]=cold.cold.bootstrapHeld;
-  IOLockUnlock(cold.lock);
- }
- const auto topology=ShutdownTCObservation::sample(0x1638A0,false);
- for(unsigned tc=0;tc<4;++tc) {
-  auto row=out+8+10*tc;const unsigned ddi=tc+3;
-  for(unsigned i=0;i<10;++i)row[i]=UINT32_MAX;
-  auto port=f.portByDDI(ddi);
-  if(port)row[0]=TGLTCNativeBinding::field<uint32_t>(port,0x550);
-  row[1]=TGLTCNativeBinding::field<uint32_t>(power,0x54+4*ddi);
-  row[2]=self->tglAUXParentRefs[ddi];row[3]=UINT32_MAX;
-  TGLTypeCPort coords;TGLFiaPort fia;
-  if((topology>>32) && TGLTypeCPort::resolve(ddi,coords) && coords.resolveFia(static_cast<uint32_t>(topology),fia)) {
-   const auto read=ShutdownTCObservation::sample(fia.owned,false),write=ShutdownTCObservation::sample(fia.owned,true);
-   row[3]=fia.readyMask;
-   row[4]=static_cast<uint32_t>(read);row[5]=static_cast<uint32_t>(write);
-   row[6]=read>>32;row[7]=write>>32;
-  }
-  auto &observation=ShutdownTCObservation::state();
-  row[8]=__atomic_load_n(observation.mode0+tc,__ATOMIC_RELAXED);
-  row[9]=__atomic_load_n(observation.modeResult+tc,__ATOMIC_ACQUIRE);
  }
 }
 
@@ -17110,7 +17045,6 @@ uint32_t XE::wrapTGLRegisterRead(void *access, unsigned long reg) {
  const bool trace=tglTransitionRegister(reg);
  if(trace)tglTransitionRecord(35,false,access,reg,tglConnectionCaller(__builtin_return_address(0)),0);
 	auto value = FunctionCast(wrapTGLRegisterRead, callbackXE->orgTGLRegisterRead)(access, reg);
- ShutdownTCObservation::record(static_cast<uint32_t>(reg),value,false);
  if(trace)tglTransitionRecord(35,true,access,reg,tglConnectionCaller(__builtin_return_address(0)),value);
 	const auto caller = reinterpret_cast<uintptr_t>(__builtin_return_address(0));
 	auto s = callbackXE;
@@ -19034,7 +18968,6 @@ void XE::wrapTGLRegisterWrite(void *access, unsigned long reg, uint32_t value) {
  const bool trace=tglTransitionRegister(reg);
  if(trace)tglTransitionRecord(36,false,access,reg,tglConnectionCaller(__builtin_return_address(0)),value);
 	FunctionCast(wrapTGLRegisterWrite, callbackXE->orgTGLRegisterWrite)(access, reg, value);
- ShutdownTCObservation::record(static_cast<uint32_t>(reg),value,true);
  // Sample PWM only at a native duty write while its caller owns power.
  // IORegistry reads consume this receipt; they never touch live MMIO.
  if(callbackXE->tglActive && reg==0xC8258 && callbackXE->orgTGLRegisterRead) {

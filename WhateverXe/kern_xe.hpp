@@ -760,13 +760,10 @@ private:
  bool framebufferDonorAttempted {},framebufferDonorCommonReady {},framebufferBackendInstalled {};
  mach_vm_address_t orgFramebufferStart {},orgFramebufferInit {},orgFramebufferComputeLanes {},framebufferLaneCaller {};
  __attribute__((noinline)) bool processFramebufferKext(KernelPatcher &,size_t,mach_vm_address_t,size_t);
- static void snapshotDisplay12Shutdown(void *,void *,uint32_t *);
- static void snapshotDisplay13Shutdown(void *,void *,uint32_t *);
  bool processDisplay13Shutdown(KernelPatcher &,size_t,mach_vm_address_t,size_t);
  static uint32_t wrapDisplay13Shutdown(void *,void *);
  static void finishDisplay13TCShutdown(void *);
  mach_vm_address_t orgDisplay13Shutdown {},display13ShutdownPowerCaller {};
- uint32_t display13ShutdownTrace {};
  __attribute__((noinline)) bool processFramebufferCommon(KernelPatcher &,size_t,mach_vm_address_t,size_t);
  bool framebufferTrainingHooksReady {};
  bool framebufferStartInProgress {};

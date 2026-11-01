@@ -23,12 +23,10 @@ struct {Lock*lock;void*controller;IOWorkLoop*workLoop;bool tcSupported=true;Brid
 namespace Display13FBMemory{template<class T>T field(void*p,unsigned off){T v;memcpy(&v,(char*)p+off,sizeof(v));return v;}}
 uint32_t published[8]{};struct IORegistryEntry{static IORegistryEntry*getRegistryRoot(){static IORegistryEntry r;return &r;}void setProperty(const char*,const void*p,size_t n){assert(n==sizeof(published));memcpy(published,p,n);}};
 std::vector<unsigned> events;unsigned modeCalls=0,nativeCalls=0;uint32_t nativeResult=0,modeResult=0;bool shutdownSuspends=false;
-namespace ShutdownObserver{void framebuffer(bool done,void*,void*,uint32_t,void(*)(void*,void*,uint32_t*)){events.push_back(done?4:1);}}
 #define FunctionCast(fn,p) reinterpret_cast<decltype(&fn)>(p)
-struct XE{bool display13FBTCHooksReady=true;uintptr_t orgDisplay13Shutdown;uint32_t display13ShutdownTrace=0;
+struct XE{bool display13FBTCHooksReady=true;uintptr_t orgDisplay13Shutdown;
  uintptr_t adlnWorkLoopInGate=(uintptr_t)inGate,adlnWorkLoopTryClose=(uintptr_t)tryGate,adlnWorkLoopOpen=(uintptr_t)openGate;
  static void finishDisplay13TCShutdown(void*);static uint32_t wrapDisplay13Shutdown(void*,void*);
- static void snapshotDisplay13Shutdown(void*,void*,uint32_t*){}
  static uint32_t wrapDisplay13TCMode(Port*p,uint32_t mode){auto &c=display13FBPower;assert(!c.lock->held && c.workLoop->held && mode==0 && p->refs==2 && !c.bridge.state.suspended);++modeCalls;events.push_back(3);if(!modeResult)c.tcObject[p->id]=nullptr;return modeResult;}
 };XE*callbackXE;
 FUNCTIONS
@@ -52,7 +50,7 @@ int main(){
   if(test==9)gate.held=true;
   if(test==10)shutdownSuspends=true;
   assert(XE::wrapDisplay13Shutdown(test==11?nullptr:controller,nullptr)==nativeResult);
-  assert(nativeCalls==1 && events.front()==1 && events.back()==4);
+  assert(nativeCalls==1 && events.front()==2 && events.size()==1+modeCalls);
   const bool attempted=test==0||test==8||test==9||test==10;
   assert(modeCalls==unsigned(attempted));assert(!lock.held && gate.held==(test==9));assert(idle.refs==1&&active.refs==1);
   assert(c.tcObject[0]==&active && c.bridge.ddi[3]==1);
