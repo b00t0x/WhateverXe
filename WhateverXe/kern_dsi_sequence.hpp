@@ -7,6 +7,9 @@
 #include <stddef.h>
 namespace XELP { namespace DSI {
 struct Span { const uint8_t *data {}; size_t size {}; };
+inline bool nativePanelGPIO(unsigned role) {return role<=2 || (role>=5 && role<=7);}
+// VBT may place reset edges in INIT_OTP instead of separate reset sequences.
+inline bool optionalResetSequence(unsigned id) {return id==1 || id==5;}
 enum class SequenceStatus : uint32_t {
     Valid, Bounds, Version, Panel, Duplicate, Sequence, Operation, Packet, GPIO
 };
@@ -46,7 +49,7 @@ inline SequenceStatus validateSequence(Span bytes, Sequences &counts) {
             case 3:
                 // v3 native display GPIO: index, GPIO role, value. The index
                 // is retained in the bytes; it is not a gpiochip identifier.
-                if(n!=3 || p[1]>2 || p[2]>1)return SequenceStatus::GPIO;
+                if(n!=3 || !nativePanelGPIO(p[1]) || p[2]>1)return SequenceStatus::GPIO;
                 ++counts.gpios;break;
             default:return SequenceStatus::Operation;
         }

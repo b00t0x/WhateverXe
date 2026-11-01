@@ -65,16 +65,39 @@ inline bool presentationTiming(const Timing &fixed,const Timing &offered,unsigne
 // Synthetic Apple enumeration descriptor with timing from the panel profile.
 // EDID wire layout reference: Linux v6.12 include/drm/drm_edid.h. This is not
 // an EDID read from the panel and does not advertise DP/HDMI, HDR or DPMS.
-inline bool makePanelEDID(const Mode &m,uint8_t (&edid)[128]) {
+inline bool panelNeedsDisplayID(const Mode &m) {
+    return m.width>4095 || m.height>4095 || m.hblank>4095 || m.vblank>4095 ||
+        m.hfront>1023 || m.hsync>1023 || m.vfront>63 || m.vsync>63;
+}
+inline bool makePanelEDID(const Mode &m,uint8_t (&edid)[128],unsigned block=1) {
     memset(edid,0,sizeof(edid));
     const uint32_t clock=(m.clockKHz+5)/10;
-    if(!m.valid() || !clock || clock>65535 || m.width>4095 || m.height>4095 ||
-       m.hblank>4095 || m.vblank>4095 || m.hfront>1023 || m.hsync>1023 ||
-       m.vfront>63 || m.vsync>63 || m.widthMM>4095 || m.heightMM>4095 ||
+    if(!m.valid() || !clock || clock>65535 ||
        m.widthMM>2550 || m.heightMM>2550)return false;
+    const bool extended=panelNeedsDisplayID(m);
+    // DisplayID Type I has 15-bit sync offsets, stored minus one. Preserve
+    // the real panel timing instead of truncating the EDID DTD's six-bit VFP.
+    if(extended && (!m.hfront || !m.vfront || m.hfront>32768 || m.vfront>32768))return false;
+    if(block<1 || block>2 || (block==2 && !extended))return false;
     const uint32_t rounded=clock*10;
     const uint32_t error=rounded>m.clockKHz ? rounded-m.clockKHz : m.clockKHz-rounded;
     if(uint64_t(error)*10000>m.clockKHz)return false; // retained link: at most 100 ppm
+    if(block==2) {
+        // VESA DisplayID 1.2, Type I timing; Linux drm_displayid_internal.h
+        // and Big Sur CoreDisplay's InstallDisplayIDEXT use this wire layout.
+        edid[0]=0x70;edid[1]=0x12;edid[2]=23; // one 3+20 byte data block
+        edid[3]=0;edid[4]=0; // EDID extension, no further DisplayID sections
+        edid[5]=3;edid[6]=0;edid[7]=20;
+        auto d=edid+8;const uint32_t encodedClock=clock-1;
+        d[0]=encodedClock;d[1]=encodedClock>>8;d[2]=encodedClock>>16;d[3]=0x80;
+        const uint16_t fields[]={m.width,m.hblank,m.hfront,m.hsync,m.height,m.vblank,m.vfront,m.vsync};
+        for(unsigned i=0;i<8;++i) {
+            const auto value=uint16_t(fields[i]-1);d[4+2*i]=value;d[5+2*i]=value>>8;
+        }
+        uint8_t section=0;for(unsigned i=1;i<28;++i)section+=edid[i];edid[28]=uint8_t(0-section);
+        uint8_t sum=0;for(unsigned i=0;i<127;++i)sum+=edid[i];edid[127]=uint8_t(0-sum);
+        return true;
+    }
     const uint8_t header[]={0,255,255,255,255,255,255,0};memcpy(edid,header,8);
     edid[8]=0x5C;edid[9]=0xB8; // synthetic WEX identity, no panel serial
     edid[10]=0x10;edid[11]=0xD5;
@@ -84,15 +107,21 @@ inline bool makePanelEDID(const Mode &m,uint8_t (&edid)[128]) {
     edid[18]=1;edid[19]=4;edid[20]=0xA0; // digital RGB8, transport unspecified
     edid[21]=static_cast<uint8_t>((m.widthMM+5)/10);
     edid[22]=static_cast<uint8_t>((m.heightMM+5)/10);
-    edid[23]=0xFF;edid[24]=2; // gamma unspecified, preferred DTD, fixed frequency
+    edid[23]=0xFF;edid[24]=extended?0:2; // preferred timing lives in DTD or DisplayID
     for(unsigned i=38;i<54;++i)edid[i]=1; // no standard/established timings
-    auto d=edid+54;d[0]=clock;d[1]=clock>>8;
-    d[2]=m.width;d[3]=m.hblank;d[4]=((m.width>>8)<<4)|(m.hblank>>8);
-    d[5]=m.height;d[6]=m.vblank;d[7]=((m.height>>8)<<4)|(m.vblank>>8);
-    d[8]=m.hfront;d[9]=m.hsync;d[10]=((m.vfront&15)<<4)|(m.vsync&15);
-    d[11]=((m.hfront>>8)<<6)|((m.hsync>>8)<<4)|((m.vfront>>4)<<2)|(m.vsync>>4);
-    d[12]=m.widthMM;d[13]=m.heightMM;d[14]=((m.widthMM>>8)<<4)|(m.heightMM>>8);
-    d[17]=0x18; // separate negative sync, matching the fixed Apple timing
+    auto d=edid+54;
+    if(extended) {
+        d[3]=0x10; // unused base descriptor; exact timing is in extension 1
+        edid[126]=1;
+    } else {
+        d[0]=clock;d[1]=clock>>8;
+        d[2]=m.width;d[3]=m.hblank;d[4]=((m.width>>8)<<4)|(m.hblank>>8);
+        d[5]=m.height;d[6]=m.vblank;d[7]=((m.height>>8)<<4)|(m.vblank>>8);
+        d[8]=m.hfront;d[9]=m.hsync;d[10]=((m.vfront&15)<<4)|(m.vsync&15);
+        d[11]=((m.hfront>>8)<<6)|((m.hsync>>8)<<4)|((m.vfront>>4)<<2)|(m.vsync>>4);
+        d[12]=m.widthMM;d[13]=m.heightMM;d[14]=((m.widthMM>>8)<<4)|(m.heightMM>>8);
+        d[17]=0x18; // separate negative sync, matching the fixed Apple timing
+    }
     edid[75]=0xFC;memcpy(edid+77,"MIPI DSI\n    ",13);
     edid[93]=0x10;edid[111]=0x10; // unused descriptor slots
     uint8_t sum=0;for(unsigned i=0;i<127;++i)sum+=edid[i];edid[127]=static_cast<uint8_t>(0-sum);

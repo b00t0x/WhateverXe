@@ -154,6 +154,8 @@ The optional `-wex-dsi-adopt` argument selects experimental MIPI DSI firmware-GO
 
 Add `SSDT-PNLF` to OpenCore to enable internal-display brightness control.
 
+DSI profiles are read from firmware VBT (BDB 236–256), including native panel GPIO banks 1 and 2 and reset operations embedded in the initialization sequence. Timings that exceed the base EDID limits are described with a DisplayID extension; the physical panel timing is preserved. The existing single-link, four-lane RGB888 video-mode restrictions still apply.
+
 ### DVMT
 
 Set **DVMT Pre-Allocated to 96MB** in the BIOS/UEFI settings where possible.

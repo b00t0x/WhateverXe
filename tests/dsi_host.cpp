@@ -16,7 +16,12 @@ struct Mock {
     void header(uint32_t v){h.push_back(v);}
     void payload(uint32_t v){p.push_back(v);}
     void delayUs(uint32_t us){elapsed+=us;}
-    bool gpio(uint8_t role,uint8_t value){assert(role<=2&&value<=1);++gpios;return gpioOK;}
+    bool gpio(uint8_t role,uint8_t value){assert(nativePanelGPIO(role)&&value<=1);++gpios;return gpioOK;}
+};
+struct VideoMock:Mock {
+    uint32_t releaseAt=0;
+    bool credits(uint32_t &v){v=elapsed<releaseAt?0xF40:0x1040;return true;}
+    void header(uint32_t v){Mock::header(v);releaseAt=elapsed+1000;}
 };
 int main(int argc,char **argv) {
     uint8_t data[]={0x29,0x12,0x34,0x56,0x78};
@@ -42,6 +47,19 @@ int main(int argc,char **argv) {
     Sequences s;s.status=SequenceStatus::Valid;s.sequence[2]={ops,sizeof(ops)};
     Mock complete;Host runner(true);assert(runner.run(complete,s,2));
     assert(runner.completedOperations==3&&complete.elapsed==2000&&complete.gpios==1&&!runner.pending);
+    {VideoMock io;Host host(true);assert(!host.run(io,s,2));
+     assert(host.error==HostError::CreditTimeout && io.elapsed==100 && !io.gpios);}
+    {VideoMock io;Host host(true);assert(host.run(io,s,2,2000));
+     assert(!host.pending && io.elapsed==4000 && io.gpios==1);}
+    for(unsigned budget:{1U,200010U}) {
+        Mock io;Host host(true);assert(!host.run(io,s,2,budget));
+        assert(host.error==HostError::Invalid && io.h.empty() && !io.gpios);
+    }
+    for(unsigned id:{1U,5U}) {
+        Mock io;Host host(true);assert(host.run(io,s,id) && !host.pending && io.h.empty() && !io.gpios);
+        Host disabled;assert(!disabled.run(io,s,id));
+    }
+    {Mock io;Host host(true);assert(!host.run(io,s,4));}
     // Cancellation at every callback boundary must latch first failure and
     // never submit a later GPIO/header after returning an error.
     for(unsigned at=1;at<=complete.checks;++at) {

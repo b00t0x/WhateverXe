@@ -49,7 +49,10 @@ inline Profile parseProfile(Span input,bool allowFinalEndQuirk=false) {
     const auto b=p+bo;const size_t bh=profileU16(b+18),bs=profileU16(b+20);
     if(memcmp(b,"BIOS_DATA_BLOCK ",16) || bh<22 || bs<bh || bs>vs-bo)return failure;
     r.version=profileU16(b+16);
-    if(r.version!=256){failure.status=ProfileStatus::Version;return failure;}
+    // The consumed generic DTD, MIPI and 8-bit backlight fields share
+    // this layout from BDB 236 through 256. Child records carry their own
+    // stride (39 before 256, 40 in 256); do not bind panels to one BIOS.
+    if(r.version<236 || r.version>256){failure.status=ProfileStatus::Version;return failure;}
     for(size_t i=0;i<vs;++i)r.checksum+=p[i]; // diagnostic residue, like existing VBT parser
     Span children,options,config,seq,dtd,backlight;
     for(size_t at=bh;at<bs;) {
@@ -133,7 +136,7 @@ inline Profile parseProfile(Span input,bool allowFinalEndQuirk=false) {
     failure.status=ProfileStatus::Sequence;
     r.sequences=parseSequences(seq,r.panel);
     if(!r.sequences.valid())return failure;
-    static const unsigned required[]={1,2,4,5,6,7,10,11};
+    static const unsigned required[]={2,4,6,7,10,11};
     for(unsigned id:required)
         if(!r.sequences.sequence[id].data)return failure;
     r.status=ProfileStatus::Valid;return r;

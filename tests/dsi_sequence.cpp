@@ -27,6 +27,12 @@ int main(int argc,char **argv) {
     bad=ops;bad.pop_back();rejected(block(panel(bad))); // no operation END
     bad=ops;bad.push_back(0);rejected(block(panel(bad))); // bytes after END
     bad=ops;bad[16]=3;rejected(block(panel(bad))); // unimplemented GPIO role
+    for(unsigned role:{0U,1U,2U,5U,6U,7U}) {
+        auto gpio=ops;gpio[16]=role;assert(parse(block(panel(gpio))).valid());
+    }
+    for(unsigned role:{3U,4U,8U,9U,255U}) {
+        auto gpio=ops;gpio[16]=role;rejected(block(panel(gpio)));
+    }
     auto data=panel(ops);data.pop_back();auto second=panel(ops);data.insert(data.end(),second.begin(),second.end());
     rejected(block(data)); // duplicate sequence
     auto duplicate=b;duplicate.insert(duplicate.end(),b.begin()+5,b.end());

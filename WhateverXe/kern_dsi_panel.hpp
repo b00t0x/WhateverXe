@@ -10,14 +10,15 @@ namespace XELP { namespace DSI { namespace Panel {
 struct GPIOResult {uint32_t role {},value {},reg {},before {},after {},writes {};bool complete {};};
 template<class IO> GPIOResult gpio(IO &io,unsigned role,unsigned value) {
     GPIOResult r;r.role=role;r.value=value;
-    if(role>2 || value>1 || !io.ready())return r;
-    r.reg=role==0?0xC4030:0xC7204;
+    if(!nativePanelGPIO(role) || value>1 || !io.ready())return r;
+    const unsigned bank=role/5,function=role%5;
+    r.reg=function==0?0xC4030:0xC7204+0x100*bank;
     if(!io.readable(r.reg))return r;
     r.before=io.read(r.reg);if(r.before==UINT32_MAX)return r;
-    const uint32_t mask=role==0?12U:role==1?1U:4U;
-    const uint32_t bits=value?(role==1?1U:4U):0;
+    const uint32_t mask=function==0?(12U<<(4*bank)):function==1?1U:4U;
+    const uint32_t bits=value?(function==0?(4U<<(4*bank)):function==1?1U:4U):0;
     // HPD status is W1C. Reset must not acknowledge another port's event.
-    const auto next=(r.before&~(mask|(role==0?0x3333U:0U)))|bits;
+    const auto next=(r.before&~(mask|(function==0?0x3333U:0U)))|bits;
     if(!io.ready())return r;
     io.write(r.reg,next);++r.writes;
     r.after=io.read(r.reg);
@@ -34,14 +35,24 @@ struct Result {
     Host host {};Readout source;bool attempted {};
     bool complete() const {return stage==Stage::Complete && error==Error::None;}
 };
+// LP commands submitted during video can wait for a blanking opportunity.
+// Bound each credit wait by two actual frame periods, not the stopped host's
+// 100 us allowance. Keep completion/drain checks before delays and GPIOs.
+inline unsigned videoCreditBudgetUs(const Mode &m) {
+    if(!m.valid())return 0;
+    const uint64_t period=(uint64_t(m.htotal())*m.vtotal()*1000+m.clockKHz-1)/m.clockKHz;
+    if(period<1000 || period>100000)return 0;
+    return unsigned((2*period+9)/10*10);
+}
 // Panel half of a serialized runtime shutdown. Host/IRQ/clock/memory remain
 // owned by the caller. Reset/power-off must contain no packets after ULPS.
 struct Shutdown {
     Host host {true};unsigned stage {};bool complete {};
     bool preflight(const Profile &p) {
-        if(!p.valid())return false;
+        if(!p.valid() || !videoCreditBudgetUs(p.mode))return false;
         constexpr unsigned ids[]={7,4,5,11};
         for(auto id:ids) {
+            if(optionalResetSequence(id) && !p.sequences.sequence[id].data)continue;
             Sequences n;
             if(validateSequence(p.sequences.sequence[id],n)!=SequenceStatus::Valid ||
                n.delayUs>5000000 || ((id==5 || id==11) && n.packets))return false;
@@ -55,7 +66,7 @@ struct Shutdown {
             explicit Port(IO &q):CommandPort<IO>{q} {}
             bool gpio(unsigned role,unsigned value){return this->io.gpio(role,value);}
         } port{io};
-        if(next==1)return host.run(port,p.sequences,7) && host.delay(port,p.ppsUs[2]);
+        if(next==1)return host.run(port,p.sequences,7,videoCreditBudgetUs(p.mode)) && host.delay(port,p.ppsUs[2]);
         if(next==2)return host.run(port,p.sequences,4);
         if(next==3) {
             complete=host.run(port,p.sequences,5) && host.delay(port,p.ppsUs[3]) &&
@@ -84,6 +95,7 @@ template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const P
        !(planeControl&(1U<<31)) || (surface&4095) || !profile.sequences.valid())return;
     constexpr unsigned required[]={1,2,4,5,6,7,10,11};
     for(auto id:required) {
+        if(optionalResetSequence(id) && !profile.sequences.sequence[id].data)continue;
         Sequences count;
         if(validateSequence(profile.sequences.sequence[id],count)!=SequenceStatus::Valid || count.delayUs>5000000)return;
     }
@@ -127,7 +139,9 @@ template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const P
         bool gpio(unsigned role,unsigned value){return this->io.gpio(role,value);}
     } port{io};
     const auto sequence=[&](unsigned id) {
-        if(!r.host.run(port,profile.sequences,id)){r.error=Error::Sequence;return false;}return true;
+        const bool video=r.stage==Stage::BacklightOff || r.stage==Stage::TranscoderOn || r.stage==Stage::BacklightOn;
+        const auto budget=video?videoCreditBudgetUs(profile.mode):100;
+        if(!r.host.run(port,profile.sequences,id,budget)){r.error=Error::Sequence;return false;}return true;
     };
     const auto delay=[&](unsigned index) {
         if(!r.host.delay(port,profile.ppsUs[index])){r.error=Error::Sequence;return false;}return true;

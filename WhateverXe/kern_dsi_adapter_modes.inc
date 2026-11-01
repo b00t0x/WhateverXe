@@ -185,13 +185,14 @@ uint32_t XE::wrapDSIDDC(IOService *fb,uint32_t block,uint8_t *data,uint64_t *len
     const auto result=[&]() -> uint32_t {
         if(!length || !data)return kIOReturnBadArgument;
         const auto capacity=*length;*length=0;
-        if(block!=1 || flags)return kIOReturnUnsupported;
+        if(block<1 || block>2 || flags)return kIOReturnUnsupported;
         if(capacity<128)return kIOReturnBadArgument;
         DSIModeScope scope(fb);
         if(!scope.lock || !dsiModeTarget(fb) || !dsiModeCoherent(fb) ||
            (path && path!=Display13FBMemory::singlePath<OSObject *>(fb)))return kIOReturnNotReady;
+        if(block==2 && !XELP::DSI::AppleAdapter::panelNeedsDisplayID(dsiFixedMode.mode))return kIOReturnUnsupported;
         uint8_t edid[128];
-        if(!XELP::DSI::AppleAdapter::makePanelEDID(dsiFixedMode.mode,edid))return kIOReturnNotReady;
+        if(!XELP::DSI::AppleAdapter::makePanelEDID(dsiFixedMode.mode,edid,block))return kIOReturnNotReady;
         memcpy(data,edid,sizeof(edid));*length=sizeof(edid);return kIOReturnSuccess;
     }();
     recordDSIClient(fb,12,block,result);return result;

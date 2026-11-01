@@ -11,10 +11,10 @@ void add(Bytes &b,uint8_t id,const Bytes &data) {
     b.push_back(id);b.push_back(data.size());b.push_back(data.size()>>8);
     b.insert(b.end(),data.begin(),data.end());
 }
-Bytes fixture() {
+Bytes fixture(unsigned version=256,bool inlineReset=false) {
     Bytes b(70);memcpy(b.data(),"$VBT",4);put(b,22,48);put(b,28,48,4);
-    memcpy(b.data()+48,"BIOS_DATA_BLOCK ",16);put(b,64,256);put(b,66,22);
-    Bytes child(45);child[4]=40;put(child,7,0x1400);child[21]=21;add(b,2,child);
+    memcpy(b.data()+48,"BIOS_DATA_BLOCK ",16);put(b,64,version);put(b,66,22);
+    Bytes child(version<256?44:45);child[4]=child.size()-5;put(child,7,0x1400);child[21]=21;add(b,2,child);
     add(b,40,Bytes{0});
     Bytes config(792);put(config,2,0x11190,4);put(config,6,12);
     config[93]=8;config[94]=50;put(config,98,310);config[103]=110;config[104]=50;put(config,105,200);
@@ -27,6 +27,7 @@ Bytes fixture() {
     Bytes seq(10);seq[0]=3;seq[5]=0;
     // Empty, terminated sequences prove structure without firmware commands.
     for(unsigned id:{1U,2U,4U,5U,6U,7U,10U,11U}) {
+        if(inlineReset && (id==1 || id==5))continue;
         seq.push_back(id);seq.push_back(1);seq.insert(seq.end(),4,0);
     }
     seq.push_back(0);put(seq,6,seq.size()-10,4);put(seq,1,seq.size()-5,4);add(b,53,seq);
@@ -40,6 +41,11 @@ int main(int argc,char **argv) {
     assert(r.valid()&&r.mode.htotal()==1126&&r.mode.vtotal()==2002&&r.pwmHz==40000);
     assert(r.mode.hsyncPositive && r.mode.vsyncPositive);
     assert(r.clockPrepare==50&&r.clockPrepareZero==310&&r.hsPrepareZero==200&&r.ppsUs[4]==500000);
+    for(unsigned version=236;version<=256;++version) {
+        auto compatible=fixture(version,true);auto p=parse(compatible);
+        assert(p.valid() && p.version==version && !p.sequences.sequence[1].data && !p.sequences.sequence[5].data);
+    }
+    reject(fixture(235));reject(fixture(257));
     const auto link=linkPlan(r);assert(link.valid&&link.afeKHz==811530&&link.portKHz==162306);
     assert(link.escapeDivider==56&&link.phyEscapeDivider==3);
     // Linux v7.0 readback, reserved bits omitted for the escape divider.

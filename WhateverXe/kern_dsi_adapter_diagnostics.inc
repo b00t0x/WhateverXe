@@ -95,7 +95,7 @@ bool XE::probeDSIPanel(IOService *controller) {
                 *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg)=value;++writes;return;
             }
             switch(reg) {
-                case 0x6B100:case 0x6B104:case 0xC4030:case 0xC7204:
+                case 0x6B100:case 0x6B104:case 0xC4030:case 0xC7204:case 0xC7304:
                 case 0x70180:case 0x7019C:case 0x7B008:
                     *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg)=value;++writes;break;
             }

@@ -534,7 +534,7 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path,bool 
                reg==0x7B008 || reg==0x6B0D8 || reg==0x6B400 || reg==0x164280 || reg==0x64000 ||
                reg==0x46010+4*display13FBPower.bootDSI.identity.pll ||
                (retain && XELP::DSI::Restart::writable(reg,display13FBPower.bootDSI.identity.pll)) ||
-               (panel && (reg==0x6B100 || reg==0x6B104 || reg==0xC4030 || reg==0xC7204))))
+               (panel && (reg==0x6B100 || reg==0x6B104 || reg==0xC4030 || reg==0xC7204 || reg==0xC7304))))
                 *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg)=value;
         }
         bool gpio(unsigned role,unsigned value) {
@@ -766,7 +766,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         bool ready(){return owns();}
         void write(uint32_t r,uint32_t v) {
             if(readable(r) && (XELP::DSI::Restart::writable(r,pll) || r==0x6B100 || r==0x6B104 ||
-               r==0xC4030 || r==0xC7204 || r==0x70180 || r==0x7019C || r==0x7B008 ||
+               r==0xC4030 || r==0xC7204 || r==0xC7304 || r==0x70180 || r==0x7019C || r==0x7B008 ||
                r==0x70080 || r==0x70088 || r==0x70084 || r==XELP::DSI::Backlight::Duty))
                 *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+r)=v;
         }
@@ -866,11 +866,16 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     receipt[12]=h.reg;receipt[13]=h.value;receipt[14]=h.writes;receipt[15]=h.waitUs;
     receipt[16]=masked;receipt[17]=restored;receipt[18]=rearmed;receipt[19]=cursor;
     receipt[20]=static_cast<uint32_t>(p.stage);receipt[21]=static_cast<uint32_t>(p.error);receipt[22]=p.reg;receipt[23]=p.value;
+    const auto &commands=p.host;
+    uint64_t commandReceipt[] {1,static_cast<uint32_t>(commands.error),commands.pending,commands.faulted,
+        commands.sequenceId,commands.operationOffset,commands.headers,commands.payloadWords,
+        commands.completedOperations,commands.waitedUs};
     IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
     if(acquired)reinterpret_cast<void (*)(IOWorkLoop *)>(adlnWorkLoopOpen)(loop);
     loop->release();IORecursiveLockUnlock(mutex);
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIRuntimePower",receipt,sizeof(receipt));
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIResumeIRQ",irqReceipt,sizeof(irqReceipt));
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIResumeCommands",commandReceipt,sizeof(commandReceipt));
     publishDSIBacklight();
     return complete;
 }

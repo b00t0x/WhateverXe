@@ -151,6 +151,11 @@ int main(){
  uint8_t expected[128];assert(makePanelEDID(p.mode,expected) && !memcmp(edid,expected,128));
  length=127;memset(edid,0xCC,128);assert(XE::wrapDSIDDC(fb,1,edid,&length,0,nullptr)==kIOReturnBadArgument && !length && edid[0]==0xCC);
  length=128;assert(XE::wrapDSIDDC(fb,2,edid,&length,0,nullptr)==kIOReturnUnsupported && !length);
+ {const auto saved=dsiFixedMode.mode;dsiFixedMode.mode={136887,1200,68,40,12,1920,239,205,2,141,226};
+  length=128;assert(!XE::wrapDSIDDC(fb,1,edid,&length,0,nullptr) && edid[126]==1);
+  length=128;assert(!XE::wrapDSIDDC(fb,2,edid,&length,0,nullptr) && length==128 && edid[0]==0x70);
+  uint8_t block[128];assert(makePanelEDID(dsiFixedMode.mode,block,2) && !memcmp(block,edid,128));
+  dsiFixedMode.mode=saved;length=128;assert(!XE::wrapDSIDDC(fb,1,edid,&length,0,nullptr));}
  length=128;assert(XE::wrapDSIDDC(fb,1,edid,&length,1,nullptr)==kIOReturnUnsupported && !length);
  assert(XE::wrapDSIDDC(peer,2,edid,&length,1,testPath)==9 && length==128 && nativeDDCCalls==1);
  xe.adlnOutputWiring.dsi=0;assert(XE::wrapDSIDDC(fb,2,edid,&length,1,testPath)==9 && nativeDDCCalls==2);xe.adlnOutputWiring.dsi=1;

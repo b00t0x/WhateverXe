@@ -37,7 +37,7 @@ struct Host {
         return true;
     }
     template<class IO> bool credits(IO &io,unsigned h,unsigned p,unsigned budgetUs=100) {
-        if(budgetUs>100000 || budgetUs%10)return fail(HostError::Invalid);
+        if(budgetUs>200000 || budgetUs%10)return fail(HostError::Invalid);
         for(unsigned us=0;;us+=10) {
             if(!ready(io))return false;
             uint32_t status=0;
@@ -49,13 +49,13 @@ struct Host {
             io.delayUs(10);waitedUs+=10;
         }
     }
-    template<class IO> bool send(IO &io,uint8_t type,Span data) {
+    template<class IO> bool send(IO &io,uint8_t type,Span data,unsigned creditBudgetUs=100) {
         const auto p=packet(type,data);
         if(!p.valid)return fail(HostError::Invalid);
         if(!ready(io))return false;
         // Reserve sufficient credit before the first payload write. The caller
         // serializes the only producer; hardware can only return more credit.
-        if(!credits(io,1,unsigned((p.payload.size+3)/4)))return false;
+        if(!credits(io,1,unsigned((p.payload.size+3)/4),creditBudgetUs))return false;
         for(size_t at=0;at<p.payload.size;at+=4) {
             if(!ready(io))return false;
             uint32_t word=0;
@@ -70,7 +70,7 @@ struct Host {
         if(!pending)return true;
         if(!credits(io,16,64,creditBudgetUs))return false;
         const uint8_t nop=0;
-        if(!send(io,0x05,{&nop,1}) || !credits(io,16,0,creditBudgetUs))return false;
+        if(!send(io,0x05,{&nop,1},creditBudgetUs) || !credits(io,16,0,creditBudgetUs))return false;
         for(unsigned us=0;;us+=2) {
             if(!ready(io))return false;
             bool busy=false;
@@ -88,21 +88,23 @@ struct Host {
         }
         return ready(io);
     }
-    template<class IO> bool run(IO &io,const Sequences &sequences,unsigned id) {
-        if(!sequences.valid() || id>=12 || !sequences.sequence[id].data)return fail(HostError::Invalid);
+    template<class IO> bool run(IO &io,const Sequences &sequences,unsigned id,unsigned creditBudgetUs=100) {
+        if(!sequences.valid() || id>=12 || creditBudgetUs>200000 || creditBudgetUs%10)return fail(HostError::Invalid);
+        if(!sequences.sequence[id].data)
+            return optionalResetSequence(id) ? drain(io,creditBudgetUs) : fail(HostError::Invalid);
         const auto bytes=sequences.sequence[id];Sequences check;
         if(validateSequence(bytes,check)!=SequenceStatus::Valid)return fail(HostError::Invalid);
         sequenceId=id;
         if(!ready(io))return false;
         for(size_t at=0;at<bytes.size;) {
             operationOffset=uint32_t(at);const auto op=bytes.data[at++];
-            if(!op)return drain(io);
+            if(!op)return drain(io,creditBudgetUs);
             if(!ready(io))return false;
             const auto n=bytes.data[at++];const auto p=bytes.data+at;at+=n;
-            if(op==1) {if(!send(io,p[1],{p+4,size_t(n-4)}))return false;}
+            if(op==1) {if(!send(io,p[1],{p+4,size_t(n-4)},creditBudgetUs))return false;}
             else {
                 // Delay/GPIO must not overtake queued commands on the wire.
-                if(!drain(io))return false;
+                if(!drain(io,creditBudgetUs))return false;
                 if(op==2){if(!delay(io,sequenceU32(p)))return false;}
                 else if(!io.gpio(p[1],p[2]))return fail(HostError::GPIO);
             }
