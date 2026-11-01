@@ -46,10 +46,10 @@ int main() {
 
  for(uint32_t id=0;id<65536;++id)for(unsigned rev:{0U,1U,4U,8U,12U,255U}) {
   const auto p=identify((id<<16)|0x8086,rev);
-  const bool tgl=id==0x9A40 || id==0x9A49 || id==0x9A78 || id==0x9A60 || id==0x9A68 || id==0x9A70,adln=id>=0x46D0 && id<=0x46D4;
+  const bool tgl=id==0x9A59 || id==0x9AC0 || id==0x9AC9 || id==0x9AD9 || id==0x9AF8 || id==0x9A40 || id==0x9A49 || id==0x9A78 || id==0x9A60 || id==0x9A68 || id==0x9A70,adln=id>=0x46D0 && id<=0x46D4;
   const bool adls=id==0x4680 || id==0x4682 || id==0x4688 || id==0x468A || id==0x468B || id==0x4690 || id==0x4692 || id==0x4693;
   const bool rpls=id==0xA780 || id==0xA781 || id==0xA782 || id==0xA783 || id==0xA788 || id==0xA789 || id==0xA78A || id==0xA78B;
-  const bool mobile=id==0x46a3 || id==0x46a6 || id==0x46a8 || id==0x46aa || id==0x46b3 || id==0x46c3 || id==0xa7a0 || id==0xa7a1 || (id>=0xa7a8 && id<=0xa7ad);
+  const bool mobile=id==0x4626 || id==0x4628 || id==0x462a || (id>=0x46a0 && id<=0x46a2) || (id>=0x46b0 && id<=0x46b2) || (id>=0x46c0 && id<=0x46c2) || id==0xa720 || id==0xa721 || id==0x46a3 || id==0x46a6 || id==0x46a8 || id==0x46aa || id==0x46b3 || id==0x46c3 || id==0xa7a0 || id==0xa7a1 || (id>=0xa7a8 && id<=0xa7ad);
   assert(p.admitted()==(tgl || adln || adls || rpls || mobile));
   if(mobile){assert(p.mobileDisplay13());assert(!identify((id<<16)|0x8086,rev,0x46d18086).admitted());}
   if(adls||rpls)assert(!identify((id<<16)|0x8086,rev,0x9A498086).admitted());

@@ -16,6 +16,31 @@ struct Platform {
     }
 };
 int main() {
+    // DSI has a native internal-panel shape but no DP/AUX/HPD protocol.
+    // Description is usable offline; runtime admission remains closed.
+    for(unsigned external=0;external<4;++external) {
+        Display13OutputWiring w;w.valid=true;w.dsi=1;
+        if(external&1){w.hdmi=2;w.ddc[1]=2;}
+        if(external&2){w.dp=8;w.typeC=8;}
+        Platform in,out;assert(w.described() && w.internal()==1 && w.links()==w.dp);
+        assert(!supportedWiring(w,true) && deferredBootPrepare(w,false));
+        assert(w.transport(0)==Display13OutputWiring::Transport::DSI);
+        assert(apply(out.data(),Bytes,in.data(),w));
+        assert(!memcmp(out.config(0),in.config(0),24));
+        assert(boundPorts(out.data(),w).selected==w.selected());
+        assert(excludedHotplug(out.data(),Bytes,w)&(1U<<16));
+        assert(bootDDI(w,0x88030000)==UINT32_MAX && bootDDI(w,0x8A030000,true)==UINT32_MAX);
+        auto before=out;
+        for(unsigned collision=0;collision<3;++collision) {
+            auto bad=w;
+            if(collision==0){bad.hdmi|=1;bad.ddc[0]=1;}
+            if(collision==1)bad.dp|=1;
+            if(collision==2)bad.panel=1;
+            assert(!apply(out.data(),Bytes,in.data(),bad) && !memcmp(out.data(),before.data(),Bytes));
+        }
+        auto bad=w;bad.dsi=2;assert(!bad.described());
+        bad=w;bad.ddc[0]=1;assert(!bad.described());
+    }
     const uint32_t property[] {1,2,0,2,0};const auto wiring=TGLHDMIWiring::fromProperty(property,sizeof(property));
     Platform input,output;const auto original=input;
     assert(apply(output.data(),Bytes,input.data(),wiring));

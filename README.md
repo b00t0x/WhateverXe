@@ -39,7 +39,7 @@ Graphics; GPU generation and connector routing are handled by WEX.
 | --- | --- |
 | Tiger Lake-U | 48- and 80-EU graphics; desktop-style and laptop display layouts |
 | Alder Lake-N | 16- and 24-EU graphics; two HDMI displays |
-| Alder Lake-H | 96-EU graphics (`46A6`); fixed TC HDMI and DisplayPort through a DP-to-HDMI adapter |
+| Alder Lake-H | 96-EU graphics (`46A6`); fixed TC HDMI and DisplayPort through a DP-to-HDMI adapter. Single-DIMM `4626` display, Metal/GL/OpenCL and video acceleration tested on Big Sur |
 | Alder Lake-S | UHD Graphics 770 (`4690`); HDMI, DisplayPort and a USB-C port wired as fixed DisplayPort |
 
 These are tested configurations within each family, not a guarantee for every
@@ -49,9 +49,12 @@ for OS coverage and remaining problems.
 ### Expected to work, not yet tested on hardware
 
 - Other supported Tiger Lake-U/H35 configurations, including 96-EU graphics.
+  The complete Linux TGL GT2 ID set is accepted, including `9A59`, `9AC0`,
+  `9AC9`, `9AD9` and `9AF8`; these five IDs have not been tested on hardware.
+  Physical slice/DSS/EU and L3-bank fuses select the supported URB capacity.
 - Tiger Lake-H45 (GT1): `9A60`, `9A68`, `9A70`.
 - Other supported Alder Lake-N configurations and Twin Lake.
-- Other Alder Lake-H/P/U and Raptor Lake-H/P/U configurations with supported fixed HDMI or fixed TC DisplayPort wiring.
+- Other Alder Lake-H/P/U and Raptor Lake-H/P/U configurations with supported fixed HDMI or fixed TC DisplayPort wiring. The [device table](docs/device-selection.md#automatic-selection) includes memory-configuration variants such as `4626`; both WhateverXe and WhateverXe Graphics must recognize the physical ID.
 - Experimental internal eDP on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P/U: a single firmware-described Combo A/B panel with PPS0 and PCH PWM brightness. This path has local CPU and donor replay coverage only; use the corresponding WhateverXe Graphics release with this plugin. See [display limits](docs/device-selection.md#display-limits).
 - Other supported Alder Lake-S configurations, Alder Lake-HX, Raptor Lake-S and Raptor Lake-HX.
 
@@ -138,7 +141,7 @@ not been verified with the fixed TC DP path. Experimental USB-C DP Alt Mode
 supports VBT-described external TC1–TC4 DP wiring with matching AUX. It reuses
 SST link training with Type-C ownership and the detected physical lane assignment.
 MST, Thunderbolt, cross-routed AUX and USB-C boot-display adoption remain unsupported.
-Alder Lake-N USB-C output has been tested at 1080p60 through an HDMI adapter on Big Sur, including Metal and OpenGL acceleration. USB-C hotplug, sleep/wake and other adapter types have not been verified.
+Alder Lake-N USB-C output has been tested at 1080p60 through an HDMI adapter on Big Sur, including Metal and OpenGL acceleration. System power-off with a USB-C display connected has also been tested on Big Sur. USB-C hotplug, sleep/wake and other adapter types have not been verified.
 
 ADL-P/RPL-P uses its physical ID and detected GPU resources automatically.
 No device-ID override or machine-specific AGDP kext is required.
@@ -146,9 +149,15 @@ No device-ID override or machine-specific AGDP kext is required.
 
 The experimental `-wex-dsi-hdmi-test` argument transfers a qualified Display13 DSI-A GOP to Combo B at 1080p60 for development. It stops the internal display and retires the temporary HDMI resources when policy switches to another connected output. It is disabled by default and does not provide DSI support or general cold startup.
 
+The optional `-wex-dsi-audit` argument checks the supported MIPI DSI firmware layout and pre-native GOP state, including peer engines and the stolen-memory GGTT prefix, then publishes diagnostic summaries. It is disabled by default; the audit does not program the display or enable DSI output.
+
+The optional `-wex-dsi-adopt` argument selects experimental MIPI DSI firmware-GOP adoption on a supported panel profile. It preserves the firmware link and exposes a synthetic EDID derived from the panel profile for native path and fixed-mode accelerated desktop output. OS-requested 90°/270° rotation and scaled GPU source modes retain the physical panel timing; orientation and HiDPI mode selection are configured in macOS. OS-provided scaled modes are not restricted to a preferred resolution or a fixed list capacity; available HiDPI sizes depend on the macOS display configuration. Native PWM brightness requests and readback use the existing AppleBacklight interface on supported DSI profiles; brightness zero sets zero PWM duty. With display off/on enabled below, requests made while the panel is off are saved and applied before its backlight is enabled on wake. On macOS Big Sur, the internal HiDPI panel has been tested with up to two external HDMI/USB-C displays, including accelerated rendering and display off/on. System sleep and full lifecycle validation remain under development. Do not combine it with `-wex-dsi-hdmi-test`. The additional `-wex-dsi-panel-only` argument temporarily excludes external outputs from online detection and mode setting during internal-panel development; physical output wiring is unchanged. Omit it to test external coexistence. The optional `-wex-dsi-command-test` runs a single DCS NOP/drain trial during DSI adoption; it does not enable panel power cycling. The optional `-wex-dsi-panel-test` tests one panel power/reset/initialization cycle before native startup while retaining the host clock and PHY; complete host reinitialization remains under development. The additional `-wex-dsi-host-test` includes the panel cycle and restarts the exclusively retained PLL, PHY and DSI host from the panel profile. These bootstrap experiments do not enable runtime display/system sleep. The optional `-wex-dsi-stop-test` additionally permits a one-way panel/host shutdown and resource retirement from the normal display power callback. Reboot to recover; this experiment does not support display wake. The separate `-wex-dsi-power-test` selects experimental display off/on with the native scanout backing and shared leases retained. It takes priority over `-wex-dsi-stop-test`; system sleep remains unsupported.
+
 ### Internal-panel brightness
 
 Add `SSDT-PNLF` to OpenCore to enable internal-display brightness control.
+
+DSI profiles are read from firmware VBT (BDB 236 or later with compatible field layouts), including native panel GPIO banks 1 and 2 and reset operations embedded in the initialization sequence. Timings that exceed the base EDID limits are described with a DisplayID extension; the physical panel timing is preserved. Declared record strides and optional lifecycle sequences are supported. Pixel clocks are qualified by PLL, register and scanout constraints rather than a fixed 300 MHz ceiling. The existing single-link, four-lane RGB888 video-mode restrictions still apply. When external outputs are enabled, adoption prepares their shared display-clock requirement before native modes start; this does not require `-wex-dsi-host-test`.
 
 ### DVMT
 

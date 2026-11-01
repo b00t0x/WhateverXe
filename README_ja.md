@@ -31,7 +31,7 @@ WEXはOSのABIとGPUバックエンドを独立して選択します。OS別の�
 | --- | --- |
 | Tiger Lake-U | 48 EU・80 EU。外部画面を使う構成とノートPCの画面構成 |
 | Alder Lake-N | 16 EU・24 EU。HDMI 2画面 |
-| Alder Lake-H | 96 EU（`46A6`）。固定TC HDMIとDP→HDMI変換器経由のDisplayPort |
+| Alder Lake-H | 96 EU（`46A6`）。固定TC HDMIとDP→HDMI変換器経由のDisplayPort。1枚挿し`4626`の表示・Metal/GL/OpenCL・動画加速はBig Surで確認 |
 | Alder Lake-S | UHD Graphics 770（`4690`）。HDMI、DisplayPort、固定DisplayPortとして配線されたUSB-C端子 |
 
 各ファミリーの一部構成で確認した結果であり、全モデル・全端子の動作保証ではありません。
@@ -40,9 +40,11 @@ OS別の検証範囲と残る問題は[動作確認済みの機能と既知の�
 ### 動作を期待できるが実機未検証
 
 - 96 EUを含む、対応IDの他のTiger Lake-U/H35構成。
+  LinuxのTGL GT2 ID集合全体を受け付け、`9A59`・`9AC0`・`9AC9`・`9AD9`・`9AF8`も含みます。
+  この5 IDは実機未検証です。物理slice/DSS/EUとL3 bankのfuseから対応するURB容量を選びます。
 - Tiger Lake-H45（GT1）：`9A60`、`9A68`、`9A70`。
 - 対応IDの他のAlder Lake-N構成とTwin Lake。
-- 対応する固定HDMIまたは固定TC DisplayPort配線の、他のAlder Lake-H/P/U・Raptor Lake-H/P/U構成。
+- 対応する固定HDMIまたは固定TC DisplayPort配線の、他のAlder Lake-H/P/U・Raptor Lake-H/P/U構成。[デバイス表](docs/device-selection.md#automatic-selection)は、メモリ構成で変わる`4626`などのIDも含みます。WhateverXeとWhateverXe Graphicsの両方が物理IDに対応している必要があります。
 - 対応IDの他のAlder Lake-S構成、Alder Lake-HX、Raptor Lake-S、Raptor Lake-HX。
 
 確認済みのファミリーと処理を共有する実装があり、IDは自動で受け付けます。
@@ -98,15 +100,21 @@ Tiger Lakeはnative controllerとAUX配線が一致するVBTの固定DisplayPort
 
 Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/Uでは、Combo A/B・固定TC1〜TC4 HDMI配線をVBTから選択します。試験的な固定TC1〜TC4 SST DisplayPortには、VBTのAUX配線の一致が必要です。Alder Lake-NのHDMI明示propertyはCombo配線にのみ適用します。
 
-ADL-Hでは、固定HDMIとDP→HDMI変換器を使い、3画面接続での起動、ファームウェアによる拡大表示からの起動、DP再接続を確認しています。固定TC DP経路での直接DP接続の表示先と、これらのファミリーの他のGPUは未検証です。試験的なUSB-C DP Alt Modeは、AUXが一致するVBTの外部TC1〜TC4 DP配線に対応します。既存SSTリンク訓練にType-C所有権と検出した物理レーン割当を組み合わせます。MST、Thunderbolt、交差AUX配線、USB-Cを起動用画面とする引継ぎは未対応です。Alder Lake-NではBig SurでHDMI変換器経由のUSB-C 1080p60表示とMetal/OpenGL加速を確認しています。USB-Cの抜き差し・スリープ復帰・他の変換器は未検証です。
+ADL-Hでは、固定HDMIとDP→HDMI変換器を使い、3画面接続での起動、ファームウェアによる拡大表示からの起動、DP再接続を確認しています。固定TC DP経路での直接DP接続の表示先と、これらのファミリーの他のGPUは未検証です。試験的なUSB-C DP Alt Modeは、AUXが一致するVBTの外部TC1〜TC4 DP配線に対応します。既存SSTリンク訓練にType-C所有権と検出した物理レーン割当を組み合わせます。MST、Thunderbolt、交差AUX配線、USB-Cを起動用画面とする引継ぎは未対応です。Alder Lake-NではBig SurでHDMI変換器経由のUSB-C 1080p60表示とMetal/OpenGL加速を確認しています。USB-C映像を接続したままの通常シャットダウンによる電源断もBig Surで確認しています。USB-Cの抜き差し・スリープ復帰・他の変換器は未検証です。
 
 ADL-P/RPL-Pは物理IDと検出したGPU資源を自動で使用します。device-ID上書きや機種別AGDP kextは不要です。`-wex-noaccel`でFramebufferのみの動作を維持します。
 
 試験用の `-wex-dsi-hdmi-test` は、限定したDisplay13のDSI-A GOPからCombo-Bへ1080p60で移す開発用経路です。内蔵表示を停止し、policyが別の接続済み出力へ切り替える際は暫定HDMI資源を解放します。既定では無効で、DSI対応や汎用のcold起動を提供するものではありません。
 
+任意の `-wex-dsi-audit` は、対応するMIPI DSI firmware形式とnative起動前のGOP状態（他の表示エンジンとstolen memoryのGGTT prefixを含む）を検査し、診断結果を公開します。既定では無効で、この検査はディスプレイへの設定書込みやDSI出力の有効化を行いません。
+
+任意の `-wex-dsi-adopt` は、対応パネルprofileで実験的なMIPI DSI firmware GOP採用を選択します。firmwareのリンクを保持し、パネルprofile由来の合成EDIDを公開してnative pathと固定modeのアクセラレーション付きデスクトップへ接続します。OSが要求する90°/270°回転とGPU描画元の拡縮では物理パネルのタイミングを保持し、向きとHiDPIモードはmacOS側で設定します。OSが提示する拡縮モードを特定の解像度や一覧の固定件数に制限せず、選択できるHiDPIサイズはmacOS側のディスプレイ設定に依存します。対応DSI profileでは既存AppleBacklight経由でnative PWM輝度の要求・読戻しを扱い、輝度0ではPWM dutyを0にします。後述の画面消灯・復帰を有効にした場合、消灯中の輝度要求は保存し、復帰時のbacklight有効化前に反映します。macOS Big Surでは、内蔵HiDPIパネルとHDMI/USB-Cの外部2画面までの同時表示・加速・画面消灯復帰を確認しています。システムsleepと全ライフサイクルの検証は開発中です。`-wex-dsi-hdmi-test` とは併用できません。追加の `-wex-dsi-panel-only` は、内蔵パネルの開発中に外部出力の接続公開とmode設定を一時的に抑止します。物理配線の定義は変更しません。外部共存の検証時はこの引数を省略してください。 任意の `-wex-dsi-command-test` は、DSI採用時にDCS NOP送信・drainを1回試験します。パネルの電源再投入を有効にする引数ではありません。任意の `-wex-dsi-panel-test` は、native起動前にhostのclock・PHYを保持したままパネルの電源再投入・reset・初期化を1回試験します。hostの完全再初期化は開発中です。追加の `-wex-dsi-host-test` はパネルcycleを含み、排他的に保持したPLL・PHY・DSI hostをpanel profileから再構築します。これらの起動時試験は通常の画面・システムsleepを有効にしません。任意の `-wex-dsi-stop-test` は通常の画面電源callbackから1回のpanel/host停止と資源退役を許可します。復帰には再起動が必要で、通常の画面wakeには未対応です。 別の `-wex-dsi-power-test` はnative画面メモリと共有資源の所有権を保持する実験的な画面消灯・復帰を選択し、`-wex-dsi-stop-test` より優先します。システムsleepは未対応です。
+
 ### 内蔵パネルの輝度
 
 内蔵ディスプレイの輝度調整には、OpenCoreへ`SSDT-PNLF`を追加してください。
+
+DSI profileはfirmware VBT（BDB 236以降で互換性のあるfield layout）から読み取り、native panel GPIOの1組目・2組目と、初期化列に組み込まれたreset操作に対応します。基本EDIDの表現範囲を超えるタイミングはDisplayID拡張で記述し、物理パネルのタイミングは保持します。宣言されたrecord strideと個別lifecycle sequenceの省略に対応します。pixel clockは固定300MHz上限ではなく、PLL・register・scanoutの制約で判定します。single-link・4-lane・RGB888 video modeの制約は維持します。 外部出力が有効な場合は、native mode開始前に必要な共有表示clockを準備します。この準備に `-wex-dsi-host-test` は不要です。
 
 ### DVMT
 

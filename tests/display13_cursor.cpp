@@ -35,6 +35,14 @@ int main() {
     IO a;auto r=stop(a);assert(r.status==Status::Complete && r.waitUs==17000 && r.frameAfter==11);
     assert((a.writes==std::vector<uint32_t>{0x70080,0x70088,0x70084}));assert(!a.regs[0x70084]);
     IO off;off.regs[0x70008]=0;r=stop(off);assert(r.status==Status::Complete && !r.waitUs && r.writes==3);
+    // PIPECONF=0 on DSI is not evidence of stopped scanout. Cursor retirement
+    // still needs the separately bound pipe's frame to advance.
+    {IO io;io.regs[0x70008]=0;io.regs[0x7B008]=0xC0000000;io.regs[0x6B400]=0x80000006;
+     r=stop(io,0,{0});assert(r.status==Status::Complete && r.waitUs==17000);
+     IO frozen;frozen.regs=io.regs;frozen.regs[0x70080]=0x27;frozen.frozen=true;
+     assert(stop(frozen,0,{0}).status==Status::Timeout);
+     IO wrong;wrong.regs[0x70008]=0;wrong.regs[0x7B008]=0xC0000000;wrong.regs[0x6B400]=0x80005006;
+     assert(stop(wrong,0,{0}).status==Status::Readback && wrong.writes.empty());}
     IO empty;empty.regs[0x70080]=0;r=stop(empty);assert(r.status==Status::Complete && empty.writes.empty());
     IO busy;busy.regs[0x70C08]=1;r=stop(busy);assert(r.status==Status::Conflict && busy.writes.empty());
     IO power;power.regs[0x45404]=3;r=stop(power);assert(r.status==Status::Power && power.writes.empty());

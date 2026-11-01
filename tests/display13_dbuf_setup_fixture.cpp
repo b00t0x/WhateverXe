@@ -13,7 +13,7 @@ void IORecursiveLockUnlock(int*){assert(fbDepth && !ownerDepth);--fbDepth;}
 struct OSObject {unsigned size;OSObject *getMetaClass(){return this;}unsigned getClassSize(){return size;}};
 using IOService=OSObject;
 struct Map {
- std::map<uint32_t,uint32_t> r;
+ unsigned reads=0;std::map<uint32_t,uint32_t> r;
  Map() {
   r[0x45404]=0xFC0F;r[0x4438C]=0x1C000700;
   for(unsigned p=0;p<3;++p){const auto b=p*0x1000;
@@ -27,12 +27,12 @@ struct Map {
 };
 struct Display13FBDBUFIO {
  Map *map;bool readable(uint32_t reg){return map->r.count(reg);}
- uint32_t read(uint32_t reg){assert(readable(reg));return map->r[reg];}
+ uint32_t read(uint32_t reg){assert(readable(reg));++map->reads;return map->r[reg];}
  void write(uint32_t reg,uint32_t value){assert(readable(reg));map->r[reg]=(value&~(1U<<30))|((value&(1U<<31))>>1);}
  void delayUs(unsigned){}
 };
 namespace TGLFBBinding {enum class Status {Unavailable,Complete};struct Readout {Status status{};unsigned pipe{},ddi{};};}
-namespace Display13FBTopology {bool multiOutputWiring(unsigned w){return w!=0;}}
+namespace Display13FBTopology {bool multiOutputWiring(unsigned w){return w!=0;}bool selected(void*,uint32_t*,unsigned){return true;}}
 struct Pipe {
  IOService *memoryFramebuffer{};bool destroyingPath{},wmProgramming{},wmCommitting{};
  unsigned wmPending{};uint64_t watermarkClockHz{};Display13WM::Plan wmProgram[2];Display13WM::Latch wmLatch;
@@ -46,7 +46,8 @@ struct Power {
 }display13FBPower;
 static bool badBinding,failPrimary,failWM;static unsigned armCalls;static Display13WM::Latch nextLatch;
 static std::map<unsigned,std::vector<uint64_t>> records;
-void adlnFault(bool &f,unsigned,unsigned){f=true;}
+struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry root;return &root;}void setProperty(const char*,void*,unsigned){}};
+void adlnFault(bool &f,unsigned,unsigned=0){f=true;}
 void adlnPublishMemory(const char *name,unsigned p,void *data,unsigned bytes,bool=false){
  if(!strcmp(name,"N97FBDBUFLayout"))records[p]=std::vector<uint64_t>((uint64_t*)data,(uint64_t*)data+bytes/8);
 }
@@ -54,8 +55,14 @@ TGLFBBinding::Readout adlnInspectPathBinding(IOService *fb,OSObject *path,void*,
  const auto p=Display13FBMemory::boundPipe(display13FBPower.pipe,fb);
  return badBinding||!path?TGLFBBinding::Readout{}:TGLFBBinding::Readout{TGLFBBinding::Status::Complete,p,3+p};
 }
+static IOService *dsiFB=nullptr;
+bool dsiModeTarget(IOService *fb){return fb && fb==dsiFB;}
 struct XE {
- bool display13FBDBUFHooksReady=true,display13FBWatermarkHooksReady=true;unsigned adlnOutputWiring=0x78;void *adlnPlatform{};
+ bool display13FBDBUFHooksReady=true,display13FBWatermarkHooksReady=true;struct {unsigned dsi=0;operator unsigned()const{return 0x78;}}adlnOutputWiring;void *adlnPlatform{};
+ bool dsiStopAttempted=false;
+ uintptr_t adlnAdjustPixelClock=0;
+ static bool dsiSharedWriterStopped(IOService*,unsigned);
+ static void wrapAlderLakeNPipeWMSetup(IOService*,IOService*,OSObject*,void*);
  static void adlnSetupDBUFPipe(IOService*,IOService*,unsigned,bool);
  static void wrapAlderLakeNEngineEnable(void*){assert(false);}
  static void wrapAlderLakeNPrimaryDBUF(OSObject*,unsigned,unsigned,bool);
@@ -89,12 +96,15 @@ void XE::wrapDisplay13WMArmUpdate(IOService *fb){
   c.pipe[p].wmPending=0;c.pipe[p].watermarkClockHz=614400000;
  }
 }
+IOService *pendingBackingFB=nullptr;
+struct {bool modeReady=false;} dsiPendingBacking;
+bool dsiPendingTarget(IOService *fb){return fb && fb==pendingBackingFB;}
 // PRODUCTION_SETUP
 alignas(16) static uint8_t ctl[0x1c20],fb[3][0x4b90],paths[3][0x3730],planes[3][0x1c8];
 static int ownerMutex,frameMutex;
 void setup(Map &map){
  memset(ctl,0,sizeof(ctl));memset(fb,0,sizeof(fb));memset(paths,0,sizeof(paths));memset(planes,0,sizeof(planes));
- display13FBPower={};auto &c=display13FBPower;c.lock=&ownerMutex;c.controller=(IOService*)ctl;c.map=&map;c.engineEnabled=true;
+ state={};dsiFB=nullptr;display13FBPower={};auto &c=display13FBPower;c.lock=&ownerMutex;c.controller=(IOService*)ctl;c.map=&map;c.engineEnabled=true;
  for(unsigned p=0;p<3;++p){
   ((OSObject*)fb[p])->size=sizeof(fb[p]);((OSObject*)planes[p])->size=sizeof(planes[p]);
   c.pipe[p].memoryFramebuffer=(IOService*)fb[p];put(fb[p],0x4220,&frameMutex);put(fb[p],0x4A00,1U);put(fb[p],0x4A08,(OSObject*)paths[p]);
@@ -120,6 +130,30 @@ int main(){
   assert(!c.dbuf.faulted&&c.dbuf.pipe[p].unretired==held);
   nextLatch.status=S::Complete;IORecursiveLockLock(&frameMutex);XE::wrapDisplay13WMArmUpdate((IOService*)fb[p]);IORecursiveLockUnlock(&frameMutex);
   assert(!c.pipe[p].wmPending&&!c.dbuf.pipe[p].unretired&&c.pipe[p].watermarkClockHz);
+ }
+ // A late callback after DSI stop does not touch MMIO, revive the engine,
+ // allocate a DDB range, or turn an ordinary stop into a shared fault.
+ for(bool pending:{false,true})for(bool cold:{false,true}) {
+  Map map;setup(map);auto &c=display13FBPower;state.adlnOutputWiring.dsi=1;state.dsiStopAttempted=!pending;
+  pendingBackingFB=pending?(IOService*)fb[0]:nullptr;
+  dsiFB=(IOService*)fb[0];
+  if(cold){c.engineEnabled=false;c.clockStopped=true;c.bridge.bootAdopted=c.bridge.begun=true;}
+  const auto registers=map.r;const auto reads=map.reads;const auto dbuf=c.dbuf;
+  XE::adlnSetupDBUFPipe(c.controller,(IOService*)fb[0],0,false);
+  IORecursiveLockLock(&frameMutex);XE::wrapAlderLakeNPipeWMSetup(c.controller,(IOService*)fb[0],(OSObject*)paths[0],nullptr);IORecursiveLockUnlock(&frameMutex);
+  assert(map.r==registers && map.reads==reads && !armCalls && records.empty());
+  assert(!memcmp(&dbuf,&c.dbuf,sizeof(dbuf)) && !c.memoryFaulted && !c.dbuf.faulted && !c.watermarkFaulted);
+  assert(!ownerDepth && !fbDepth);
+  if(!cold){
+   Display13FBDBUFIO io{&map};assert(Display13DBUF::bindOffPipe(io,c.dbuf,1)==Display13DBUF::Status::Complete);
+   map.r[0x71008]=0xC0000000;map.r[0x71180]=0;
+   nextLatch.check=C::AwaitingScanout;
+   XE::adlnSetupDBUFPipe(c.controller,(IOService*)fb[1],1,false);
+   assert(armCalls==1 && records.count(1) && !c.dbuf.faulted);
+   IORecursiveLockLock(&frameMutex);XE::wrapAlderLakeNPipeWMSetup(c.controller,(IOService*)fb[1],(OSObject*)paths[1],nullptr);IORecursiveLockUnlock(&frameMutex);
+   assert(c.watermarkFaulted); // Peer malformed association still reports its real fault.
+  }
+  pendingBackingFB=nullptr;
  }
  // Generic unavailable results, mismatches, timeouts and allocation failures
  // must not be turned into deferred success by the new branch.

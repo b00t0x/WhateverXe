@@ -1,4 +1,5 @@
 #include "kern_xe.hpp"
+#include "kern_dsi_math.hpp"
 #include <IOKit/pci/IOPCIDevice.h>
 #include <IOKit/IOMemoryDescriptor.h>
 
@@ -57,4 +58,22 @@ void XE::xelpReadFirmware(IOPCIDevice *pci) {
     const auto &panel=firmwarePorts.panel;
     uint32_t panelFacts[]={panel.valid,panel.type,panel.ddi,panel.lowSwing,panel.hobl};
     pci->setProperty("WhateverXeFirmwarePanel",panelFacts,sizeof(panelFacts));
+    if(checkKernelArgument("-wex-dsi-audit")) {
+        // Synchronous audit of the existing copied firmware property. Never
+        // retain borrowed sequence pointers, acquire power, or authorize IO.
+        const auto vbt=OSDynamicCast(OSData,pci->getProperty("TGLVBT"));
+        const auto profile=XELP::DSI::parseProfile({vbt?static_cast<const uint8_t *>(vbt->getBytesNoCopy()):nullptr,
+            vbt?vbt->getLength():0U},true);
+        const auto link=XELP::DSI::linkPlan(profile);
+        uint32_t audit[]={1,static_cast<uint32_t>(profile.status),profile.bdbTailQuirk,
+            profile.version,profile.checksum,profile.panel,profile.lanes,
+            profile.mode.width,profile.mode.height,profile.mode.clockKHz,profile.mode.htotal(),profile.mode.vtotal(),
+            profile.pwmHz,profile.minimum,profile.brightness,profile.precision,
+            profile.sequences.packets,profile.sequences.delays,profile.sequences.gpios,
+            uint32_t(profile.sequences.delayUs),uint32_t(profile.sequences.delayUs>>32),
+            profile.ppsUs[0],profile.ppsUs[1],profile.ppsUs[2],profile.ppsUs[3],profile.ppsUs[4],
+            link.valid,link.afeKHz,link.portKHz,link.escapeDivider,link.phyEscapeDivider,
+            link.clockTiming,link.dataTiming};
+        publishBytes(pci,"WEXDSIFirmwareAudit",audit,sizeof(audit));
+    }
 }

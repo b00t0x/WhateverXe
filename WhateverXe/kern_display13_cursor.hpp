@@ -12,14 +12,14 @@ inline uint32_t controlWrite(uint64_t reg,uint32_t value) {
 }
 enum class Status : uint32_t {Unavailable,Complete,Power,Conflict,Readback,Timeout};
 struct Result {Status status {Status::Unavailable};uint32_t before {},after {},frameBefore {},frameAfter {},writes {},waitUs {};};
-template<class IO> Result stop(IO &io,unsigned pipeIndex=0) {
+template<class IO> Result stop(IO &io,unsigned pipeIndex=0,const Display13Transcoder::Bindings &transcoders={}) {
     Result r;
     // This is a display pipe index, independent of HDMI A/B DDI identity.
     // The caller proves the path/FB association and limits its writer to this bank.
     if(pipeIndex>=3) {r.status=Status::Conflict;return r;}
     const uint32_t bank=pipeIndex*0x1000;
     if(!io.readable(0x700AC+bank) || !Display13FBIRQ::powered(io.read(0x45404),pipeIndex)) {r.status=Status::Power;return r;}
-    const auto pipe=io.read(0x70008+bank);r.before=io.read(0x70080+bank);
+    const auto pipe=Display13Transcoder::control(io,pipeIndex,transcoders);r.before=io.read(0x70080+bank);
     if(pipe==UINT32_MAX || r.before==UINT32_MAX) {r.status=Status::Readback;return r;}
     for(unsigned d=0;d<3;++d) {
         const auto dsb=io.read(Display13FBIRQ::DSBControl(pipeIndex,d));

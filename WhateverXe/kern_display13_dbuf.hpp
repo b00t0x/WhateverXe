@@ -32,6 +32,7 @@ struct PipeAllocation {
     bool pendingCursor {};
 };
 struct State {
+    Display13Transcoder::Bindings transcoders;
     bool begun {},faulted {},joined {};
     uint32_t initial[4] {},raw[4] {},initialRequests {},requested {},powered {},owned {},consumers {},mbus {};
     PipeAllocation pipe[3];
@@ -129,7 +130,7 @@ template<class IO> Layout singlePipeLayout(IO &io,const State &s) {
     if(s.joined || io.read(0x4438C)!=s.mbus || (wells&(3U<<16))) {r.status=Status::Topology;return r;}
     for(unsigned pipe=0;pipe<3;++pipe) {
         if(!(wells&(1U<<(2*(5+pipe)))))continue;
-        const auto conf=io.read(0x70008+pipe*0x1000);
+        const auto conf=Display13Transcoder::control(io,pipe,s.transcoders);
         if(conf==UINT32_MAX || (pipe && (conf&(Request|On)))) {r.status=Status::Topology;return r;}
         if(!pipe) {
             // Transitional enable/disable must settle before changing DDB.
@@ -159,9 +160,10 @@ template<class IO> Layout pipeLayout(IO &io,const State &s,unsigned index) {
     if(s.updating&(1U<<index)) {r.status=Status::Conflict;return r;}
     const auto wells=io.read(0x45404);
     if(wells==UINT32_MAX || !Display13FBIRQ::powered(wells,index)) {r.status=Status::Power;return r;}
+    if(s.transcoders.dsi0Pipe<3 && !Display13FBIRQ::powered(wells,s.transcoders.dsi0Pipe)) {r.status=Status::Power;return r;}
     if(s.joined || (wells&(3U<<16)) || io.read(0x4438C)!=s.mbus) {r.status=Status::Topology;return r;}
     for(unsigned p=0;p<3;++p)if(Display13FBIRQ::powered(wells,p)) {
-        const auto conf=io.read(0x70008+p*0x1000);
+        const auto conf=Display13Transcoder::control(io,p,s.transcoders);
         if(conf==UINT32_MAX) {r.status=Status::Conflict;return r;}
         if((conf&(Request|On)) && !(s.selected&(1U<<p))) {r.status=Status::Topology;return r;}
         if(p==index) {
@@ -186,16 +188,18 @@ template<class IO> Layout pipeLayout(IO &io,const State &s,unsigned index) {
 }
 // Read the measured boot pipe A allocation, not a Linux allocation copied into
 // the hardware. All four physical slices exist; a single unjoined A uses S0/1.
-template<class IO> Status begin(IO &io,State &s,uint32_t capacity=0) {
+template<class IO> Status begin(IO &io,State &s,uint32_t capacity=0,const Display13Transcoder::Bindings &transcoders={}) {
     if(s.faulted)return Status::Faulted;
-    if(s.begun)return capacity==s.capacity ? Status::Complete : Status::Topology;
+    if(s.begun)return capacity==s.capacity && transcoders.dsi0Pipe==s.transcoders.dsi0Pipe ? Status::Complete : Status::Topology;
+    if(!transcoders.valid() || (transcoders.dsi0Pipe!=UINT32_MAX && transcoders.dsi0Pipe!=0))return Status::Topology;
+    s.transcoders=transcoders;
     if(capacity && capacity!=7)return Status::Topology;
     s.capacity=capacity;
     if(!io.readable(0x4438C) || !io.readable(0x7027C) || !io.readable(0x7017C))return Status::Unavailable;
     const auto wells=io.read(0x45404);
     if(wells==UINT32_MAX || (wells&0x403)!=0x403)return fail(s,Status::Power);
     if(wells&(3U<<16))return fail(s,Status::Topology); // Pipe D is outside this native owner.
-    if((io.read(0x70008)&0xC0000000)!=0xC0000000 || !(io.read(0x70180)&Request))return fail(s,Status::Topology);
+    if((Display13Transcoder::control(io,0,s.transcoders)&0xC0000000)!=0xC0000000 || !(io.read(0x70180)&Request))return fail(s,Status::Topology);
     s.mbus=io.read(0x4438C);s.joined=s.mbus&Request;
     if(s.mbus==UINT32_MAX || (s.joined && (((s.mbus>>26)&7)!=0 || !(s.mbus&On))))return fail(s,Status::Topology);
     const auto primary=io.read(0x7027C),cursor=io.read(0x7017C);
@@ -210,7 +214,7 @@ template<class IO> Status begin(IO &io,State &s,uint32_t capacity=0) {
     // the allocation or slice lifetime calculation.
     for(unsigned pipe=0;pipe<3;++pipe) {
         if(!(wells&(1U<<(2*(5+pipe)))))continue;
-        const auto conf=io.read(0x70008+pipe*0x1000);
+        const auto conf=Display13Transcoder::control(io,pipe,s.transcoders);
         if(conf==UINT32_MAX || (pipe && (conf&Request)))return fail(s,Status::Topology);
         for(unsigned plane=pipe ? 0 : 1;plane<5;++plane) {
             const auto ctl=io.read(0x70180+pipe*0x1000+plane*0x100);
@@ -302,7 +306,7 @@ template<class IO> Status bindOffPipe(IO &io,State &s,unsigned index) {
     const auto bit=1U<<index,bank=0x1000*index;
     if(s.selected&bit)return Status::Complete;
     if(!Display13FBIRQ::powered(io.read(0x45404),index))return fail(s,Status::Power);
-    if(!Display13FBIRQ::consumersStopped(io,bit))return fail(s,Status::Conflict);
+    if(!Display13FBIRQ::consumersStopped(io,bit,s.transcoders))return fail(s,Status::Conflict);
     if(!io.readable(0x7027C+bank) || !io.readable(0x7017C+bank))return Status::Unavailable;
     const auto primary=io.read(0x7027C+bank),cursor=io.read(0x7017C+bank);
     if(primary==UINT32_MAX || cursor==UINT32_MAX)return fail(s,Status::Readback);
@@ -385,7 +389,7 @@ template<class IO> Status resumeEngine(IO &io,State &s) {
         if(a.primary.start || a.primary.end || a.cursor.start || a.cursor.end ||
            a.heldPrimary.start || a.heldPrimary.end || a.heldCursor.start || a.heldCursor.end ||
            a.pendingRaw || a.pendingCursor)return fail(s,Status::Conflict);
-    if(!Display13FBIRQ::consumersStopped(io,7))return fail(s,Status::Conflict);
+    if(!Display13FBIRQ::consumersStopped(io,7,s.transcoders))return fail(s,Status::Conflict);
     return power(io,s,0,0);
 }
 // STOP_ACK, disabled planes/cursor and idle DSB prove only this pipe stopped.
@@ -397,7 +401,7 @@ template<class IO> Status stopPipe(IO &io,State &s,unsigned index) {
     const auto bit=1U<<index;
     if(s.updating&bit)return fail(s,Status::Conflict);
     if(!Display13FBIRQ::powered(io.read(0x45404),index))return fail(s,Status::Power);
-    if(!Display13FBIRQ::consumersStopped(io,bit))return fail(s,Status::Conflict);
+    if(!Display13FBIRQ::consumersStopped(io,bit,s.transcoders))return fail(s,Status::Conflict);
     const auto old=s.pipe[index];auto &a=s.pipe[index];
     a.consumers=a.unretired=0;a.heldPrimary=a.heldCursor={};syncMasks(s);
     const auto result=power(io,s,s.consumers|s.unretired,s.consumers);
@@ -411,7 +415,7 @@ template<class IO> Status detach(IO &io,State &s,unsigned index) {
     if(!s.begun || index>=3 || !(s.selected&(1U<<index)))return Status::Unavailable;
     const auto &a=s.pipe[index];
     if(a.consumers || a.unretired || (s.updating&(1U<<index)))return fail(s,Status::Conflict);
-    if(!Display13FBIRQ::powered(io.read(0x45404),index) || !Display13FBIRQ::consumersStopped(io,1U<<index))return fail(s,Status::Conflict);
+    if(!Display13FBIRQ::powered(io.read(0x45404),index) || !Display13FBIRQ::consumersStopped(io,1U<<index,s.transcoders))return fail(s,Status::Conflict);
     s.released[index]={true,a.primary,a.cursor};s.pipe[index]={};s.selected&=~(1U<<index);syncMasks(s);return Status::Complete;
 }
 // Global display-engine/clock teardown still proves every powered bank is
@@ -422,8 +426,9 @@ template<class IO> Status stop(IO &io,State &s) {
     if(s.updating)return fail(s,Status::Conflict);
     const auto wells=io.read(0x45404);
     if(wells==UINT32_MAX || (wells&3)!=3 || (wells&(3U<<16)))return fail(s,Status::Power);
+    if(s.transcoders.dsi0Pipe<3 && !Display13FBIRQ::consumersStopped(io,1U<<s.transcoders.dsi0Pipe,s.transcoders))return fail(s,Status::Conflict);
     for(unsigned p=0;p<3;++p)if(wells&(1U<<(10+2*p))) {
-        const auto conf=io.read(0x70008+p*0x1000),cursor=io.read(0x70080+p*0x1000);
+        const auto conf=Display13Transcoder::control(io,p,s.transcoders),cursor=io.read(0x70080+p*0x1000);
         if(conf==UINT32_MAX || cursor==UINT32_MAX || (conf&(Request|On)) || (cursor&63))return fail(s,Status::Conflict);
         for(unsigned n=0;n<5;++n) {
             const auto ctl=io.read(0x70180+p*0x1000+n*0x100);

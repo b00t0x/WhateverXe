@@ -56,6 +56,7 @@ struct XE {
  static XELP::LinkRequirements framebufferLinkRequirements(void*,uint32_t);
  static unsigned display13TCTarget(OSObject*,bool=false);
  static uint32_t wrapDisplay13TCMode(OSObject*,uint32_t);
+ static uint32_t setDSIPortMode(OSObject*,uint32_t){assert(false && "TC must not enter DSI");return kIOReturnNotReady;}
 } instance,*callbackXE=&instance;
 // FUNCTIONS
 alignas(8) uint8_t portBytes[0x700];

@@ -8,6 +8,10 @@ state+=' comboClockTransaction;\n'+re.search(r'static bool comboClockAccess\(.*?
 functions='\n'.join(re.search(r'(?:bool|void) XE::'+n+r'\(.*?\n\}',s,re.S).group() for n in ['comboBeginClock','comboEndClock'])
 code=r'''
 #include "kern_adls_clock.hpp"
+#include "kern_dsi_restart.hpp"
+#include "kern_dsi_panel.hpp"
+#include "kern_display13_fb_memory.hpp"
+#include "kern_display13_transcoder.hpp"
 #include <cassert>
 #include <cstdio>
 #include <map>
@@ -18,6 +22,7 @@ uintptr_t thread=1;
 void *current_thread(){return reinterpret_cast<void *>(thread);}
 unsigned refs=0,getCount=0,putCount=0,reads=0;
 std::map<unsigned long,uint32_t> mmio;
+struct {Display13Transcoder::Bindings transcoders;XELP::DSI::Readout bootDSI;} display13FBPower;
 alignas(8) uint8_t ctl[0xf00]{},port[0x700]{},access[0x80]{},power[0x100]{};
 uint32_t config[6]{};
 template<class T>T &at(void *p,unsigned off){return *reinterpret_cast<T *>(static_cast<uint8_t *>(p)+off);}
@@ -30,6 +35,9 @@ void getPG(void *p,uint32_t pg){assert(p==power && pg==1);++refs;++getCount;}
 void putPG(void *p,uint32_t pg){assert(p==power && pg==1 && refs);--refs;++putCount;}
 struct XE {
  bool adlsDisplaySelected=true,display13FramebufferRequested=false;
+ bool dsiStopAttempted=false,dsiIRQParked=false,dsiResourcesReady=false;
+ XELP::DSI::Quiesce::Result dsiStop;XELP::DSI::Panel::Shutdown dsiPanelStop;
+ struct {bool sleeping=false,failed=false;XELP::DSI::Restart::State host;} dsiRuntimePower;
  struct Native {
   bool ready=true;bool complete(){return ready;}
   void (*getPG)(void*,uint32_t)=::getPG,(*putPG)(void*,uint32_t)=::putPG;
@@ -83,7 +91,27 @@ int main(){
   XE::comboEndClock();
   assert(!refs && !lock.depth);
  }
- puts("PASS production common Combo clock scope: core power, nested rejection, thread/access isolation, failed-enable reservation and balanced teardown");
+ // Production transaction discovers/pins DSI's PLL1 before selecting B's
+ // clock, even with both DDI gates closed. No donor call may own DSI PHY A.
+ comboClockTransaction.allocation={};config[0]=1;at<uint32_t>(access,0x60)=0x1000000;
+ display13FBPower.transcoders.dsi0Pipe=0;
+ mmio={{0x45404,0xFC0F},{0x51004,0x40000000},{0x164280,0x1E07C01},{0x46010,0},{0x46014,0xCC000000},
+  {0x7B008,0xC0000000},{0x6B400,0x80030006},{0x70008,0},{0x6B030,0x20130300},{0x6B094,1},
+  {0x6B404,0},{0x6B034,0},{0x64000,0x80000000},{0x16428C,0x3001FB},{0x164290,0xE84},
+  {0x6B000,0x04650437},{0x6B008,0x044F044D},{0x6B00C,0x07D1077F},{0x6B014,0x07A907A7}};
+ display13FBPower.bootDSI=XELP::DSI::decodeReadout([&](uint32_t r,uint32_t &v){assert(mmio.count(r));v=mmio.at(r);return true;},38400);
+ assert(XE::comboBeginClock(ctl,port,true,keep) && comboClockTransaction.translation.pll==0);
+ XE::comboEndClock();assert(!refs && !lock.depth);
+ assert(comboClockTransaction.allocation.external[0]==reinterpret_cast<uintptr_t>(ctl));
+ assert(!comboClockTransaction.allocation.reset());
+ config[0]=0;assert(!XE::comboBeginClock(ctl,port,true,keep) && !XE::comboBeginClock(ctl,port,false,keep));
+ alignas(8) uint8_t otherPort[0x700]{};uint32_t otherConfig[6]{1};at<void*>(otherPort,0x548)=otherConfig;
+ mmio[0x164280]&=~0x80CU;mmio[0x46010]=0xCC000000;
+ assert(!XE::comboBeginClock(ctl,port,true,keep,otherPort)); // sharing also cannot overwrite DSI's target
+ assert(comboClockTransaction.allocation.binding[0]==2);
+ config[0]=1;mmio[0x16428C]^=0x400;assert(!XE::comboBeginClock(ctl,port,true,keep));
+ assert(!refs && !lock.depth && getCount==putCount);
+ puts("PASS production common Combo clock scope: balanced power, failed-enable retention, DSI source revalidation and external PLL ownership");
 }
 '''.replace('STATE',state).replace('FUNCTIONS',functions)
 with tempfile.TemporaryDirectory(prefix='adls-clock-runtime-') as d:

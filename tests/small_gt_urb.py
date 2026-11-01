@@ -24,6 +24,7 @@ void check(unsigned id,unsigned rev,unsigned dss,unsigned eu,unsigned media) {
  XELP::SmallGTResources display12SmallGT;
  uint32_t fuses[]={1,dss,eu,0xf0,media};
  assert(xeProfile.admitted() && display12SmallGTDetected && XELP::decodeSmallGT(fuses,display12SmallGT));
+ bool tglGT2Detected=false;XELP::GTResources tglGT2Resources;
  bool adlnDetected=false;unsigned adlnNativeSubslices=0,adlnL3Banks=0;
  BODY
  assert(urbReplacement==urbReplaceAlderLakeN);

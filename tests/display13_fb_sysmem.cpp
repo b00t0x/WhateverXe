@@ -56,7 +56,15 @@ int main() {
     }
     {IO io;io.badPhysical=0x3FFF;const auto r=io.map();assert(r.status==Status::Physical && !r.written && !r.mustRetainBacking);}
     {IO io;io.shortPhysical=0x3FFF;assert(io.map().status==Status::Physical && !io.writes);}
-    {IO io;io.ptes.back()=0x300000001ULL;assert(io.map().status==Status::Occupied && !io.writes);}
+    // Empty native slots can contain undefined firmware GGTT words. Include
+    // the observed nonpresent value and present-looking residual entries.
+    {IO io;for(unsigned i=0;i<io.ptes.size();++i)io.ptes[i]=0xD7DD8B56CBB99446ULL+(i&1);
+     assert(io.map().status==Status::Complete);
+     for(unsigned i=0;i<io.ptes.size();++i)assert(io.ptes[i]==(io.physicalPages[i]|1));}
+    {IO io;io.ptes.back()=0x300000001ULL;io.owned=false;const auto before=io.ptes;
+     assert(io.map().status==Status::Ownership && !io.writes && io.ptes==before);}
+    {IO io;io.publish();const auto before=io.ptes;
+     assert(io.map().status==Status::Layout && !io.writes && io.ptes==before);}
     {IO io;io.ownedEnd=0x6195000;assert(io.map().status==Status::Ownership && !io.reads && !io.writes);}
     {IO io;io.active=true;const auto r=io.map();assert(r.status==Status::Ownership && !r.written && !r.mustRetainBacking);}
     {IO io;io.startConsumerAfter=3;const auto r=io.map();assert(r.status==Status::Ownership && r.written==3 && r.mustRetainBacking);}
@@ -89,5 +97,5 @@ int main() {
     {IO io;assert(io.map().status==Status::Complete);io.publish();io.writes=0;io.reads=0;io.loseOwnerReadAfter=0x4000;
      const auto r=inspect(io,io.layout,1,io.workspace.data(),io.workspace.size());
      assert(r.status==Status::Ownership && r.verified==0x4000 && !io.writes);}
-    puts("PASS fixed SysMem GGTT: 2 scatter windows, all-page preflight before writes, actual ownership, foreign PTE preservation, bounded failures/pinning and stopped-consumer scratch retirement.");
+    puts("PASS fixed SysMem GGTT: 2 scatter windows, all-page preflight before writes, actual ownership, empty-window initialization, live mapping preservation, bounded failures/pinning and stopped-consumer scratch retirement.");
 }
