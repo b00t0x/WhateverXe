@@ -10,6 +10,8 @@ Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphi
 
 ### Fixed
 
+- Fix system power-off hangs with a USB-C display connected on Alder Lake-class GPUs by releasing idle Type-C PHY ownership during shutdown.
+
 - Fix display freezes during hardware cursor size changes by preparing watermarks for the requested size before the native control update.
 
 - Remove arbitrary MIPI DSI mode-list limits, forward ordinary OS attributes to the native driver, and accept firmware panel orientation metadata without changing physical link timing.

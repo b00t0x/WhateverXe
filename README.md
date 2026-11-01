@@ -138,7 +138,7 @@ not been verified with the fixed TC DP path. Experimental USB-C DP Alt Mode
 supports VBT-described external TC1–TC4 DP wiring with matching AUX. It reuses
 SST link training with Type-C ownership and the detected physical lane assignment.
 MST, Thunderbolt, cross-routed AUX and USB-C boot-display adoption remain unsupported.
-Alder Lake-N USB-C output has been tested at 1080p60 through an HDMI adapter on Big Sur, including Metal and OpenGL acceleration. USB-C hotplug, sleep/wake and other adapter types have not been verified.
+Alder Lake-N USB-C output has been tested at 1080p60 through an HDMI adapter on Big Sur, including Metal and OpenGL acceleration. System power-off with a USB-C display connected has also been tested on Big Sur. USB-C hotplug, sleep/wake and other adapter types have not been verified.
 
 ADL-P/RPL-P uses its physical ID and detected GPU resources automatically.
 No device-ID override or machine-specific AGDP kext is required.

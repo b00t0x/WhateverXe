@@ -98,7 +98,7 @@ Tiger Lakeはnative controllerとAUX配線が一致するVBTの固定DisplayPort
 
 Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/Uでは、Combo A/B・固定TC1〜TC4 HDMI配線をVBTから選択します。試験的な固定TC1〜TC4 SST DisplayPortには、VBTのAUX配線の一致が必要です。Alder Lake-NのHDMI明示propertyはCombo配線にのみ適用します。
 
-ADL-Hでは、固定HDMIとDP→HDMI変換器を使い、3画面接続での起動、ファームウェアによる拡大表示からの起動、DP再接続を確認しています。固定TC DP経路での直接DP接続の表示先と、これらのファミリーの他のGPUは未検証です。試験的なUSB-C DP Alt Modeは、AUXが一致するVBTの外部TC1〜TC4 DP配線に対応します。既存SSTリンク訓練にType-C所有権と検出した物理レーン割当を組み合わせます。MST、Thunderbolt、交差AUX配線、USB-Cを起動用画面とする引継ぎは未対応です。Alder Lake-NではBig SurでHDMI変換器経由のUSB-C 1080p60表示とMetal/OpenGL加速を確認しています。USB-Cの抜き差し・スリープ復帰・他の変換器は未検証です。
+ADL-Hでは、固定HDMIとDP→HDMI変換器を使い、3画面接続での起動、ファームウェアによる拡大表示からの起動、DP再接続を確認しています。固定TC DP経路での直接DP接続の表示先と、これらのファミリーの他のGPUは未検証です。試験的なUSB-C DP Alt Modeは、AUXが一致するVBTの外部TC1〜TC4 DP配線に対応します。既存SSTリンク訓練にType-C所有権と検出した物理レーン割当を組み合わせます。MST、Thunderbolt、交差AUX配線、USB-Cを起動用画面とする引継ぎは未対応です。Alder Lake-NではBig SurでHDMI変換器経由のUSB-C 1080p60表示とMetal/OpenGL加速を確認しています。USB-C映像を接続したままの通常シャットダウンによる電源断もBig Surで確認しています。USB-Cの抜き差し・スリープ復帰・他の変換器は未検証です。
 
 ADL-P/RPL-Pは物理IDと検出したGPU資源を自動で使用します。device-ID上書きや機種別AGDP kextは不要です。`-wex-noaccel`でFramebufferのみの動作を維持します。
 
