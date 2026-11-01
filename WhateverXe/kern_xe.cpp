@@ -11,6 +11,8 @@
 #include "kern_framebuffer_donor.hpp"
 #include "kern_xelp_os.hpp"
 #include "kern_xelp_call_target.hpp"
+#include "kern_xelp_native_placement.hpp"
+#include <Headers/kern_disasm.hpp>
 #include "kern_alderlake_n.hpp"
 #include "kern_xelp_device.hpp"
 #include "kern_xelp_memory_layout.hpp"
@@ -2001,6 +2003,20 @@ static void tglPrepareVenturaMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  auto evidence=OSSerializer::forTarget(nullptr,tglMMIOEvidenceSerialize);
  if(evidence) {root->setProperty("TGLMMIOMappingEvidence",evidence);evidence->release();}
 }
+static size_t tglNativeInstructionSize(const uint8_t *bytes,size_t length) {
+ // HDE may read ahead by 32 bytes. Decode a padded local copy, then require
+ // the complete instruction to lie in the nofault-read native span.
+ uint8_t code[32] {};memcpy(code,bytes,length<sizeof(code)?length:sizeof(code));
+ Disassembler::hde_t ins {};
+ const auto size=Disassembler::hdeDisasm(reinterpret_cast<uintptr_t>(code),&ins);
+ return !(ins.flags&F_ERROR) && size<=length ? size : 0;
+}
+static bool tglNativeProtectCall(uintptr_t protect,uintptr_t pmap,bool tahoe) {
+ uint8_t code[512] {};
+ return tglVM.nofault && protect && pmap &&
+  tglVM.nofault(protect,reinterpret_cast<uint64_t>(code),sizeof(code))==sizeof(code) &&
+  XELPNative::protectCall(code,sizeof(code),protect,pmap,tahoe,tglNativeInstructionSize);
+}
 static void tglPrepareTahoeMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  tglMMIOUCReady=false;
  auto bar=pci->getDeviceMemoryWithRegister(0x10);
@@ -2015,8 +2031,7 @@ static void tglPrepareTahoeMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  const uint8_t create[] {0x8B,0x75,0xB4,0x89,0xF1,0x83,0xE1,0x01,0x48,0x09,0xD1,0x40,0xF6,0xC6,0x02};
  const uint8_t update[] {0x8B,0x55,0xB4,0x89,0xD0,0x83,0xE0,0x01,0x48,0x09,0xC8,0xF6,0xC2,0x02};
  const uint8_t protectFrame[] {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x28};
- const bool protectCallReady=fn && protect && XELPCall::targets(
-  reinterpret_cast<const uint8_t *>(protect+0xCC),5,protect+0xCC,fn);
+ const bool protectCallReady=tglNativeProtectCall(protect,fn,true);
  uint32_t lo,hi;asm volatile("rdmsr" : "=a"(lo),"=d"(hi) : "c"(0x277));
  const uint64_t pat=static_cast<uint64_t>(hi)<<32|lo;
  bool ok=tglVM.enabled && tglPrepareMMIOBAR(bar) &&
@@ -2073,8 +2088,7 @@ static void tglPrepareSequoiaMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  const uint8_t create[] {0x8B,0x75,0xB4,0x89,0xF1,0x83,0xE1,0x01,0x48,0x09,0xD1,0x40,0xF6,0xC6,0x02};
  const uint8_t update[] {0x8B,0x55,0xB4,0x89,0xD0,0x83,0xE0,0x01,0x48,0x09,0xC8,0xF6,0xC2,0x02};
  const uint8_t protectFrame[] {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x28};
- const bool protectCallReady=fn && protect && XELPCall::targets(
-  reinterpret_cast<const uint8_t *>(protect+0xCA),5,protect+0xCA,fn);
+ const bool protectCallReady=tglNativeProtectCall(protect,fn,false);
  uint32_t lo,hi;asm volatile("rdmsr" : "=a"(lo),"=d"(hi) : "c"(0x277));
  const uint64_t pat=static_cast<uint64_t>(hi)<<32|lo;
  bool ok=tglVM.enabled && tglPrepareMMIOBAR(bar) &&
@@ -2243,10 +2257,6 @@ void tglVMPrepare(KernelPatcher &patcher,IOPCIDevice *pci) {
  auto nf=patcher.solveSymbol(KernelPatcher::KernelID,"_ml_nofault_copy");
  patcher.clearError();
  if (!verify || !kp || !pb || !pe || !nf) return;
- const uint8_t callPrefix[] {0x48,0x89,0xDE,0xE8};
- if (memcmp(reinterpret_cast<void *>(verify+0x10),callPrefix,sizeof(callPrefix))) return;
- int32_t displacement;memcpy(&displacement,reinterpret_cast<void *>(verify+0x14),4);
- const auto target=verify+0x18+displacement;
  const bool dp1=(XELP::kernelOS(version)==XELP::OS::Donor);
  const bool monterey=(XELP::kernelOS(version)==XELP::OS::Monterey);
  const bool ventura=(XELP::kernelOS(version)==XELP::OS::Ventura);
@@ -2254,11 +2264,19 @@ void tglVMPrepare(KernelPatcher &patcher,IOPCIDevice *pci) {
  const bool sequoia=(XELP::kernelOS(version)==XELP::OS::Sequoia);
  const bool tahoe=(XELP::kernelOS(version)==XELP::OS::Tahoe);
  if(sequoia || tahoe) {
-  uint8_t accessor[36] {};
+  const auto store=patcher.solveSymbol(KernelPatcher::KernelID,"_kernel_pmap_store");
+  patcher.clearError();
+  uint8_t caller[96] {},accessor[64] {};
   const auto copy=reinterpret_cast<decltype(tglVM.nofault)>(nf);
+  if(!store || copy(verify,reinterpret_cast<uint64_t>(caller),sizeof(caller))!=sizeof(caller))return;
+  const auto target=XELPNative::rootCall(caller,sizeof(caller),verify,store);
   if((target>>47)!=0x1FFFF || copy(target,reinterpret_cast<uint64_t>(accessor),sizeof(accessor))!=sizeof(accessor) ||
-     !XELPCall::rootAccessor(accessor,sizeof(accessor)))return;
+     !XELPNative::rootAccessor(accessor,sizeof(accessor)))return;
  } else {
+  const uint8_t callPrefix[] {0x48,0x89,0xDE,0xE8};
+  if (memcmp(reinterpret_cast<void *>(verify+0x10),callPrefix,sizeof(callPrefix))) return;
+  int32_t displacement;memcpy(&displacement,reinterpret_cast<void *>(verify+0x14),4);
+  const auto target=verify+0x18+displacement;
   if (target!=verify-(dp1 ? 0x3930 : monterey ? 0x4190 : ventura ? 0x3D70 : sonoma ? 0x3EF0 : 0x3AB0)) return;
   const uint8_t rootLoad[] {0x48,0x8B,0x47,0x50};
   if (memcmp(reinterpret_cast<void *>(target+0x20),rootLoad,sizeof(rootLoad))) return;

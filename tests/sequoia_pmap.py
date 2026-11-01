@@ -8,11 +8,11 @@ from pathlib import Path
 import argparse,re,subprocess,tempfile
 R=Path(__file__).resolve().parents[1]
 s=(R/'WhateverXe/kern_xe.cpp').read_text()
-a=argparse.ArgumentParser();a.add_argument('--kernel',type=Path);a=a.parse_args()
+a=argparse.ArgumentParser();a.add_argument('--kernel',type=Path);a.add_argument('--hde-source',type=Path);a=a.parse_args()
 bridges='\n'.join(re.search(r'extern "C" __attribute__\(\(naked,used\)\) void tglSequoiaPmap'+kind+r'Bridge\(\) \{.*?\n\}',s,re.S)[0] for kind in ['New','Update'])
 if a.kernel:
  from pmap_kernel_contract import check
- check(a.kernel,s,"Sequoia")
+ check(a.kernel,s,"Sequoia",a.hde_source)
 cpp=r'''#include <stdint.h>
 #include <initializer_list>
 #include <string.h>

@@ -6,7 +6,8 @@ import tempfile
 from pathlib import Path
 
 
-def check(kernel, source, family):
+def check(kernel, source, family, hde_source):
+    assert hde_source and hde_source.is_file(), '--kernel requires --hde-source (Lilu hde/hde64.c)'
     data = kernel.read_bytes()
     assert data[:4] == bytes.fromhex('cffaedfe'), 'expected x86_64 Mach-O'
     symbols = {}
@@ -39,26 +40,36 @@ def check(kernel, source, family):
         values = re.search(r'const uint8_t ' + name + r'\[\] \{([^}]+)\}', block)[1]
         expected = bytes(int(v.strip(), 0) for v in values.split(','))
         assert read(address, len(expected)) == expected, name
-    offsets = re.findall(r'XELPCall::targets\([^;]+?protect\+(0x[0-9A-Fa-f]+),fn\)', block)
-    assert len(offsets) == 1, offsets
-    site = protect + int(offsets[0], 16)
-    call = read(site, 5)
+    assert 'tglNativeProtectCall(protect,fn,' + ('true' if family == 'Tahoe' else 'false') + ')' in block
+    protect_code = read(protect, 512)
     verify = symbols['_pmap_verify_noncacheable']
-    accessor_call = read(verify + 0x10, 8)
-    assert accessor_call[:4] == bytes.fromhex('4889dee8')
-    target = verify + 0x18 + struct.unpack_from('<i', accessor_call, 4)[0]
-    accessor = read(target, 36)
+    caller = read(verify, 96)
+    store = symbols['_kernel_pmap_store']
+    # Resolve the call with the production matcher below before fetching its
+    # callee. No verifier/call/field offsets or particular relative distance.
+    include = Path(__file__).resolve().parents[1] / 'WhateverXe'
+    with tempfile.TemporaryDirectory(prefix='xe-root-target-') as directory:
+        path = Path(directory)
+        (path / 'target.cpp').write_text('#include "kern_xelp_native_placement.hpp"\n#include <cstdio>\nint main(){unsigned char b[]={' + ','.join(map(str,caller)) + '};printf("%llx",(unsigned long long)XELPNative::rootCall(b,sizeof(b),' + str(verify) + 'ULL,' + str(store) + 'ULL));}')
+        subprocess.run(['clang++','-std=c++17','-I'+str(include),str(path/'target.cpp'),'-o',str(path/'target')],check=True)
+        target = int(subprocess.check_output([str(path/'target')],text=True),16)
+    assert target
+    accessor = read(target, 64)
     # Execute the production decoder/field contract on the real native bytes.
     def literal(value):
         return ','.join(str(x) for x in value)
-    cpp = '#include "kern_xelp_call_target.hpp"\n#include <assert.h>\nint main(){\n'
-    cpp += 'unsigned char call[]={' + literal(call) + '}, accessor[]={' + literal(accessor) + '};\n'
-    cpp += f'assert(XELPCall::targets(call,sizeof(call),{site}ULL,{fn}ULL));\n'
-    cpp += 'assert(XELPCall::rootAccessor(accessor,sizeof(accessor)));}\n'
+    # Compile the exact production decoder wrapper against Lilu's HDE source.
+    decoder = re.search(r'static size_t tglNativeInstructionSize\(.*?\n\}',source,re.S)[0]
+    decoder = decoder.replace('Disassembler::hde_t','hde64s').replace('Disassembler::hdeDisasm(reinterpret_cast<uintptr_t>(code),','hde64_disasm(code,')
+    cpp = '#include "kern_xelp_native_placement.hpp"\n#include "hde64.h"\n#include <assert.h>\n' + decoder + '\nint main(){\n'
+    cpp += 'unsigned char protect[]={' + literal(protect_code) + '}, accessor[]={' + literal(accessor) + '};\n'
+    cpp += f'assert(XELPNative::protectCall(protect,sizeof(protect),{protect}ULL,{fn}ULL,' + ('true' if family=='Tahoe' else 'false') + ',tglNativeInstructionSize));\n'
+    cpp += 'assert(XELPNative::rootAccessor(accessor,sizeof(accessor)));}\n'
     with tempfile.TemporaryDirectory(prefix='xe-kernel-contract-') as directory:
         path = Path(directory)
         (path / 'test.cpp').write_text(cpp)
-        include = Path(__file__).resolve().parents[1] / 'WhateverXe'
-        subprocess.run(['clang++', '-std=c++17', '-I' + str(include), str(path / 'test.cpp'), '-o', str(path / 'test')], check=True)
+        headers = include.parent / 'Lilu.kext/Contents/Resources/Headers'
+        subprocess.run(['clang','-I'+str(headers),'-c',str(hde_source),'-o',str(path/'hde.o')],check=True)
+        subprocess.run(['clang++', '-std=c++17', '-I' + str(include), '-I'+str(headers), str(path / 'test.cpp'), str(path/'hde.o'), '-o', str(path / 'test')], check=True)
         subprocess.run([str(path / 'test')], check=True)
-    print('PASS: 8 instruction/stack guards, symbol-resolved CALL and private pmap accessor; no build/hash admission')
+    print('PASS: 8 instruction/stack guards, decoded native protect/verifier calls and private pmap accessor; no build/hash/call-offset admission')

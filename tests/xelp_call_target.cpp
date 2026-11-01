@@ -1,4 +1,4 @@
-#include "kern_xelp_call_target.hpp"
+#include "kern_xelp_native_placement.hpp"
 #include <assert.h>
 #include <initializer_list>
 #include <stdio.h>
@@ -6,13 +6,13 @@
 int main() {
  uint8_t accessor[]={0x55,0x48,0x89,0xe5,0x48,0xb8,0,0,0,0,0,0x80,0xff,0xff,0x48,0x01,0xf0,
   0x48,0xc1,0xe8,0x30,0x3d,0xff,0xff,0,0,0x0f,0x82,0xc1,0,0,0,0x48,0x8b,0x47,0x50};
- assert(XELPCall::rootAccessor(accessor,sizeof(accessor)));
+ assert(XELPNative::rootAccessor(accessor,sizeof(accessor)));
  for(unsigned i=0;i<sizeof(accessor);++i) {
   accessor[i]^=1;
-  assert(XELPCall::rootAccessor(accessor,sizeof(accessor))==(i>=28 && i<32));
+  assert(XELPNative::rootAccessor(accessor,sizeof(accessor))==(i>=28 && i<32));
   accessor[i]^=1;
  }
- assert(!XELPCall::rootAccessor(accessor,35));
+ assert(!XELPNative::rootAccessor(accessor,35));
  uint8_t bytes[] {0xE8,0,0,0,0};
  // Independent relocation oracle: move caller and callee independently.
  // Known build identifiers and their particular displacements are not inputs.
