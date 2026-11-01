@@ -40,6 +40,8 @@ OS別の検証範囲と残る問題は[動作確認済みの機能と既知の�
 ### 動作を期待できるが実機未検証
 
 - 96 EUを含む、対応IDの他のTiger Lake-U/H35構成。
+  LinuxのTGL GT2 ID集合全体を受け付け、`9A59`・`9AC0`・`9AC9`・`9AD9`・`9AF8`も含みます。
+  この5 IDは実機未検証です。物理slice/DSS/EUとL3 bankのfuseから対応するURB容量を選びます。
 - Tiger Lake-H45（GT1）：`9A60`、`9A68`、`9A70`。
 - 対応IDの他のAlder Lake-N構成とTwin Lake。
 - 対応する固定HDMIまたは固定TC DisplayPort配線の、他のAlder Lake-H/P/U・Raptor Lake-H/P/U構成。[デバイス表](docs/device-selection.md#automatic-selection)は、メモリ構成で変わる`4626`などのIDも含みます。WhateverXeとWhateverXe Graphicsの両方が物理IDに対応している必要があります。

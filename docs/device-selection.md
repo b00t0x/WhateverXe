@@ -117,3 +117,21 @@ The Display12 small-GT implementation accepts one slice, up to two DSS,
 16/24/32 EUs, four L3 banks and the supported media engines. Different resource
 layouts need additional implementation. These checks are independent of whether
 an individual PCI revision has been tested.
+
+## Tiger Lake GT2 resources
+
+All eight Linux TGL GT2 IDs use the Tiger Lake U/Y Display12 adapter, including
+`9A59`, `9AC0`, `9AC9`, `9AD9` and `9AF8`. The last five are implemented but
+have no hardware validation. They do not use the Rocket Lake adapter.
+Physical selection reads slice, DSS, EU-pair and L3-disable fuses before native
+acceleration. Supported URB shapes are one slice with three DSS/48 EUs/six banks,
+or five/six DSS with 80/96 EUs/eight banks. Invalid/unavailable readout or a
+shape outside these paths prevents accelerator probe/start; framebuffer-only
+operation does not depend on the render capacity. The PCI ID does not choose
+between the six- and eight-bank paths. Existing explicit donor-override policy
+is unchanged; automatic physical selection needs no override.
+
+Linux v6.12's `INTEL_TGL_GT2_IDS` maps to `tgl_info`, the U/Y subplatform and
+`tgl_desc`; Gen12 SSEU is decoded from fuses. Combo PHY signal policy already
+uses this complete U/Y set. See [Linux PCI IDs](https://github.com/torvalds/linux/blob/v6.12/include/drm/intel/i915_pciids.h)
+and [SSEU](https://github.com/torvalds/linux/blob/v6.12/drivers/gpu/drm/i915/gt/intel_sseu.c).

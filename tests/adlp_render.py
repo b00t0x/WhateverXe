@@ -18,6 +18,7 @@ int kextIntelTGL,kextIntelTGLFb;
 bool adlnNativeRCSProfileRequested=false,display13TraceEnabled=false,display13Offline=false;
 struct XE {
  XELP::Profile xeProfile;
+ bool tglGT2Detected=false,tglGT2Ready=false;
  bool display12SmallGTDetected=false,adlsDisplaySelected=false;
  bool adlnRequested=false,adlnDetected=false,adlnKernelReady=false,adlnNativeRequested=false;
  bool adlpDisplaySelected=false,adlpRenderRequested=false,display13FramebufferRequested=false;

@@ -49,6 +49,9 @@ for OS coverage and remaining problems.
 ### Expected to work, not yet tested on hardware
 
 - Other supported Tiger Lake-U/H35 configurations, including 96-EU graphics.
+  The complete Linux TGL GT2 ID set is accepted, including `9A59`, `9AC0`,
+  `9AC9`, `9AD9` and `9AF8`; these five IDs have not been tested on hardware.
+  Physical slice/DSS/EU and L3-bank fuses select the supported URB capacity.
 - Tiger Lake-H45 (GT1): `9A60`, `9A68`, `9A70`.
 - Other supported Alder Lake-N configurations and Twin Lake.
 - Other Alder Lake-H/P/U and Raptor Lake-H/P/U configurations with supported fixed HDMI or fixed TC DisplayPort wiring. The [device table](docs/device-selection.md#automatic-selection) includes memory-configuration variants such as `4626`; both WhateverXe and WhateverXe Graphics must recognize the physical ID.

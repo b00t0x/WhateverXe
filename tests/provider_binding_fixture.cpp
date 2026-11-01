@@ -60,7 +60,7 @@ int main(int argc,char **argv) {
  if(fake){pci.identity=0x12348086;fakeID.value=adln?0x46D2:0x9A49;pci.property=&fakeID;}
  if(adlp){pci.identity=!strncmp(argv[1],"rplp",4)?0xA7A88086:0x46A68086;pci.revision=12;
   if(!strcmp(argv[1],"adlp-fb")){fakeID.value=0x9A49;pci.property=&fakeID;}}
- if(adlp && argc==3)pci.identity=(uint32_t(strtoul(argv[2],nullptr,16))<<16)|0x8086;
+ if(argc==3)pci.identity=(uint32_t(strtoul(argv[2],nullptr,16))<<16)|0x8086;
  controller.provider=&pci;platform[0x12]=9;
  map.address=reinterpret_cast<uintptr_t>(mmio.data());map.bytes=mmio.size();
  field<void *>(&controller,0xC40)=&access;field<void *>(&controller,0xD40)=platform;

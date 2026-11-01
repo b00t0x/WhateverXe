@@ -28,3 +28,5 @@ with tempfile.TemporaryDirectory(prefix="xelp-provider-binding-") as directory:
     # pass the actual Compat binding, physical-owner and native probe paths.
     for pci in ["4626", "4628", "462a", "46a0", "46a1", "46a2", "46b0", "46b1", "46b2", "46c0", "46c1", "46c2", "a720", "a721"]:
         subprocess.run([str(exe), "adlp-auto", pci], check=True)
+    for pci in ["9a59", "9ac0", "9ac9", "9ad9", "9af8"]:
+        subprocess.run([str(exe), "tgl", pci], check=True)

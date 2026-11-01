@@ -102,6 +102,8 @@ private:
     // Render and Display selections are independent; shared PHY/port code
     // must not depend on which GT implementation the product uses.
     bool display12SmallGTDetected {},display12SmallGTReady {};
+    bool tglGT2Detected {},tglGT2Ready {};
+    XELP::GTResources tglGT2Resources;
     bool adlsDisplaySelected {},adlsDisplayHooksReady {};
     bool adlsPortInitReady {},tglHPDHookReady {};
     bool adlsPLLTableReady {},adlsClockReady {},adlsPowerReady {},adlsPanelPWMReady {};

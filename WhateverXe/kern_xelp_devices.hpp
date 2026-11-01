@@ -51,6 +51,11 @@ constexpr DeviceEntry DeviceTable[] {
     {0x4C8B, Family::RocketLake, Display::XeD, GT::Unknown, "Intel UHD Graphics 730"},
     {0x9A40, Family::TigerLake, Display::XeD, GT::TGLGT2, "Intel Iris Xe Graphics"},
     {0x9A49, Family::TigerLake, Display::XeD, GT::TGLGT2, "Intel Iris Xe Graphics"},
+    {0x9A59, Family::TigerLake, Display::XeD, GT::TGLGT2, "Intel UHD Graphics"},
+    {0x9AC0, Family::TigerLake, Display::XeD, GT::TGLGT2, "Intel UHD Graphics"},
+    {0x9AC9, Family::TigerLake, Display::XeD, GT::TGLGT2, "Intel UHD Graphics"},
+    {0x9AD9, Family::TigerLake, Display::XeD, GT::TGLGT2, "Intel UHD Graphics"},
+    {0x9AF8, Family::TigerLake, Display::XeD, GT::TGLGT2, "Intel UHD Graphics"},
     {0x9A60, Family::TigerLake, Display::XeD, GT::TGLGT1, "Intel UHD Graphics"},
     {0x9A68, Family::TigerLake, Display::XeD, GT::TGLGT1, "Intel UHD Graphics"},
     {0x9A70, Family::TigerLake, Display::XeD, GT::TGLGT1, "Intel UHD Graphics"},
@@ -78,6 +83,10 @@ inline const DeviceEntry *deviceEntry(uint32_t pci) {
     if((pci&0xFFFF)!=0x8086)return nullptr;
     for(const auto &entry:DeviceTable)if(entry.device==(pci>>16))return &entry;
     return nullptr;
+}
+inline bool tigerLakeGT2Device(uint32_t pci) {
+    const auto e=deviceEntry(pci);
+    return e && e->family==Family::TigerLake && (e->backend==GT::TGLGT2 || e->backend==GT::TGLG4);
 }
 inline bool mobileDisplay13Device(uint32_t pci) {
     const auto e=deviceEntry(pci);
