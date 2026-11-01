@@ -55,17 +55,24 @@ int main(int argc,char **argv) {
         Mock io;Host host(true);assert(!host.run(io,s,2,budget));
         assert(host.error==HostError::Invalid && io.h.empty() && !io.gpios);
     }
-    for(unsigned id:{1U,5U}) {
+    for(unsigned id:{1U,3U,4U,5U,6U,7U,8U,9U,10U,11U}) {
         Mock io;Host host(true);assert(host.run(io,s,id) && !host.pending && io.h.empty() && !io.gpios);
         Host disabled;assert(!disabled.run(io,s,id));
     }
-    {Mock io;Host host(true);assert(!host.run(io,s,4));}
+    {Mock io;Host host(true);assert(host.send(io,5,{data,1}));
+     assert(host.run(io,s,4) && !host.pending && io.h.size()==2 && host.sequenceId==4);}
+    {Mock io;io.cancelAt=1;Host host(true);assert(!host.run(io,s,4) && host.error==HostError::Cancelled);}
+    for(unsigned id:{0U,12U}){Mock io;Host host(true);assert(!host.run(io,s,id));}
+    {Mock io;Host host(true);auto bad=s;bad.sequence[4]={nullptr,1};assert(!host.run(io,bad,4));}
     // Cancellation at every callback boundary must latch first failure and
     // never submit a later GPIO/header after returning an error.
     for(unsigned at=1;at<=complete.checks;++at) {
         Mock cancelled;cancelled.cancelAt=at;Host stopped(true);
         assert(!stopped.run(cancelled,s,2)&&stopped.error==HostError::Cancelled);
         const auto headers=cancelled.h.size(),words=cancelled.p.size();const auto gpios=cancelled.gpios;
+        const auto sequence=stopped.sequenceId,offset=stopped.operationOffset;
+        assert(!stopped.run(cancelled,s,4)); // an absent slot cannot erase the first fault
+        assert(stopped.sequenceId==sequence && stopped.operationOffset==offset);
         assert(!stopped.run(cancelled,s,2));
         assert(cancelled.h.size()==headers&&cancelled.p.size()==words&&cancelled.gpios==gpios);
     }

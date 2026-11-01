@@ -16,7 +16,7 @@ struct Mode {
     uint32_t htotal() const {return uint32_t(width)+hblank;}
     uint32_t vtotal() const {return uint32_t(height)+vblank;}
     bool valid() const {
-        return clockKHz && clockKHz<=300000 && width && height && hsync && vsync &&
+        return clockKHz && width && height && hsync && vsync &&
             uint32_t(hfront)+hsync<hblank && uint32_t(vfront)+vsync<vblank &&
             htotal()<=65536 && vtotal()<=65536;
     }
@@ -50,9 +50,9 @@ inline Profile parseProfile(Span input,bool allowFinalEndQuirk=false) {
     if(memcmp(b,"BIOS_DATA_BLOCK ",16) || bh<22 || bs<bh || bs>vs-bo)return failure;
     r.version=profileU16(b+16);
     // The consumed generic DTD, MIPI and 8-bit backlight fields share
-    // this layout from BDB 236 through 256. Child records carry their own
-    // stride (39 before 256, 40 in 256); do not bind panels to one BIOS.
-    if(r.version<236 || r.version>256){failure.status=ProfileStatus::Version;return failure;}
+    // this layout from BDB 236 onward. Validate known prefixes and declared
+    // record strides rather than rejecting later BIOS versions by number.
+    if(r.version<236){failure.status=ProfileStatus::Version;return failure;}
     for(size_t i=0;i<vs;++i)r.checksum+=p[i]; // diagnostic residue, like existing VBT parser
     Span children,options,config,seq,dtd,backlight;
     for(size_t at=bh;at<bs;) {
@@ -85,9 +85,10 @@ inline Profile parseProfile(Span input,bool allowFinalEndQuirk=false) {
         at+=3+n;
     }
     failure.status=ProfileStatus::Missing;
-    if(!children.data || !options.data || !config.data || !seq.data || !dtd.data || !backlight.data)return failure;
+    if(!children.data || !options.data || !config.data || !dtd.data || !backlight.data)return failure;
     failure.status=ProfileStatus::Child;
-    if(children.size<5 || children.data[4]<38 || children.data[4]>64 ||
+    // Intel's legacy child prefix is 33 bytes; later tails are optional here.
+    if(children.size<5 || children.data[4]<33 ||
        (children.size-5)%children.data[4])return failure;
     unsigned mipi=0;
     for(size_t at=5;at<children.size;at+=children.data[4]) {
@@ -117,8 +118,10 @@ inline Profile parseProfile(Span input,bool allowFinalEndQuirk=false) {
     if(r.clockPrepareZero<r.clockPrepare || r.hsPrepareZero<r.hsPrepare)return failure;
     for(unsigned i=0;i<5;++i)r.ppsUs[i]=uint32_t(profileU16(config.data+732+10*r.panel+2*i))*100;
     failure.status=ProfileStatus::Timing;
-    if(dtd.size<2 || profileU16(dtd.data)!=28 || dtd.size<2+28U*(r.panel+1))return failure;
-    const auto t=dtd.data+2+28*r.panel;auto &m=r.mode;
+    if(dtd.size<2)return failure;
+    const size_t stride=profileU16(dtd.data);
+    if(stride<28 || (dtd.size-2)%stride || (dtd.size-2)/stride<=r.panel)return failure;
+    const auto t=dtd.data+2+stride*r.panel;auto &m=r.mode;
     m.clockKHz=sequenceU32(t);m.width=profileU16(t+4);m.hblank=profileU16(t+6);
     m.hfront=profileU16(t+8);m.hsync=profileU16(t+10);m.height=profileU16(t+12);
     m.vblank=profileU16(t+14);m.vfront=profileU16(t+16);m.vsync=profileU16(t+18);
@@ -130,15 +133,15 @@ inline Profile parseProfile(Span input,bool allowFinalEndQuirk=false) {
     const auto bl=backlight.data+1+6*r.panel;
     if((bl[0]&3)!=2 || backlight.data[113+r.panel]!=2)return failure;
     r.activeLowPWM=bl[0]&4;r.pwmHz=profileU16(bl+1);r.controller=0;
-    r.brightness=profileU16(backlight.data+129+2*r.panel);
-    r.minimum=profileU16(backlight.data+193+2*r.panel);r.precision=backlight.data[257+r.panel];
+    r.brightness=profileU16(backlight.data+129+4*r.panel);
+    r.minimum=profileU16(backlight.data+193+4*r.panel);r.precision=backlight.data[257+r.panel];
     if(!r.pwmHz || r.precision!=8 || r.brightness>255 || r.minimum>r.brightness)return failure;
     failure.status=ProfileStatus::Sequence;
-    r.sequences=parseSequences(seq,r.panel);
+    // An absent block specifies no panel commands; a present malformed block
+    // must not be treated as absence. Host/PLL/PPS sequencing still executes.
+    if(seq.data)r.sequences=parseSequences(seq,r.panel);
+    else r.sequences.status=SequenceStatus::Valid;
     if(!r.sequences.valid())return failure;
-    static const unsigned required[]={2,4,6,7,10,11};
-    for(unsigned id:required)
-        if(!r.sequences.sequence[id].data)return failure;
     r.status=ProfileStatus::Valid;return r;
 }
 }}

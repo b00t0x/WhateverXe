@@ -10,6 +10,10 @@ Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphi
 
 ### Fixed
 
+- Fix MIPI DSI brightness decoding for nonzero VBT panel indices and accept extended generic-DTD records using their declared stride.
+- Accept compatible later BDB layouts and omitted panel lifecycle sequences, following Intel's Linux VBT interpretation while retaining command-drain and ownership checks.
+- Replace fixed DSI pixel/port-clock ceilings with PLL and register feasibility checks; describe higher clocks with DisplayID when needed.
+
 - Prepare the shared display clock automatically for MIPI DSI with external outputs, avoiding startup and hotplug freezes when the optional host trial is disabled.
 
 - Accept compatible MIPI DSI firmware layouts before BDB 256, inline panel-reset sequences, and the second native panel GPIO bank.

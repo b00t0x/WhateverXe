@@ -1,4 +1,4 @@
-#include "kern_dsi_math.hpp"
+#include "kern_dsi_restart.hpp"
 #include <cassert>
 #include <cstdio>
 #include <fstream>
@@ -11,23 +11,28 @@ void add(Bytes &b,uint8_t id,const Bytes &data) {
     b.push_back(id);b.push_back(data.size());b.push_back(data.size()>>8);
     b.insert(b.end(),data.begin(),data.end());
 }
-Bytes fixture(unsigned version=256,bool inlineReset=false) {
+Bytes fixture(unsigned version=256,bool inlineReset=false,unsigned panel=0,unsigned stride=28,unsigned childStride=0,unsigned mask=0xCFE) {
     Bytes b(70);memcpy(b.data(),"$VBT",4);put(b,22,48);put(b,28,48,4);
     memcpy(b.data()+48,"BIOS_DATA_BLOCK ",16);put(b,64,version);put(b,66,22);
-    Bytes child(version<256?44:45);child[4]=child.size()-5;put(child,7,0x1400);child[21]=21;add(b,2,child);
-    add(b,40,Bytes{0});
+    Bytes child(5+(childStride?childStride:version<256?39:40));child[4]=child.size()-5;put(child,7,0x1400);child[21]=21;add(b,2,child);
+    add(b,40,Bytes{uint8_t(panel)});
     Bytes config(792);put(config,2,0x11190,4);put(config,6,12);
     config[93]=8;config[94]=50;put(config,98,310);config[103]=110;config[104]=50;put(config,105,200);
     for(unsigned i=0;i<5;++i)put(config,732+2*i,i==4?5000:500);
+    if(panel) {
+        for(unsigned i=0;i<122;++i)config[122*panel+i]=config[i];
+        for(unsigned i=0;i<10;++i)config[732+10*panel+i]=config[732+i];
+    }
     add(b,52,config);
-    Bytes dtd(30);put(dtd,0,28);put(dtd,2,135255,4);
+    Bytes dtd(2+stride*(panel+1),0xA5);put(dtd,0,stride);const auto t=2+stride*panel;put(dtd,t,135255,4);
     const unsigned fields[]={1080,46,22,2,1920,82,40,2,86,154};
-    for(unsigned i=0;i<10;++i)put(dtd,6+2*i,fields[i]);dtd[26]=0xC0;add(b,58,dtd);
-    Bytes bl(273);bl[0]=6;bl[1]=2;put(bl,2,40000);bl[113]=2;put(bl,129,255);put(bl,193,6);bl[257]=8;add(b,43,bl);
-    Bytes seq(10);seq[0]=3;seq[5]=0;
+    for(unsigned i=0;i<10;++i)put(dtd,t+4+2*i,fields[i]);dtd[t+24]=0xC0;add(b,58,dtd);
+    Bytes bl(273,0xA5);bl[0]=6;bl[1+6*panel]=2;put(bl,2+6*panel,40000);
+    bl[113+panel]=2;put(bl,129+4*panel,255);put(bl,193+4*panel,6);bl[257+panel]=8;add(b,43,bl);
+    Bytes seq(10);seq[0]=3;seq[5]=panel;
     // Empty, terminated sequences prove structure without firmware commands.
     for(unsigned id:{1U,2U,4U,5U,6U,7U,10U,11U}) {
-        if(inlineReset && (id==1 || id==5))continue;
+        if(!(mask&(1U<<id)) || (inlineReset && (id==1 || id==5)))continue;
         seq.push_back(id);seq.push_back(1);seq.insert(seq.end(),4,0);
     }
     seq.push_back(0);put(seq,6,seq.size()-10,4);put(seq,1,seq.size()-5,4);add(b,53,seq);
@@ -41,11 +46,34 @@ int main(int argc,char **argv) {
     assert(r.valid()&&r.mode.htotal()==1126&&r.mode.vtotal()==2002&&r.pwmHz==40000);
     assert(r.mode.hsyncPositive && r.mode.vsyncPositive);
     assert(r.clockPrepare==50&&r.clockPrepareZero==310&&r.hsPrepareZero==200&&r.ppsUs[4]==500000);
-    for(unsigned version=236;version<=256;++version) {
+    for(unsigned version=236;version<=260;++version) {
         auto compatible=fixture(version,true);auto p=parse(compatible);
         assert(p.valid() && p.version==version && !p.sequences.sequence[1].data && !p.sequences.sequence[5].data);
     }
-    reject(fixture(235));reject(fixture(257));
+    reject(fixture(235));
+    reject(fixture(256,false,0,28,32));
+    for(unsigned stride:{33U,38U,39U,40U,80U,255U})assert(parse(fixture(300,false,0,28,stride)).valid());
+    for(unsigned panel=0;panel<6;++panel)for(unsigned stride:{28U,32U,64U}) {
+        auto bytes=fixture(300,false,panel,stride,80);auto p=parse(bytes);
+        assert(p.valid() && p.panel==panel && p.brightness==255 && p.minimum==6);
+        assert(p.mode.clockKHz==135255 && p.mode.width==1080 && p.ppsUs[4]==500000);
+        for(size_t at=70;at<bytes.size();at+=3+profileU16(bytes.data()+at+1))if(bytes[at]==58) {
+            auto bad=bytes;put(bad,at+3,27);reject(bad);
+            bad=bytes;put(bad,at+3,stride+1);reject(bad); // partial or missing selected entry
+        }
+    }
+    for(unsigned omitted:{2U,4U,6U,7U,10U,11U})assert(parse(fixture(256,false,0,28,0,0xCFE&~(1U<<omitted))).valid());
+    assert(parse(fixture(256,false,0,28,0,0)).valid()); // selected panel, no operations
+    for(unsigned clock:{350000U,450000U,750000U}) {
+        auto p=r;p.mode.clockKHz=clock;const auto plan=Restart::plan(p,38400);
+        assert(plan.valid && plan.link.afeKHz==clock*6);
+        const auto actual=pllAFE(plan.pll.cfg0(),plan.pll.cfg1(),38400);
+        assert(actual<=clock*6 && clock*6-actual<10);
+    }
+    for(unsigned clock:{1U,1000000U,715827883U,UINT32_MAX}) {
+        auto p=r;p.mode.clockKHz=clock;assert(!Restart::plan(p,38400).valid);
+    }
+    {auto p=r;p.mode.clockKHz=2000000;assert(!linkPlan(p).valid);} // nine-bit divider
     const auto link=linkPlan(r);assert(link.valid&&link.afeKHz==811530&&link.portKHz==162306);
     assert(link.escapeDivider==56&&link.phyEscapeDivider==3);
     // Linux v7.0 readback, reserved bits omitted for the escape divider.
@@ -69,7 +97,7 @@ int main(int argc,char **argv) {
         assert(reconstructed<=v.dcoKHz&&v.dcoKHz-reconstructed<2);
     }
     for(size_t i=0;i<b.size();++i)reject(Bytes(b.begin(),b.begin()+i));
-    auto bad=b;put(bad,64,257);reject(bad);
+    auto bad=b;put(bad,64,235);reject(bad);
     bad=b;put(bad,68,b.size()-49);reject(bad);assert(parse(bad,true).valid()&&parse(bad,true).bdbTailQuirk);
     bad.back()=1;assert(!parse(bad,true).valid());
     bad=b;put(bad,68,b.size()-50);assert(!parse(bad,true).valid());
@@ -87,6 +115,13 @@ int main(int argc,char **argv) {
         }
         if(id==58){put(bad,p+8,1);reject(bad);}
         if(id==43){bad[p+257]=16;reject(bad);}
+        if(id==53){
+            auto absent=b;absent.erase(absent.begin()+at,absent.begin()+at+3+n);
+            put(absent,24,absent.size());put(absent,68,absent.size()-48);
+            auto p=parse(absent);assert(p.valid() && p.sequences.valid() && !p.sequences.packets);
+            bad=b;bad[at+3]=4;reject(bad); // present but unsupported is not absent
+            bad=b;bad[at+8]=1;reject(bad); // inconsistent selected panel still rejects
+        }
         // Duplicate required blocks reject before publication.
         Bytes duplicate(b.begin()+at,b.begin()+at+3+n);bad=b;bad.insert(bad.end(),duplicate.begin(),duplicate.end());
         put(bad,24,bad.size());put(bad,68,bad.size()-48);reject(bad);

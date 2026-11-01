@@ -155,6 +155,14 @@ int main(int argc,char **argv){
    assert(f.start());
   }
  }
+ for(unsigned clock:{350000U,450000U,750000U}) {
+  Fixture f;assert(f.stop());f.p.mode.clockKHz=clock;
+  f.state.config=Restart::plan(f.p,38400);assert(f.state.config.valid && f.start());
+  assert(f.io.regs[0x6B090]==f.state.config.link.escapeDivider);
+  f.io.regs[0x7B008]=0xC0000000;
+  auto link=decodeReadout([&](uint32_t r,uint32_t &v){v=f.io.read(r);return true;},38400);
+  assert(link.matches(f.p)); // program/read back, not just calculate a PLL
+ }
  {Fixture f;successful(f);}
  for(unsigned fault=0;fault<4;++fault){Fixture f;retainedCycle(f,fault);}
  {Fixture f;panelCycle(f);}

@@ -8,8 +8,9 @@
 namespace XELP { namespace DSI {
 struct Span { const uint8_t *data {}; size_t size {}; };
 inline bool nativePanelGPIO(unsigned role) {return role<=2 || (role>=5 && role<=7);}
-// VBT may place reset edges in INIT_OTP instead of separate reset sequences.
-inline bool optionalResetSequence(unsigned id) {return id==1 || id==5;}
+// Firmware may combine operations in other lifecycle sequences or omit them.
+// Only the fully empty span means absent; malformed spans still reject.
+inline bool absentSequence(Span bytes) {return !bytes.data && !bytes.size;}
 enum class SequenceStatus : uint32_t {
     Valid, Bounds, Version, Panel, Duplicate, Sequence, Operation, Packet, GPIO
 };

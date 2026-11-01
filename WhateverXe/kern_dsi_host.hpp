@@ -89,12 +89,12 @@ struct Host {
         return ready(io);
     }
     template<class IO> bool run(IO &io,const Sequences &sequences,unsigned id,unsigned creditBudgetUs=100) {
-        if(!sequences.valid() || id>=12 || creditBudgetUs>200000 || creditBudgetUs%10)return fail(HostError::Invalid);
-        if(!sequences.sequence[id].data)
-            return optionalResetSequence(id) ? drain(io,creditBudgetUs) : fail(HostError::Invalid);
+        if(faulted)return false;
+        if(!sequences.valid() || !id || id>=12 || creditBudgetUs>200000 || creditBudgetUs%10)return fail(HostError::Invalid);
+        sequenceId=id;operationOffset=0;
+        if(absentSequence(sequences.sequence[id]))return drain(io,creditBudgetUs);
         const auto bytes=sequences.sequence[id];Sequences check;
         if(validateSequence(bytes,check)!=SequenceStatus::Valid)return fail(HostError::Invalid);
-        sequenceId=id;
         if(!ready(io))return false;
         for(size_t at=0;at<bytes.size;) {
             operationOffset=uint32_t(at);const auto op=bytes.data[at++];

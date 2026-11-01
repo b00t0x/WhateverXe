@@ -50,6 +50,12 @@ int main() {
     portrait.scalerFlags=1;assert(AppleAdapter::presentationTiming(t,portrait,0));
     portrait.scalerFlags=0x20;portrait.horizontalInset=4;assert(AppleAdapter::presentationTiming(t,portrait,0));
     assert(!AppleAdapter::acceptsMode(0x80001002,0x80001001));
+    {auto mode=p.mode;mode.clockKHz=750000;uint8_t base[128],ext[128];
+     assert(AppleAdapter::makePanelEDID(mode,base) && base[126]==1);
+     assert(AppleAdapter::makePanelEDID(mode,ext,2));
+     assert((uint32_t(ext[8])|(uint32_t(ext[9])<<8)|(uint32_t(ext[10])<<16))==74999);
+     for(auto bytes:{base,ext}){unsigned sum=0;for(unsigned i=0;i<128;++i)sum+=bytes[i];assert(!(sum&255));}
+     mode.clockKHz=UINT32_MAX;assert(!AppleAdapter::makePanelEDID(mode,base));}
     uint8_t edid[128];assert(AppleAdapter::makePanelEDID(p.mode,edid));
     unsigned sum=0;for(auto b:edid)sum+=b;assert(!(sum&255));
     assert(edid[16]==0xFF && edid[17]>=17); // Model year enables native linear brightness.

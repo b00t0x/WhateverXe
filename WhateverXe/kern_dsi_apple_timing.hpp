@@ -27,8 +27,10 @@ inline bool annotateMode(const Mode &m,ModeInformation &info,bool rotated=false,
     const auto width=drawWidth?drawWidth:(rotated?m.height:m.width);
     const auto height=drawHeight?drawHeight:(rotated?m.width:m.height);
     if(!m.valid() || info.width!=width || info.height!=height)return false;
-    info.refresh=static_cast<uint32_t>((uint64_t(m.clockKHz)*1000*65536+m.htotal()*uint64_t(m.vtotal())/2)/
+    const auto refresh=((uint64_t(m.clockKHz)*1000*65536+m.htotal()*uint64_t(m.vtotal())/2)/
         (m.htotal()*uint64_t(m.vtotal())));
+    if(refresh>UINT32_MAX)return false;
+    info.refresh=uint32_t(refresh);
     info.depth=0; // the adopted DSI surface is RGB8 only
     info.widthMM=static_cast<uint16_t>(rotated?m.heightMM:m.widthMM);info.heightMM=static_cast<uint16_t>(rotated?m.widthMM:m.heightMM);
     // IOGraphics: valid/safe/default + built-in + native. Acceleration is a
@@ -66,13 +68,13 @@ inline bool presentationTiming(const Timing &fixed,const Timing &offered,unsigne
 // EDID wire layout reference: Linux v6.12 include/drm/drm_edid.h. This is not
 // an EDID read from the panel and does not advertise DP/HDMI, HDR or DPMS.
 inline bool panelNeedsDisplayID(const Mode &m) {
-    return m.width>4095 || m.height>4095 || m.hblank>4095 || m.vblank>4095 ||
+    return (uint64_t(m.clockKHz)+5)/10>65535 || m.width>4095 || m.height>4095 || m.hblank>4095 || m.vblank>4095 ||
         m.hfront>1023 || m.hsync>1023 || m.vfront>63 || m.vsync>63;
 }
 inline bool makePanelEDID(const Mode &m,uint8_t (&edid)[128],unsigned block=1) {
     memset(edid,0,sizeof(edid));
-    const uint32_t clock=(m.clockKHz+5)/10;
-    if(!m.valid() || !clock || clock>65535 ||
+    const uint32_t clock=uint32_t((uint64_t(m.clockKHz)+5)/10);
+    if(!m.valid() || !clock || clock>0x1000000 ||
        m.widthMM>2550 || m.heightMM>2550)return false;
     const bool extended=panelNeedsDisplayID(m);
     // DisplayID Type I has 15-bit sync offsets, stored minus one. Preserve

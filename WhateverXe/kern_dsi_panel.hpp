@@ -52,7 +52,7 @@ struct Shutdown {
         if(!p.valid() || !videoCreditBudgetUs(p.mode))return false;
         constexpr unsigned ids[]={7,4,5,11};
         for(auto id:ids) {
-            if(optionalResetSequence(id) && !p.sequences.sequence[id].data)continue;
+            if(absentSequence(p.sequences.sequence[id]))continue;
             Sequences n;
             if(validateSequence(p.sequences.sequence[id],n)!=SequenceStatus::Valid ||
                n.delayUs>5000000 || ((id==5 || id==11) && n.packets))return false;
@@ -93,15 +93,11 @@ template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const P
     if((shutdown && (!shutdown->complete || shutdown->host.faulted || shutdown->host.pending)) ||
        !profile.valid() || !link.matches(profile) || link.identity.pipe!=0 ||
        !(planeControl&(1U<<31)) || (surface&4095) || !profile.sequences.valid())return;
-    constexpr unsigned required[]={1,2,4,5,6,7,10,11};
-    for(auto id:required) {
-        if(optionalResetSequence(id) && !profile.sequences.sequence[id].data)continue;
+    constexpr unsigned lifecycleIds[]={1,2,3,4,5,6,7,10,11};
+    for(auto id:lifecycleIds) {
+        if(absentSequence(profile.sequences.sequence[id]))continue;
         Sequences count;
         if(validateSequence(profile.sequences.sequence[id],count)!=SequenceStatus::Valid || count.delayUs>5000000)return;
-    }
-    if(profile.sequences.sequence[3].data) {
-        Sequences count;
-        if(validateSequence(profile.sequences.sequence[3],count)!=SequenceStatus::Valid || count.delayUs>5000000)return;
     }
     for(auto us:profile.ppsUs)if(us>5000000)return;
     const uint64_t period=(uint64_t(profile.mode.htotal())*profile.mode.vtotal()*1000+profile.mode.clockKHz-1)/profile.mode.clockKHz;
@@ -181,7 +177,7 @@ template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const P
     if(port.failed || r.host.pending || !held())return;
     r.stage=Stage::TranscoderOn;
     if(!write(0x7B008,link.conf) || !wait(0x7B008,0xC0000000U,0xC0000000U,10000))return;
-    if(profile.sequences.sequence[3].data && !sequence(3))return;
+    if(!sequence(3))return;
     r.stage=Stage::PlaneOn;
     if(!write(0x70180,planeControl) || !write(0x7019C,surface) ||
        !wait(0x70180,UINT32_MAX,planeControl,0) || !frame() ||

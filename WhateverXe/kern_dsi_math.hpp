@@ -16,10 +16,15 @@ inline LinkPlan linkPlan(const Profile &p) {
     if(!p.valid() || p.lanes!=4 || p.byteClock!=0 || !p.mode.valid() ||
        p.clockPrepareZero<p.clockPrepare || p.hsPrepareZero<p.hsPrepare)return r;
     const auto &m=p.mode;
-    r.afeKHz=m.clockKHz*6;r.portKHz=r.afeKHz/5;
+    const uint64_t afe=uint64_t(m.clockKHz)*6;
+    if(afe>UINT32_MAX)return r;
+    r.afeKHz=uint32_t(afe);r.portKHz=r.afeKHz/5;
     // ADL-P/N escape word clock divider must be odd, >=3, <=20 MHz.
-    auto word=(r.afeKHz+159999)/160000;word|=1;if(word<3)word=3;
-    r.escapeDivider=word*8;r.phyEscapeDivider=(word-1)/2;
+    auto word=(afe+159999)/160000;word|=1;if(word<3)word=3;
+    // Both escape-divider registers have nine bits. PLL feasibility and
+    // scanout bandwidth are checked by their respective consumers.
+    if(word*8>0x1FF)return {};
+    r.escapeDivider=uint32_t(word*8);r.phyEscapeDivider=uint32_t((word-1)/2);
     constexpr uint32_t tlpx=50; // byteClock=0: 20 MHz escape timing reference
     r.clockTiming=(1U<<31)|(cappedCeil(p.clockPrepare*4,tlpx,7)<<28)|(1U<<27)|
         (cappedCeil(p.clockPrepareZero-p.clockPrepare,tlpx,15)<<20)|(1U<<19)|(cappedCeil(p.clockPre,tlpx,3)<<16);
@@ -58,7 +63,7 @@ inline uint32_t pllAFE(uint32_t cfg0,uint32_t cfg1,uint32_t referenceKHz) {
 }
 inline PLLPlan pllPlan(uint32_t portKHz,uint32_t referenceKHz) {
     PLLPlan r;
-    if(!portKHz || portKHz>600000 || (referenceKHz!=19200 && referenceKHz!=24000 && referenceKHz!=38400))return r;
+    if(!portKHz || (referenceKHz!=19200 && referenceKHz!=24000 && referenceKHz!=38400))return r;
     // Hardware divider choices, in the documented tie-breaking order.
     static const uint8_t dividers[]={2,4,6,8,10,12,14,16,18,20,24,28,30,32,36,40,42,44,48,50,52,54,
         56,60,64,66,68,70,72,76,78,80,84,88,90,92,96,98,100,102,3,5,7,9,15,21};

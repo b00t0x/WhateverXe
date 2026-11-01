@@ -112,6 +112,18 @@ int main(int argc,char **argv){
   assert(f.io.gpioTrace==std::vector<uint32_t>({14,2,3,15}));
   assert(f.io.regs[0xC7304]==4 && f.io.regs[0xC4030]==0xA7);
  }
+ // Every lifecycle slot can be absent, including a panel with all operations
+ // folded outside these slots. Hardware stop/start and frame checks still run.
+ for(unsigned mask=0;mask<512;++mask) {
+  Fixture f;const unsigned ids[]={1,2,3,4,5,6,7,10,11};
+  for(unsigned i=0;i<9;++i)if(mask&(1U<<i))f.p.sequences.sequence[ids[i]]={};
+  f.run();assert(f.result.complete() && !f.result.host.pending);
+  Panel::Shutdown panel;auto host=Quiesce::run(f.io,f.link,f.p,panel);
+  assert(host.complete() && panel.complete && !panel.host.pending);
+ }
+ for(unsigned id:{1U,2U,3U,4U,5U,6U,7U,10U,11U}) {
+  Fixture f;f.p.sequences.sequence[id]={nullptr,1};f.run();assert(!f.result.complete() && f.io.writes.empty());
+ }
  {Fixture f;stop(f);}
  for(bool drop:{false,true}){Fixture f;Backlight light;Panel::RetainedHost host;
   f.io.regs[Backlight::Control]=0x80000000;f.io.regs[Backlight::Period]=480;f.io.regs[Backlight::Duty]=154;
