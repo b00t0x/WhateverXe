@@ -1,3 +1,4 @@
+#include "kern_shutdown_tc_observation.hpp"
 #include "kern_alderlake_s.hpp"
 #include <cassert>
 #include "kern_tgl_native_fia.hpp"

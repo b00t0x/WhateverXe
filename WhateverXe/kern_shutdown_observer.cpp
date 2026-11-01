@@ -1,6 +1,7 @@
 // Optional, explicitly armed diagnostics for the qualified Big Sur kernel.
 // No timeout, panic, power-policy or shutdown-return-value changes.
 #include "kern_shutdown_observer.hpp"
+#include "kern_shutdown_tc_observation.hpp"
 #include <Headers/kern_util.hpp>
 #include <IOKit/IORegistryEntry.h>
 #include <IOKit/IONVRAM.h>
@@ -29,6 +30,8 @@ static OSData *snapshots[2];
 static const OSSymbol *traceSymbol;
 static IOLock *lock;
 static bool armed;
+static DisplaySnapshot display12Snapshot;
+static uint32_t (*orgDisplay12Shutdown)(void *,void *);
 static uint64_t ready[8] {};
 static void (*syncNvram)(IODTNVRAM *,bool);
 static int (*orgReboot)(int,char *);
@@ -57,8 +60,8 @@ static void record(uint32_t code,uint32_t detail=0,const char *label=nullptr,con
  e.code=code;e.detail=detail;e.time=mach_absolute_time();e.pc=reinterpret_cast<uint64_t>(pc);
  if(label)strlcpy(e.label,label,sizeof(e.label));
  ++journal.count;
- if(display && (code==70 || code==71)) {
-  auto dst=journal.display[code-70];memcpy(dst,display,sizeof(journal.display[0]));
+ if(display && (code==70 || code==71 || code==72)) {
+  auto dst=journal.display[code==71?1:0];memcpy(dst,display,sizeof(journal.display[0]));
   dst[0]=journal.count;dst[3]=detail;
  }
  auto data=snapshots[journal.count%2];
@@ -82,7 +85,9 @@ static int armControl SYSCTL_HANDLER_ARGS {
  auto entry=IORegistryEntry::fromPath("IODeviceTree:/options");
  nvram=OSDynamicCast(IODTNVRAM,entry);
  if(!nvram){if(entry)entry->release();ready[6]=2;publish();return ENXIO;}
- armed=true;record(1,0,"probe");publish();
+ armed=true;record(1,0,"probe");
+ if(display12Snapshot){uint32_t state[48] {};display12Snapshot(nullptr,nullptr,state);record(72,0,"display preflight",nullptr,state);}
+ publish();
  return journal.failed ? EIO : 0;
 }
 SYSCTL_PROC(_debug, OID_AUTO, wex_shutdown_arm, CTLTYPE_QUAD | CTLFLAG_RW | CTLFLAG_LOCKED,
@@ -95,6 +100,29 @@ void framebuffer(bool returned,void *controller,void *fb,uint32_t result,Display
  if(!armed || !snapshot || !ml_get_interrupts_enabled())return;
  uint32_t state[48] {};snapshot(controller,fb,state);
  record(returned?71:70,result,"hwShutdown",nullptr,state);
+}
+static uint32_t wrapDisplay12Shutdown(void *controller,void *fb) {
+ framebuffer(false,controller,fb,0,display12Snapshot);
+ const auto result=orgDisplay12Shutdown(controller,fb);
+ framebuffer(true,controller,fb,result,display12Snapshot);
+ return result;
+}
+void installDisplay12(KernelPatcher &p,size_t index,mach_vm_address_t address,size_t size,DisplaySnapshot snapshot) {
+ // Only the explicitly requested, exact-kernel observer installs this hook.
+ if(ready[2]!=63 || !snapshot)return;
+ const char *symbol="__ZN31AppleIntelFramebufferController10hwShutdownEP21AppleIntelFramebuffer";
+ const uint8_t entry[]={0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xec,0x18};
+ const auto target=p.solveSymbol<mach_vm_address_t>(index,symbol,address,size);p.clearError();
+ const auto delta=static_cast<int64_t>(reinterpret_cast<uintptr_t>(wrapDisplay12Shutdown)-(target+5));
+ bool known=size>0x51d4b && target==address+0x5173a &&
+  !memcmp(reinterpret_cast<const void *>(target),entry,sizeof(entry)) && delta==static_cast<int32_t>(delta);
+ if(known) {
+  mach_vm_address_t original=0;
+  KernelPatcher::RouteRequest route(symbol,wrapDisplay12Shutdown,original);
+  known=p.routeMultipleShort(index,&route,1,address,size);p.clearError();
+  if(known){orgDisplay12Shutdown=reinterpret_cast<decltype(orgDisplay12Shutdown)>(original);display12Snapshot=snapshot;ShutdownTCObservation::state().enabled=true;}
+ }
+ IORegistryEntry::getRegistryRoot()->setProperty("WEXShutdownDisplay12Observer",known);
 }
 static int wrapPEHalt(unsigned int type,uint32_t details) { if(type==0 || type==1 || type==3)record(50,type);int v=orgPEHalt(type,details);if(type==0 || type==1 || type==3)record(51,type);return v; }
 static void wrapHaltLog(const char *what,const void *pc,uint64_t time) {

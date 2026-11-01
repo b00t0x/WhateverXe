@@ -760,6 +760,7 @@ private:
  bool framebufferDonorAttempted {},framebufferDonorCommonReady {},framebufferBackendInstalled {};
  mach_vm_address_t orgFramebufferStart {},orgFramebufferInit {},orgFramebufferComputeLanes {},framebufferLaneCaller {};
  __attribute__((noinline)) bool processFramebufferKext(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+ static void snapshotDisplay12Shutdown(void *,void *,uint32_t *);
  static void snapshotDisplay13Shutdown(void *,void *,uint32_t *);
  bool processDisplay13Shutdown(KernelPatcher &,size_t,mach_vm_address_t,size_t);
  static uint32_t wrapDisplay13Shutdown(void *,void *);
