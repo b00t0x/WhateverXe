@@ -39,7 +39,7 @@ Graphics; GPU generation and connector routing are handled by WEX.
 | --- | --- |
 | Tiger Lake-U | 48- and 80-EU graphics; desktop-style and laptop display layouts |
 | Alder Lake-N | 16- and 24-EU graphics; two HDMI displays |
-| Alder Lake-H | 96-EU graphics (`46A6`); fixed TC HDMI and DisplayPort through a DP-to-HDMI adapter |
+| Alder Lake-H | 96-EU graphics (`46A6`); fixed TC HDMI and DisplayPort through a DP-to-HDMI adapter. Single-DIMM `4626` display, Metal/GL/OpenCL and video acceleration tested on Big Sur |
 | Alder Lake-S | UHD Graphics 770 (`4690`); HDMI, DisplayPort and a USB-C port wired as fixed DisplayPort |
 
 These are tested configurations within each family, not a guarantee for every

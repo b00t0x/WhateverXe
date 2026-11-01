@@ -31,7 +31,7 @@ WEXはOSのABIとGPUバックエンドを独立して選択します。OS別の�
 | --- | --- |
 | Tiger Lake-U | 48 EU・80 EU。外部画面を使う構成とノートPCの画面構成 |
 | Alder Lake-N | 16 EU・24 EU。HDMI 2画面 |
-| Alder Lake-H | 96 EU（`46A6`）。固定TC HDMIとDP→HDMI変換器経由のDisplayPort |
+| Alder Lake-H | 96 EU（`46A6`）。固定TC HDMIとDP→HDMI変換器経由のDisplayPort。1枚挿し`4626`の表示・Metal/GL/OpenCL・動画加速はBig Surで確認 |
 | Alder Lake-S | UHD Graphics 770（`4690`）。HDMI、DisplayPort、固定DisplayPortとして配線されたUSB-C端子 |
 
 各ファミリーの一部構成で確認した結果であり、全モデル・全端子の動作保証ではありません。
