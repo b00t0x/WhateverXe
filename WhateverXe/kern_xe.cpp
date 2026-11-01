@@ -10,6 +10,7 @@
 #include "kern_xe.hpp"
 #include "kern_framebuffer_donor.hpp"
 #include "kern_xelp_os.hpp"
+#include "kern_xelp_call_target.hpp"
 #include "kern_alderlake_n.hpp"
 #include "kern_xelp_device.hpp"
 #include "kern_xelp_memory_layout.hpp"
@@ -2014,7 +2015,8 @@ static void tglPrepareTahoeMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  const uint8_t create[] {0x8B,0x75,0xB4,0x89,0xF1,0x83,0xE1,0x01,0x48,0x09,0xD1,0x40,0xF6,0xC6,0x02};
  const uint8_t update[] {0x8B,0x55,0xB4,0x89,0xD0,0x83,0xE0,0x01,0x48,0x09,0xC8,0xF6,0xC2,0x02};
  const uint8_t protectFrame[] {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x28};
- const uint8_t protectCall[] {0xE8,0x2F,0xF3,0x02,0x00};
+ const bool protectCallReady=fn && protect && XELPCall::targets(
+  reinterpret_cast<const uint8_t *>(protect+0xCC),5,protect+0xCC,fn);
  uint32_t lo,hi;asm volatile("rdmsr" : "=a"(lo),"=d"(hi) : "c"(0x277));
  const uint64_t pat=static_cast<uint64_t>(hi)<<32|lo;
  bool ok=tglVM.enabled && tglPrepareMMIOBAR(bar) &&
@@ -2027,14 +2029,15 @@ static void tglPrepareTahoeMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
   !memcmp(reinterpret_cast<void *>(fn+0x10C1),create,sizeof(create)) &&
   !memcmp(reinterpret_cast<void *>(fn+0x1197),update,sizeof(update)) &&
   !memcmp(reinterpret_cast<void *>(protect),protectFrame,sizeof(protectFrame)) &&
-  !memcmp(reinterpret_cast<void *>(protect+0xCC),protectCall,sizeof(protectCall)) &&
+  protectCallReady &&
   tglVMRead(kernelMap,tglKernelMap) && (tglKernelMap>>47)==0x1FFFF;
  uint64_t guard[20] {1,tglVM.enabled,tglVM.pciBAR,bar ? bar->getLength() : 0,pat,bool(fn),bool(protect),bool(kernelMap)};
  if(fn && protect) {
-  const uintptr_t sites[] {fn,fn+0x15A,fn+0x44,fn+0x61,fn+0xAA,fn+0x10C1,fn+0x1197,protect,protect+0xCC};
-  const uint8_t *bytes[] {frame,flags,args,protection,nonEPT,create,update,protectFrame,protectCall};
-  const size_t lengths[] {sizeof(frame),sizeof(flags),sizeof(args),sizeof(protection),sizeof(nonEPT),sizeof(create),sizeof(update),sizeof(protectFrame),sizeof(protectCall)};
-  for(unsigned i=0;i<9;++i)guard[8+i]=!memcmp(reinterpret_cast<void *>(sites[i]),bytes[i],lengths[i]);
+  const uintptr_t sites[] {fn,fn+0x15A,fn+0x44,fn+0x61,fn+0xAA,fn+0x10C1,fn+0x1197,protect};
+  const uint8_t *bytes[] {frame,flags,args,protection,nonEPT,create,update,protectFrame};
+  const size_t lengths[] {sizeof(frame),sizeof(flags),sizeof(args),sizeof(protection),sizeof(nonEPT),sizeof(create),sizeof(update),sizeof(protectFrame)};
+  for(unsigned i=0;i<8;++i)guard[8+i]=!memcmp(reinterpret_cast<void *>(sites[i]),bytes[i],lengths[i]);
+  guard[16]=protectCallReady;
  }
  guard[17]=kernelMap && tglVMRead(kernelMap,tglKernelMap);guard[18]=tglKernelMap;guard[19]=ok;
  IORegistryEntry::getRegistryRoot()->setProperty("TGLTahoeMMIOGuard",guard,sizeof(guard));
@@ -2070,7 +2073,8 @@ static void tglPrepareSequoiaMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  const uint8_t create[] {0x8B,0x75,0xB4,0x89,0xF1,0x83,0xE1,0x01,0x48,0x09,0xD1,0x40,0xF6,0xC6,0x02};
  const uint8_t update[] {0x8B,0x55,0xB4,0x89,0xD0,0x83,0xE0,0x01,0x48,0x09,0xC8,0xF6,0xC2,0x02};
  const uint8_t protectFrame[] {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x28};
- const uint8_t protectCall[] {0xE8,0x71,0xCB,0x02,0x00};
+ const bool protectCallReady=fn && protect && XELPCall::targets(
+  reinterpret_cast<const uint8_t *>(protect+0xCA),5,protect+0xCA,fn);
  uint32_t lo,hi;asm volatile("rdmsr" : "=a"(lo),"=d"(hi) : "c"(0x277));
  const uint64_t pat=static_cast<uint64_t>(hi)<<32|lo;
  bool ok=tglVM.enabled && tglPrepareMMIOBAR(bar) &&
@@ -2083,14 +2087,15 @@ static void tglPrepareSequoiaMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
   !memcmp(reinterpret_cast<void *>(fn+0x1390),create,sizeof(create)) &&
   !memcmp(reinterpret_cast<void *>(fn+0x1030),update,sizeof(update)) &&
   !memcmp(reinterpret_cast<void *>(protect),protectFrame,sizeof(protectFrame)) &&
-  !memcmp(reinterpret_cast<void *>(protect+0xCA),protectCall,sizeof(protectCall)) &&
+  protectCallReady &&
   tglVMRead(kernelMap,tglKernelMap) && (tglKernelMap>>47)==0x1FFFF;
  uint64_t guard[20] {1,tglVM.enabled,tglVM.pciBAR,bar ? bar->getLength() : 0,pat,bool(fn),bool(protect),bool(kernelMap)};
  if(fn && protect) {
-  const uintptr_t sites[] {fn,fn+0x159,fn+0x35,fn+0x52,fn+0xB8,fn+0x1390,fn+0x1030,protect,protect+0xCA};
-  const uint8_t *bytes[] {frame,flags,args,protection,nonEPT,create,update,protectFrame,protectCall};
-  const size_t lengths[] {sizeof(frame),sizeof(flags),sizeof(args),sizeof(protection),sizeof(nonEPT),sizeof(create),sizeof(update),sizeof(protectFrame),sizeof(protectCall)};
-  for(unsigned i=0;i<9;++i)guard[8+i]=!memcmp(reinterpret_cast<void *>(sites[i]),bytes[i],lengths[i]);
+  const uintptr_t sites[] {fn,fn+0x159,fn+0x35,fn+0x52,fn+0xB8,fn+0x1390,fn+0x1030,protect};
+  const uint8_t *bytes[] {frame,flags,args,protection,nonEPT,create,update,protectFrame};
+  const size_t lengths[] {sizeof(frame),sizeof(flags),sizeof(args),sizeof(protection),sizeof(nonEPT),sizeof(create),sizeof(update),sizeof(protectFrame)};
+  for(unsigned i=0;i<8;++i)guard[8+i]=!memcmp(reinterpret_cast<void *>(sites[i]),bytes[i],lengths[i]);
+  guard[16]=protectCallReady;
  }
  guard[17]=kernelMap && tglVMRead(kernelMap,tglKernelMap);guard[18]=tglKernelMap;guard[19]=ok;
  IORegistryEntry::getRegistryRoot()->setProperty("TGLSequoiaMMIOGuard",guard,sizeof(guard));
@@ -2229,7 +2234,7 @@ static void tglPrepareMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
 }
 void tglVMPrepare(KernelPatcher &patcher,IOPCIDevice *pci) {
  // The only private pmap field used is root-table VA at+50. Verify the
- // matching native accessor at each exact admitted kernel, without calling
+ // native accessor contract, without calling
  // pmap_verify_noncacheable (it deliberately panics on a cacheable mapping).
  auto verify=patcher.solveSymbol(KernelPatcher::KernelID,"_pmap_verify_noncacheable");
  auto kp=patcher.solveSymbol(KernelPatcher::KernelID,"_kernel_pmap");
@@ -2248,9 +2253,16 @@ void tglVMPrepare(KernelPatcher &patcher,IOPCIDevice *pci) {
  const bool sonoma=(XELP::kernelOS(version)==XELP::OS::Sonoma);
  const bool sequoia=(XELP::kernelOS(version)==XELP::OS::Sequoia);
  const bool tahoe=(XELP::kernelOS(version)==XELP::OS::Tahoe);
- if (target!=verify-(dp1 ? 0x3930 : monterey ? 0x4190 : ventura ? 0x3D70 : sonoma ? 0x3EF0 : sequoia ? 0x3FE0 : tahoe ? 0x3D40 : 0x3AB0)) return;
- const uint8_t rootLoad[] {0x48,0x8B,0x47,0x50};
- if (memcmp(reinterpret_cast<void *>(target+0x20),rootLoad,sizeof(rootLoad))) return;
+ if(sequoia || tahoe) {
+  uint8_t accessor[36] {};
+  const auto copy=reinterpret_cast<decltype(tglVM.nofault)>(nf);
+  if((target>>47)!=0x1FFFF || copy(target,reinterpret_cast<uint64_t>(accessor),sizeof(accessor))!=sizeof(accessor) ||
+     !XELPCall::rootAccessor(accessor,sizeof(accessor)))return;
+ } else {
+  if (target!=verify-(dp1 ? 0x3930 : monterey ? 0x4190 : ventura ? 0x3D70 : sonoma ? 0x3EF0 : 0x3AB0)) return;
+  const uint8_t rootLoad[] {0x48,0x8B,0x47,0x50};
+  if (memcmp(reinterpret_cast<void *>(target+0x20),rootLoad,sizeof(rootLoad))) return;
+ }
  tglVM.nofault=reinterpret_cast<decltype(tglVM.nofault)>(nf);
  if (!tglVMRead(kp,tglVM.kernelPmap) || !tglVMRead(pb,tglVM.directBase) ||
      !tglVMRead(pe,tglVM.directEnd)) return;
