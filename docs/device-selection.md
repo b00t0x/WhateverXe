@@ -6,15 +6,17 @@ machine-name setting is required.
 ## Automatic selection
 
 By default, the physical Intel GPU device ID selects the backend. The implemented
-IDs are Tiger Lake `9A40`, `9A49`, `9A60`, `9A68`, `9A70`, `9A78` and Alder Lake-N / Twin Lake
+IDs are Tiger Lake `9A40`, `9A49`, `9A59`, `9A60`, `9A68`, `9A70`, `9A78`, `9AC0`, `9AC9`, `9AD9`, `9AF8` and Alder Lake-N / Twin Lake
 `46D0`–`46D4`, plus the S/HX and mobile Display13 IDs below.
 
 | Family | Accepted IDs |
 | --- | --- |
 | ADL-H / P / U | `4626`, `4628`, `462A`, `46A0`–`46A3`, `46A6`, `46A8`, `46AA`, `46B0`–`46B3`, `46C0`–`46C3` |
-| RPL-H / P / U | `A720`, `A721`, `A7A0`, `A7A1`, `A7A8`–`A7AD` |
+| RPL-H / P | `A720`, `A7A0`, `A7A8`, `A7AA`, `A7AB` |
 | ADL-S / HX | `4680`, `4682`, `4688`, `468A`, `468B`, `4690`, `4692`, `4693` |
 | RPL-S / HX | `A780`, `A781`, `A782`, `A783`, `A788`, `A789`, `A78A`, `A78B` |
+
+Raptor Lake-U IDs `A721`, `A7A1`, `A7A9`, `A7AC` and `A7AD` are recognized by the code, but are **not supported**. Their dedicated CDCLK frequencies and voltage handling are not implemented. An accepted ID does not establish display compatibility.
 
 Memory configuration can change the physical PCI ID, for example `46A6` to
 `4626` on an Alder Lake-H system with one DIMM. Both IDs select the same
@@ -111,7 +113,7 @@ must match the implemented path; ambiguous or cross-routed AUX layouts are exclu
   Thunderbolt and cross-routed AUX still need further implementation. Experimental
   TC1–4 DP Alt Mode accepts firmware-described external USB-C DP with matching AUX,
   using the live Type-C ownership, pin and lane assignment. USB-C boot-display
-  adoption, hotplug and sleep/wake have not been qualified.
+  adoption and system sleep/wake have not been qualified. Reconnection and dual-display startup have been tested on MicroPC 2 with Big Sur and Tahoe.
 
 The Display12 small-GT implementation accepts one slice, up to two DSS,
 16/24/32 EUs, four L3 banks and the supported media engines. Different resource

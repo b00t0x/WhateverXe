@@ -4641,6 +4641,8 @@ struct Display13FBPowerContext {
     // Borrow only while lock is held, and finish consuming the snapshot
     // before releasing it or calling a native operation that can reenter.
     AlderLakeN::DisplayReadout displayScratch;
+    // Failure-only receipt, filled and copied to IORegistry while lock is held.
+    uint64_t wmGeometryScratch[56] {};
     void *power {}, *controller {}, *access {};
     IOMemoryMap *map {}; // Owned mapping remains valid even on native start failure.
     uint32_t sequence {}, errors {}, writes {}, firstFaultLine {};
@@ -9819,7 +9821,7 @@ void XE::display13WMArmUpdate(IOService *fb) {
 		if(observations[pipe]<32 && c.engineEnabled && c.map && adlnWriterMappingBound()) {
 			Display13FBDBUFIO io {c.map};const auto wells=io.read(0x45404);
 			if(Display13FBIRQ::powered(wells,pipe)) {
-				const uint32_t regs[] {0x70180,0x701CC,0x70188,0x70190,0x7019C,0x701AC,
+				static constexpr uint32_t regs[] {0x70180,0x701CC,0x70188,0x70190,0x7019C,0x701AC,
 					0x701A4,0x70008,0x70040,0x4A480,0x49028,0x49010,0x49014,
 					0x49018,0x4901C,0x49020,0x49024,0x49050,0x49054,0x49058,
 					0x4905C,0x49060,0x49064,0x70080,0x70084,0x700AC,
@@ -9883,17 +9885,18 @@ void XE::display13WMArmUpdate(IOService *fb) {
 		// Retain the software source/destination geometry with the first
 		// failed latch. OS orientation is independent of DSI wire timing;
 		// distinguish a native scaling request from a link/stride mismatch.
-		uint64_t geometry[56] {3,pipe,c.pipe[pipe].wm[0].width,c.pipe[pipe].wm[0].height,
-			c.pipe[pipe].wm[0].htotal,c.pipe[pipe].wm[0].pixelHz,actualHz};
-		const unsigned fbOffsets[]={0x430C,0x4310,0x4314,0x4320,0x4324,0x4328,0x432C,0x4334,0x4338};
+		auto &geometry=c.wmGeometryScratch;bzero(geometry,sizeof(geometry));
+        geometry[0]=3;geometry[1]=pipe;geometry[2]=c.pipe[pipe].wm[0].width;geometry[3]=c.pipe[pipe].wm[0].height;
+        geometry[4]=c.pipe[pipe].wm[0].htotal;geometry[5]=c.pipe[pipe].wm[0].pixelHz;geometry[6]=actualHz;
+		static constexpr unsigned fbOffsets[]={0x430C,0x4310,0x4314,0x4320,0x4324,0x4328,0x432C,0x4334,0x4338};
 		for(unsigned i=0;i<arrsize(fbOffsets);++i)geometry[7+i]=Display13FBMemory::field<uint32_t>(fb,fbOffsets[i]);
 		if(path && path->getMetaClass()->getClassSize()>=0x3730) {
-			const unsigned pathOffsets[]={0xF8,0xFC,0x108,0x10C,0x138,0x144};
+			static constexpr unsigned pathOffsets[]={0xF8,0xFC,0x108,0x10C,0x138,0x144};
 			for(unsigned i=0;i<arrsize(pathOffsets);++i)geometry[16+i]=Display13FBMemory::field<uint32_t>(path,pathOffsets[i]);
 			auto plane=Display13FBMemory::field<OSObject *>(path,0x32C8);
 			auto scaler=Display13FBMemory::field<OSObject *>(path,0x32C0);
 			if(plane && plane->getMetaClass()->getClassSize()>=0x1C8) {
-				const unsigned planeOffsets[]={0x100,0x104,0x108,0x10C,0x110,0x114,0x118,0x11C,0x120,0x124};
+				static constexpr unsigned planeOffsets[]={0x100,0x104,0x108,0x10C,0x110,0x114,0x118,0x11C,0x120,0x124};
 				for(unsigned i=0;i<arrsize(planeOffsets);++i)geometry[22+i]=Display13FBMemory::field<uint32_t>(plane,planeOffsets[i]);
                 auto planeScaler=Display13FBMemory::field<OSObject *>(plane,0x88);
                 if(planeScaler && planeScaler->getMetaClass()->getClassSize()>=0x50) {
@@ -9906,12 +9909,12 @@ void XE::display13WMArmUpdate(IOService *fb) {
 		}
 		Display13FBDBUFIO geometryIO {c.map};
 		if(Display13FBIRQ::powered(geometryIO.read(0x45404),pipe)) {
-			const unsigned registers[]={0x70180,0x70188,0x7018C,0x70190,0x7019C,0x701A4,0x701AC,0x6001C};
+			static constexpr unsigned registers[]={0x70180,0x70188,0x7018C,0x70190,0x7019C,0x701A4,0x701AC,0x6001C};
 			for(unsigned i=0;i<arrsize(registers);++i)geometry[38+i]=geometryIO.read(registers[i]+0x1000*pipe);
 		}
 		if(dsiModeTarget(fb) && dsiPendingTarget(fb) && dsiPendingBacking.pipe &&
 		   dsiPendingBacking.pipe->getMetaClass()->getClassSize()>=0x12DC) {
-			const unsigned offsets[]={0x1264,0x1268,0x128C,0x1290,0x1294,0x12D8};
+			static constexpr unsigned offsets[]={0x1264,0x1268,0x128C,0x1290,0x1294,0x12D8};
 			for(unsigned i=0;i<arrsize(offsets);++i)
 				geometry[48+i]=Display13FBMemory::field<uint32_t>(dsiPendingBacking.pipe,offsets[i]);
 		}

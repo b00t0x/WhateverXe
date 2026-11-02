@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.0
+
+Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) package with this update.
+
+### Added
+
+- Add experimental USB-C DisplayPort Alt Mode output on Alder Lake-class GPUs, including multi-display startup and reconnection.
+- Add experimental MIPI DSI display support with graphics acceleration, brightness control, display off/on, rotation, HiDPI and external-display coexistence. Tested on GPD MicroPC 2 and CHUWI MiniBook X N100 only; do not expect it to work on other devices. System sleep/wake remains unsupported.
+
+### Fixed
+
+- Restore graphics initialization and acceleration on omitted Tiger Lake and Alder/Raptor Lake mobile PCI IDs, including the single-DIMM Alder Lake identity, and select resources correctly across Tiger Lake variants. Use matching WhateverXe Graphics payloads. Raptor Lake-U still requires separate display-clock support and is not supported.
+- Fix graphics initialization on compatible Sequoia and Tahoe updates without requiring an exact OS build match.
+- Fix display freezes during cursor resizing and improve multi-display startup and display off/on with MIPI DSI panels.
+- Fix system power-off hangs with a USB-C display connected on Alder Lake-class GPUs.
+
 ## 0.6.1
 
 Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) package.
@@ -10,26 +26,7 @@ Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphi
 
 ### Fixed
 
-- Recognize omitted Alder Lake-H/P/U and Raptor Lake-H/P/U PCI IDs in both WhateverXe and Compat, including the single-DIMM `4626` identity, on Big Sur through Tahoe. Reuse the existing family backends and hardware-resource checks; ID groupings follow Linux i915.
-
-- Fix MIPI DSI brightness decoding for nonzero VBT panel indices and accept extended generic-DTD records using their declared stride.
-- Accept compatible later BDB layouts and omitted panel lifecycle sequences, following Intel's Linux VBT interpretation while retaining command-drain and ownership checks.
-- Replace fixed DSI pixel/port-clock ceilings with PLL and register feasibility checks; describe higher clocks with DisplayID when needed.
-
-- Prepare the shared display clock automatically for MIPI DSI with external outputs, avoiding startup and hotplug freezes when the optional host trial is disabled.
-
-- Accept compatible MIPI DSI firmware layouts before BDB 256, inline panel-reset sequences, and the second native panel GPIO bank.
-- Publish MIPI DSI timings that exceed base EDID limits through a DisplayID extension, preserving the firmware link timing.
-- Allow frame-period-based command completion waits while MIPI DSI video is active, fixing display wake timeouts for panels with a separate display-on sequence.
-
-- Fix system power-off hangs with a USB-C display connected on Alder Lake-class GPUs by releasing idle Type-C PHY ownership during shutdown.
-
-- Fix display freezes during hardware cursor size changes by preparing watermarks for the requested size before the native control update.
-
-- Remove arbitrary MIPI DSI mode-list limits, forward ordinary OS attributes to the native driver, and accept firmware panel orientation metadata without changing physical link timing.
-
 - Fix DEBUG boot freezes and restart loops caused by excessive kernel stack usage.
-- Fix multi-display startup and display wake with an experimental MIPI DSI panel alongside HDMI or USB-C outputs on macOS Big Sur.
 
 ## 0.6.0
 

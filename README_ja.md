@@ -30,7 +30,7 @@ WEXはOSのABIとGPUバックエンドを独立して選択します。OS別の�
 | GPUファミリー | 確認した構成 |
 | --- | --- |
 | Tiger Lake-U | 48 EU・80 EU。外部画面を使う構成とノートPCの画面構成 |
-| Alder Lake-N | 16 EU・24 EU。HDMI 2画面 |
+| Alder Lake-N | 16 EU・24 EU・32 EU。HDMI、USB-C、試験的なMIPI DSI構成 |
 | Alder Lake-H | 96 EU（`46A6`）。固定TC HDMIとDP→HDMI変換器経由のDisplayPort。1枚挿し`4626`の表示・Metal/GL/OpenCL・動画加速はBig Surで確認 |
 | Alder Lake-S | UHD Graphics 770（`4690`）。HDMI、DisplayPort、固定DisplayPortとして配線されたUSB-C端子 |
 
@@ -44,21 +44,22 @@ OS別の検証範囲と残る問題は[動作確認済みの機能と既知の�
   この5 IDは実機未検証です。物理slice/DSS/EUとL3 bankのfuseから対応するURB容量を選びます。
 - Tiger Lake-H45（GT1）：`9A60`、`9A68`、`9A70`。
 - 対応IDの他のAlder Lake-N構成とTwin Lake。
-- 対応する固定HDMIまたは固定TC DisplayPort配線の、他のAlder Lake-H/P/U・Raptor Lake-H/P/U構成。[デバイス表](docs/device-selection.md#automatic-selection)は、メモリ構成で変わる`4626`などのIDも含みます。WhateverXeとWhateverXe Graphicsの両方が物理IDに対応している必要があります。
+- 対応する固定HDMIまたは固定TC DisplayPort配線の、他のAlder Lake-H/P/U・Raptor Lake-H/P構成。[デバイス表](docs/device-selection.md#automatic-selection)は、メモリ構成で変わる`4626`などのIDも含みます。WhateverXeとWhateverXe Graphicsの両方が物理IDに対応している必要があります。
 - 対応IDの他のAlder Lake-S構成、Alder Lake-HX、Raptor Lake-S、Raptor Lake-HX。
 
 確認済みのファミリーと処理を共有する実装があり、IDは自動で受け付けます。
 CPUモデル名や機種固有の設定は不要ですが、実機での動作確認は残っています。
 受付IDの一覧と対応する資源構成は[デバイス選択](docs/device-selection.md)を参照してください。
 
-実験的に、Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/Uの内蔵eDPを実装しています。対象はfirmwareで一意に記述されたCombo A/Bの単一パネルとPPS0・PCH PWMによる輝度制御です。CPU試験とdonor再生試験のみで、実機未検証です。対応するWhateverXe Graphicsリリースと組み合わせて使用してください。条件は[表示の制限](docs/device-selection.md#display-limits)を参照してください。
+実験的に、Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/Pの内蔵eDPを実装しています。対象はfirmwareで一意に記述されたCombo A/Bの単一パネルとPPS0・PCH PWMによる輝度制御です。CPU試験とdonor再生試験のみで、実機未検証です。対応するWhateverXe Graphicsリリースと組み合わせて使用してください。条件は[表示の制限](docs/device-selection.md#display-limits)を参照してください。
 
 ### 対応に追加改修が必要
 
-- Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/Uの
-  Combo PHY経由の外部DisplayPort・Type-C管理下の出力には追加改修が必要です。
+- Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/Pの
+  Combo PHY経由の外部DisplayPortには追加改修が必要です。
   その他の電源・輝度制御方式を使うeDPパネルも追加対応が必要です。
   GPUのIDを受け付けるだけで、これらの出力が有効になるわけではありません。
+- Raptor Lake-U：専用のCDCLK周波数・電圧制御が未実装です。PCI IDは認識しますが、本リリースの対応対象ではありません。
 - Rocket Lake-S：Tiger Lakeとは表示の電源・クロック制御が異なります。
   このリリースでは未対応で、実機検証の予定もありません。
 
@@ -98,23 +99,35 @@ GPUはPCI device IDから自動選択します。対応範囲内ではファー�
 
 Tiger Lakeはnative controllerとAUX配線が一致するVBTの固定DisplayPortをTC1〜TC4で自動選択します。固定DPとDP Alt Modeは検出したFIA構成を使用します。TC3/TC4の固定DPと非modular FIAは実装済み・実機未検証です。TC5/TC6と交差AUX配線には追加のbackend対応が必要です。
 
-Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/Uでは、Combo A/B・固定TC1〜TC4 HDMI配線をVBTから選択します。試験的な固定TC1〜TC4 SST DisplayPortには、VBTのAUX配線の一致が必要です。Alder Lake-NのHDMI明示propertyはCombo配線にのみ適用します。
+Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/Pでは、Combo A/B・固定TC1〜TC4 HDMI配線をVBTから選択します。試験的な固定TC1〜TC4 SST DisplayPortには、VBTのAUX配線の一致が必要です。Alder Lake-NのHDMI明示propertyはCombo配線にのみ適用します。
 
-ADL-Hでは、固定HDMIとDP→HDMI変換器を使い、3画面接続での起動、ファームウェアによる拡大表示からの起動、DP再接続を確認しています。固定TC DP経路での直接DP接続の表示先と、これらのファミリーの他のGPUは未検証です。試験的なUSB-C DP Alt Modeは、AUXが一致するVBTの外部TC1〜TC4 DP配線に対応します。既存SSTリンク訓練にType-C所有権と検出した物理レーン割当を組み合わせます。MST、Thunderbolt、交差AUX配線、USB-Cを起動用画面とする引継ぎは未対応です。Alder Lake-NではBig SurでHDMI変換器経由のUSB-C 1080p60表示とMetal/OpenGL加速を確認しています。USB-C映像を接続したままの通常シャットダウンによる電源断もBig Surで確認しています。USB-Cの抜き差し・スリープ復帰・他の変換器は未検証です。
+ADL-Hでは、固定HDMIとDP→HDMI変換器を使い、3画面接続での起動、ファームウェアによる拡大表示からの起動、DP再接続を確認しています。固定TC DP経路での直接DP接続の表示先と、これらのファミリーの他のGPUは未検証です。試験的なUSB-C DP Alt Modeは、AUXが一致するVBTの外部TC1〜TC4 DP配線に対応します。既存SSTリンク訓練にType-C所有権と検出した物理レーン割当を組み合わせます。MST、Thunderbolt、交差AUX配線、USB-Cを起動用画面とする引継ぎは未対応です。GPD MicroPC 2ではBig SurとTahoeで、両USB-C端子のHDMI変換器経由1080p60表示、再接続、2画面接続起動、Metal/OpenGLを確認しています。USB-C映像接続中の電源断もBig Surで確認しています。システムのスリープ／復帰は未検証です。
 
 ADL-P/RPL-Pは物理IDと検出したGPU資源を自動で使用します。device-ID上書きや機種別AGDP kextは不要です。`-wex-noaccel`でFramebufferのみの動作を維持します。
 
-試験用の `-wex-dsi-hdmi-test` は、限定したDisplay13のDSI-A GOPからCombo-Bへ1080p60で移す開発用経路です。内蔵表示を停止し、policyが別の接続済み出力へ切り替える際は暫定HDMI資源を解放します。既定では無効で、DSI対応や汎用のcold起動を提供するものではありません。
+### MIPI DSI（試験的対応）
 
-任意の `-wex-dsi-audit` は、対応するMIPI DSI firmware形式とnative起動前のGOP状態（他の表示エンジンとstolen memoryのGGTT prefixを含む）を検査し、診断結果を公開します。既定では無効で、この検査はディスプレイへの設定書込みやDSI出力の有効化を行いません。
+検証した機器は **GPD MicroPC 2とCHUWI MiniBook X N100のみ**です。それ以外の機器でのMIPI DSI動作は期待しないでください。firmwareが用意した表示状態を引き継ぐ方式で、firmwareの起動画面がない状態からの汎用パネル初期化には対応しません。
 
-任意の `-wex-dsi-adopt` は、対応パネルprofileで実験的なMIPI DSI firmware GOP採用を選択します。firmwareのリンクを保持し、パネルprofile由来の合成EDIDを公開してnative pathと固定modeのアクセラレーション付きデスクトップへ接続します。OSが要求する90°/270°回転とGPU描画元の拡縮では物理パネルのタイミングを保持し、向きとHiDPIモードはmacOS側で設定します。OSが提示する拡縮モードを特定の解像度や一覧の固定件数に制限せず、選択できるHiDPIサイズはmacOS側のディスプレイ設定に依存します。対応DSI profileでは既存AppleBacklight経由でnative PWM輝度の要求・読戻しを扱い、輝度0ではPWM dutyを0にします。後述の画面消灯・復帰を有効にした場合、消灯中の輝度要求は保存し、復帰時のbacklight有効化前に反映します。macOS Big Surでは、内蔵HiDPIパネルとHDMI/USB-Cの外部2画面までの同時表示・加速・画面消灯復帰を確認しています。システムsleepと全ライフサイクルの検証は開発中です。`-wex-dsi-hdmi-test` とは併用できません。追加の `-wex-dsi-panel-only` は、内蔵パネルの開発中に外部出力の接続公開とmode設定を一時的に抑止します。物理配線の定義は変更しません。外部共存の検証時はこの引数を省略してください。 任意の `-wex-dsi-command-test` は、DSI採用時にDCS NOP送信・drainを1回試験します。パネルの電源再投入を有効にする引数ではありません。任意の `-wex-dsi-panel-test` は、native起動前にhostのclock・PHYを保持したままパネルの電源再投入・reset・初期化を1回試験します。hostの完全再初期化は開発中です。追加の `-wex-dsi-host-test` はパネルcycleを含み、排他的に保持したPLL・PHY・DSI hostをpanel profileから再構築します。これらの起動時試験は通常の画面・システムsleepを有効にしません。任意の `-wex-dsi-stop-test` は通常の画面電源callbackから1回のpanel/host停止と資源退役を許可します。復帰には再起動が必要で、通常の画面wakeには未対応です。 別の `-wex-dsi-power-test` はnative画面メモリと共有資源の所有権を保持する実験的な画面消灯・復帰を選択し、`-wex-dsi-stop-test` より優先します。システムsleepは未対応です。
+内蔵パネルの有効化には`-wex-dsi-adopt`、試験的な画面消灯・復帰には`-wex-dsi-power-test`を追加します。輝度調整はSSDT-PNLFとAppleBacklightを使用します。回転とHiDPIはmacOS側で設定し、HiDPIには適切なdisplay overrideが必要な場合があります。システムのスリープ／復帰は未対応です。
+
+MicroPC 2では回転・HiDPI・輝度と外部2画面までの共存、MiniBook X N100では回転・輝度・消灯復帰と外部USB-C 1画面との共存を確認しています。OS別の範囲は[動作確認済みの機能](#動作確認済みの機能と既知の問題)を参照してください。
+
+以下の任意引数は診断・パネル開発用で、通常利用には不要です。
+
+| 引数 | 用途 |
+| --- | --- |
+| `-wex-dsi-audit` | パネルを有効にせず、firmwareと起動画面の前提条件を確認する。 |
+| `-wex-dsi-panel-only` | 外部出力を一時的に無効化する。 |
+| `-wex-dsi-command-test` | 起動時にパネルコマンドを1回試験する。 |
+| `-wex-dsi-panel-test` | native表示開始前にパネルの電源再投入・resetを試験する。 |
+| `-wex-dsi-host-test` | 起動時試験で保持中のDSI hostも再構築する。 |
+| `-wex-dsi-stop-test` | 片方向のパネル停止を試験する。復帰には再起動が必要。`-wex-dsi-power-test`を優先する。 |
+| `-wex-dsi-hdmi-test` | 内蔵を停止し、対応するDSI起動画面をHDMIへ移す。`-wex-dsi-adopt`とは併用しない。 |
 
 ### 内蔵パネルの輝度
 
 内蔵ディスプレイの輝度調整には、OpenCoreへ`SSDT-PNLF`を追加してください。
-
-DSI profileはfirmware VBT（BDB 236以降で互換性のあるfield layout）から読み取り、native panel GPIOの1組目・2組目と、初期化列に組み込まれたreset操作に対応します。基本EDIDの表現範囲を超えるタイミングはDisplayID拡張で記述し、物理パネルのタイミングは保持します。宣言されたrecord strideと個別lifecycle sequenceの省略に対応します。pixel clockは固定300MHz上限ではなく、PLL・register・scanoutの制約で判定します。single-link・4-lane・RGB888 video modeの制約は維持します。 外部出力が有効な場合は、native mode開始前に必要な共有表示clockを準備します。この準備に `-wex-dsi-host-test` は不要です。
 
 ### DVMT
 
@@ -148,16 +161,16 @@ Alder Lake-N / Twin Lakeで世代選択や個別機能の有効化引数を追�
 GPU backendの選択と実機検証範囲は独立しています。未検証のPCI revisionも同じfamily実装を使い、
 文書化された差分や実際の不具合で必要になった場合にrevision別の処理を追加します。
 
-Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/UではYタイル出力を自動選択するため、OpenCoreの`AAPL,GfxYTile`設定は不要です。既存の値は保持します。
+Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/PではYタイル出力を自動選択するため、OpenCoreの`AAPL,GfxYTile`設定は不要です。既存の値は保持します。
 これらのGPUはXタイル出力に未対応なので、Appleドライバの`-yTileDisable`引数は使用しないでください。
 
 FBの立上げ時は、任意の`-wex-noaccel`引数でAcceleratorの起動を止められます。
-Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/UではGPU資源のprobeも省略し、FB独自の起動メモリ・MMIOの確認は維持します。
+Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/PではGPU資源のprobeも省略し、FB独自の起動メモリ・MMIOの確認は維持します。
 未対応のDisplayバックエンドを有効にする引数ではありません。
 
 開発時の一時診断用に `-wex-adlp-readout` を指定すると、GPUドライバの受付を閉じたままADL-Pの起動資源を採取します。対応済みハードウェアでは不要です。
 `-wex-adlp-load-only` は選択済みADL-P/RPL-Pで、FramebufferとAccelerator両方のnative probe/startを止め、GPUを初期化せずにロード段階を診断します。
-`-wex-display13-offline` はAlder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/Uのnative display controller初期化を有効に保ち、選択した出力を未接続として扱います。FB診断でHPD/EDIDとmode設定を切り離すための設定で、表示成立を意味しません。
+`-wex-display13-offline` はAlder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/Pのnative display controller初期化を有効に保ち、選択した出力を未接続として扱います。FB診断でHPD/EDIDとmode設定を切り離すための設定で、表示成立を意味しません。
 
 ## 動作確認済みの機能と既知の問題
 
@@ -168,6 +181,8 @@ Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/UではGPU資源�
 | Alder Lake-N | Big Sur/Tahoe：EFIの`AAPL,GfxYTile`設定なしでのYタイル自動選択 |
 | Alder Lake-H | Big Sur〜Tahoe：Metal、OpenGL、ハードウェアH.264エンコード／デコード、HEVCデコード、固定HDMIとDP→HDMI変換器を使った3画面 |
 | Alder Lake-S | Big Sur〜Tahoe：Metal、OpenGL、OpenCL、ハードウェアH.264エンコード／デコード、HEVCデコード、3画面（1080p60×2＋720p60×1）、Safari動画再生。WidevineはBig SurとTahoeで確認 |
+| GPD MicroPC 2（MIPI DSI） | Big Sur：回転・HiDPI・輝度・消灯復帰・外部接続中の蓋開閉・最大3画面とMetal/OpenGL。Tahoe：内蔵＋外部2画面・輝度・回転・HiDPI |
+| CHUWI MiniBook X N100（MIPI DSI） | Big Sur：内蔵の加速表示・回転・輝度・外部USB-Cの再接続・消灯復帰・Metal/OpenGL・H.264ハードウェアエンコード／デコード |
 | Tiger Lake / Alder Lake-S | Tahoe：ChromeのCanvas、WebGL、WebGPUによるハードウェア描画 |
 
 検証した機器での結果であり、すべてのGPU・ディスプレイ・アダプター・ドックでの動作を保証するものではありません。
@@ -178,7 +193,7 @@ Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/UではGPU資源�
 - 一部の画像変換処理でアプリがクラッシュすることがあります。
 - SequoiaではApp Storeの動画再生でGPUが停止することがあります。
 - 専用DisplayPort端子の抜き差しで黒画面やシステム停止が起きることがあります。
-  USB-C DisplayPort Alt Modeでも再接続時のシステム停止がBig SurとTahoeの両方で再現しています。
+  Tiger LakeのUSB-C DisplayPort Alt Modeでも再接続時のシステム停止がBig SurとTahoeの両方で再現しています。
 - Safariの動画再生で時折コマ落ちすることがあります。
 - 同時表示は最大3画面です。4画面目には映像が出ません。
 - Alder Lake-SではDisplayPortの表示開始や再接続後の復帰に時間がかかる場合があります。
@@ -190,7 +205,8 @@ Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/UではGPU資源�
 
 ## ロードマップ
 
-- Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/UでのDisplayPort・USB-C・内蔵画面対応の拡充。
+- Raptor Lake-Uの表示clock対応。
+- Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/PでのDisplayPort・USB-C・内蔵画面対応の拡充。
 - 画面再接続の安定性改善とシステム全体のスリープ／復帰の調査。
 
 ## ビルドとテスト

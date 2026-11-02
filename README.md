@@ -38,7 +38,7 @@ Graphics; GPU generation and connector routing are handled by WEX.
 | GPU family | Tested configurations |
 | --- | --- |
 | Tiger Lake-U | 48- and 80-EU graphics; desktop-style and laptop display layouts |
-| Alder Lake-N | 16- and 24-EU graphics; two HDMI displays |
+| Alder Lake-N | 16-, 24- and 32-EU graphics; HDMI, USB-C and experimental MIPI DSI configurations |
 | Alder Lake-H | 96-EU graphics (`46A6`); fixed TC HDMI and DisplayPort through a DP-to-HDMI adapter. Single-DIMM `4626` display, Metal/GL/OpenCL and video acceleration tested on Big Sur |
 | Alder Lake-S | UHD Graphics 770 (`4690`); HDMI, DisplayPort and a USB-C port wired as fixed DisplayPort |
 
@@ -54,8 +54,8 @@ for OS coverage and remaining problems.
   Physical slice/DSS/EU and L3-bank fuses select the supported URB capacity.
 - Tiger Lake-H45 (GT1): `9A60`, `9A68`, `9A70`.
 - Other supported Alder Lake-N configurations and Twin Lake.
-- Other Alder Lake-H/P/U and Raptor Lake-H/P/U configurations with supported fixed HDMI or fixed TC DisplayPort wiring. The [device table](docs/device-selection.md#automatic-selection) includes memory-configuration variants such as `4626`; both WhateverXe and WhateverXe Graphics must recognize the physical ID.
-- Experimental internal eDP on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P/U: a single firmware-described Combo A/B panel with PPS0 and PCH PWM brightness. This path has local CPU and donor replay coverage only; use the corresponding WhateverXe Graphics release with this plugin. See [display limits](docs/device-selection.md#display-limits).
+- Other Alder Lake-H/P/U and Raptor Lake-H/P configurations with supported fixed HDMI or fixed TC DisplayPort wiring. The [device table](docs/device-selection.md#automatic-selection) includes memory-configuration variants such as `4626`; both WhateverXe and WhateverXe Graphics must recognize the physical ID.
+- Experimental internal eDP on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P: a single firmware-described Combo A/B panel with PPS0 and PCH PWM brightness. This path has local CPU and donor replay coverage only; use the corresponding WhateverXe Graphics release with this plugin. See [display limits](docs/device-selection.md#display-limits).
 - Other supported Alder Lake-S configurations, Alder Lake-HX, Raptor Lake-S and Raptor Lake-HX.
 
 These devices use implemented support shared with the tested families. Their
@@ -65,9 +65,9 @@ limits are listed in [device selection](docs/device-selection.md).
 
 ### Further implementation required
 
-- On Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P/U,
-  external Combo-PHY DisplayPort and Type-C-managed output need
-  further implementation. eDP panels using other power/backlight methods also need additional support. Accepting the GPU ID does not enable these outputs.
+- On Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P,
+  external Combo-PHY DisplayPort needs further implementation. eDP panels using other power/backlight methods also need additional support. Accepting the GPU ID does not enable these outputs.
+- Raptor Lake-U: dedicated CDCLK frequency and voltage handling is not implemented. Its PCI IDs are recognized, but this release does not support it.
 - Rocket Lake-S: its display power and clock handling differ from Tiger Lake.
   It is not supported by this release, and no hardware validation is scheduled.
 
@@ -129,7 +129,7 @@ from `HECI` or `MEI` to `IMEI` is unnecessary.
 
 Tiger Lake automatically selects VBT-described fixed DisplayPort routes on TC1–TC4 when AUX wiring matches the native controller. Fixed DP and DP Alt Mode use the detected FIA layout. TC3/TC4 fixed DP and non-modular FIA support are implemented but have not been verified on hardware. TC5/TC6 and cross-routed AUX require further backend support.
 
-Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P/U use
+Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P use
 VBT-described Combo A/B and fixed TC1–TC4 HDMI routes. Experimental fixed
 TC1–TC4 SST DisplayPort requires matching VBT AUX wiring. The explicit
 Alder Lake-N HDMI property applies only to Combo routes.
@@ -141,23 +141,35 @@ not been verified with the fixed TC DP path. Experimental USB-C DP Alt Mode
 supports VBT-described external TC1–TC4 DP wiring with matching AUX. It reuses
 SST link training with Type-C ownership and the detected physical lane assignment.
 MST, Thunderbolt, cross-routed AUX and USB-C boot-display adoption remain unsupported.
-Alder Lake-N USB-C output has been tested at 1080p60 through an HDMI adapter on Big Sur, including Metal and OpenGL acceleration. System power-off with a USB-C display connected has also been tested on Big Sur. USB-C hotplug, sleep/wake and other adapter types have not been verified.
+On GPD MicroPC 2, both USB-C ports have been tested at 1080p60 through HDMI adapters on Big Sur and Tahoe, including reconnection, dual-display startup, Metal and OpenGL. Power-off with a USB-C display connected has been tested on Big Sur. System sleep/wake remains unverified.
 
 ADL-P/RPL-P uses its physical ID and detected GPU resources automatically.
 No device-ID override or machine-specific AGDP kext is required.
 `-wex-noaccel` retains framebuffer-only operation.
 
-The experimental `-wex-dsi-hdmi-test` argument transfers a qualified Display13 DSI-A GOP to Combo B at 1080p60 for development. It stops the internal display and retires the temporary HDMI resources when policy switches to another connected output. It is disabled by default and does not provide DSI support or general cold startup.
+### MIPI DSI (experimental)
 
-The optional `-wex-dsi-audit` argument checks the supported MIPI DSI firmware layout and pre-native GOP state, including peer engines and the stolen-memory GGTT prefix, then publishes diagnostic summaries. It is disabled by default; the audit does not program the display or enable DSI output.
+Tested only on **GPD MicroPC 2 and CHUWI MiniBook X N100**. Do not expect MIPI DSI to work on other devices. This path uses the display setup provided by firmware; it does not provide general panel initialization without a firmware boot display.
 
-The optional `-wex-dsi-adopt` argument selects experimental MIPI DSI firmware-GOP adoption on a supported panel profile. It preserves the firmware link and exposes a synthetic EDID derived from the panel profile for native path and fixed-mode accelerated desktop output. OS-requested 90°/270° rotation and scaled GPU source modes retain the physical panel timing; orientation and HiDPI mode selection are configured in macOS. OS-provided scaled modes are not restricted to a preferred resolution or a fixed list capacity; available HiDPI sizes depend on the macOS display configuration. Native PWM brightness requests and readback use the existing AppleBacklight interface on supported DSI profiles; brightness zero sets zero PWM duty. With display off/on enabled below, requests made while the panel is off are saved and applied before its backlight is enabled on wake. On macOS Big Sur, the internal HiDPI panel has been tested with up to two external HDMI/USB-C displays, including accelerated rendering and display off/on. System sleep and full lifecycle validation remain under development. Do not combine it with `-wex-dsi-hdmi-test`. The additional `-wex-dsi-panel-only` argument temporarily excludes external outputs from online detection and mode setting during internal-panel development; physical output wiring is unchanged. Omit it to test external coexistence. The optional `-wex-dsi-command-test` runs a single DCS NOP/drain trial during DSI adoption; it does not enable panel power cycling. The optional `-wex-dsi-panel-test` tests one panel power/reset/initialization cycle before native startup while retaining the host clock and PHY; complete host reinitialization remains under development. The additional `-wex-dsi-host-test` includes the panel cycle and restarts the exclusively retained PLL, PHY and DSI host from the panel profile. These bootstrap experiments do not enable runtime display/system sleep. The optional `-wex-dsi-stop-test` additionally permits a one-way panel/host shutdown and resource retirement from the normal display power callback. Reboot to recover; this experiment does not support display wake. The separate `-wex-dsi-power-test` selects experimental display off/on with the native scanout backing and shared leases retained. It takes priority over `-wex-dsi-stop-test`; system sleep remains unsupported.
+Add `-wex-dsi-adopt` to enable the internal panel and `-wex-dsi-power-test` for experimental display off/on. Brightness uses AppleBacklight with SSDT-PNLF. Configure rotation and HiDPI in macOS; an appropriate display override may be needed for HiDPI modes. System sleep/wake is unsupported.
+
+MicroPC 2 has been tested with rotation, HiDPI, brightness and up to two external displays. MiniBook X N100 has been tested with rotation, brightness, display off/on and one external USB-C display. See [tested features](#tested-features-and-known-issues) for OS coverage.
+
+The following optional arguments are for diagnostics and panel development; they are not required for normal use:
+
+| Argument | Purpose |
+| --- | --- |
+| `-wex-dsi-audit` | Report firmware and boot-display prerequisites without enabling the panel. |
+| `-wex-dsi-panel-only` | Temporarily disable external outputs. |
+| `-wex-dsi-command-test` | Run one panel command test during startup. |
+| `-wex-dsi-panel-test` | Test a panel power/reset cycle before native display startup. |
+| `-wex-dsi-host-test` | Also rebuild the retained DSI host during the startup test. |
+| `-wex-dsi-stop-test` | Test one-way panel shutdown; reboot to recover. `-wex-dsi-power-test` takes priority. |
+| `-wex-dsi-hdmi-test` | Transfer a qualified DSI boot display to HDMI, disabling the internal panel. Do not combine with `-wex-dsi-adopt`. |
 
 ### Internal-panel brightness
 
 Add `SSDT-PNLF` to OpenCore to enable internal-display brightness control.
-
-DSI profiles are read from firmware VBT (BDB 236 or later with compatible field layouts), including native panel GPIO banks 1 and 2 and reset operations embedded in the initialization sequence. Timings that exceed the base EDID limits are described with a DisplayID extension; the physical panel timing is preserved. Declared record strides and optional lifecycle sequences are supported. Pixel clocks are qualified by PLL, register and scanout constraints rather than a fixed 300 MHz ceiling. The existing single-link, four-lane RGB888 video-mode restrictions still apply. When external outputs are enabled, adoption prepares their shared display-clock requirement before native modes start; this does not require `-wex-dsi-host-test`.
 
 ### DVMT
 
@@ -199,20 +211,20 @@ GPU backend selection is independent of hardware test coverage: untested PCI
 revisions use the same family implementation. Revision-specific behavior is
 added when a documented difference or observed failure requires it.
 
-Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P/U select
+Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P select
 Y-tiled scanout automatically; `AAPL,GfxYTile` is not required in OpenCore.
 Existing values are preserved. Do not use the Apple driver's `-yTileDisable`
 argument on these GPUs: their X-tiled scanout path is unsupported.
 
 For framebuffer bring-up, the optional `-wex-noaccel` argument disables accelerator
-startup. On Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P/U,
+startup. On Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P,
 it also skips GPU resource probing while preserving the
 framebuffer's independent boot-memory and MMIO checks. It does not enable an
 otherwise unsupported display backend.
 
 Temporary development diagnostic: `-wex-adlp-readout` captures ADL-P boot resources while keeping GPU driver admission disabled. It is not required for supported hardware.
 `-wex-adlp-load-only` blocks both native framebuffer and accelerator probes/starts on a selected ADL-P/RPL-P device, for load-only diagnostics without GPU initialization.
-`-wex-display13-offline` keeps native display controller initialization enabled on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P/U but reports selected outputs as disconnected, isolating HPD/EDID and mode programming for framebuffer diagnostics. It does not establish display operation.
+`-wex-display13-offline` keeps native display controller initialization enabled on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P but reports selected outputs as disconnected, isolating HPD/EDID and mode programming for framebuffer diagnostics. It does not establish display operation.
 
 ## Tested features and known issues
 
@@ -223,6 +235,8 @@ Temporary development diagnostic: `-wex-adlp-readout` captures ADL-P boot resour
 | Alder Lake-N | Big Sur/Tahoe: automatic Y tiling without an EFI `AAPL,GfxYTile` setting |
 | Alder Lake-H | Big Sur–Tahoe: Metal, OpenGL, hardware H.264 encode/decode, HEVC decode and three displays using fixed HDMI and a DP-to-HDMI adapter |
 | Alder Lake-S | Big Sur–Tahoe: Metal, OpenGL, OpenCL, hardware H.264 encode/decode, HEVC decode and three displays (two 1080p60 and one 720p60); Safari video playback; Widevine checked on Big Sur and Tahoe |
+| GPD MicroPC 2 (MIPI DSI) | Big Sur: rotation, HiDPI, brightness, display off/on, lid close/open with external displays, and up to three displays with Metal/OpenGL. Tahoe: internal and two external displays, brightness, rotation and HiDPI |
+| CHUWI MiniBook X N100 (MIPI DSI) | Big Sur: accelerated internal display, rotation, brightness, external USB-C reconnection, display off/on, Metal/OpenGL and hardware H.264 encode/decode |
 | Tiger Lake / Alder Lake-S | Tahoe: Chrome hardware-accelerated Canvas, WebGL and WebGPU |
 
 These results cover tested systems, not every GPU, display, adapter or dock.
@@ -234,7 +248,7 @@ limit imposed by WEX.
 - Some image-conversion operations can crash the application.
 - App Store video playback can freeze the GPU on Sequoia.
 - Reconnecting a monitor to a dedicated DisplayPort connector can leave the
-  screen black or freeze the computer. USB-C DisplayPort Alt Mode reconnection
+  screen black or freeze the computer. Tiger Lake USB-C DisplayPort Alt Mode reconnection
   can also freeze the computer; this has been reproduced on both Big Sur and
   Tahoe.
 - Safari video playback may occasionally drop frames.
@@ -250,7 +264,8 @@ limit imposed by WEX.
 
 ## Roadmap
 
-- Complete DisplayPort, USB-C and internal-display support on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P/U.
+- Implement Raptor Lake-U display-clock support.
+- Complete DisplayPort, USB-C and internal-display support on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P.
 - Improve display reconnection reliability and investigate full system sleep/wake.
 
 ## Build and test
