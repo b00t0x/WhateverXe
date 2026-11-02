@@ -1,0 +1,117 @@
+name: Bug report or feature request
+description: Report a WhateverXe issue or request a change.
+body:
+  - type: checkboxes
+    id: pre-submission-check
+    attributes:
+      label: Pre-submission check
+      options:
+        - label: I have successfully installed and booted this version of macOS with neither WhateverXe nor WhateverXe Graphics installed.
+          required: true
+  - type: input
+    id: cpu
+    attributes:
+      label: CPU model
+      placeholder: e.g. Intel Core i7-1165G7
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: Include the build number if available.
+      placeholder: e.g. macOS 26.7.2 (25G332)
+    validations:
+      required: true
+  - type: input
+    id: wex-version
+    attributes:
+      label: WhateverXe version
+      description: For a custom build, provide its commit hash.
+      placeholder: e.g. 0.7.0
+    validations:
+      required: true
+  - type: input
+    id: graphics-version
+    attributes:
+      label: WhateverXe Graphics version
+      description: For a custom build, provide its version and source commit hash.
+      placeholder: e.g. 0.4.0
+    validations:
+      required: true
+  - type: input
+    id: hardware-model
+    attributes:
+      label: Computer model or motherboard
+      placeholder: e.g. Lenovo ThinkPad L13 Gen 2
+    validations:
+      required: false
+  - type: input
+    id: igpu-device-id
+    attributes:
+      label: iGPU device ID
+      placeholder: e.g. 0x9A49
+    validations:
+      required: false
+  - type: dropdown
+    id: installation-method
+    attributes:
+      label: Graphics installation method
+      options:
+        - Standard pkg
+        - AutoPkg
+    validations:
+      required: false
+  - type: textarea
+    id: display-configuration
+    attributes:
+      label: Display configuration
+      description: For display issues, include the displays, connections and any adapters or docks involved.
+      placeholder: |
+        Internal display: 1920x1080 at 60 Hz
+        External display: 1920x1080 at 60 Hz, USB-C to HDMI adapter
+        Connected displays when the issue occurs: internal + external
+    validations:
+      required: false
+  - type: textarea
+    id: request-or-symptoms
+    attributes:
+      label: Request or symptoms
+      placeholder: |
+        Expected behavior:
+        Observed behavior or requested change:
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction-steps
+    attributes:
+      label: Steps to reproduce
+      description: Leave blank if not applicable to your request.
+      placeholder: |
+        1. Boot macOS with WEX enabled.
+        2. Connect an external display.
+        3. The external display remains black.
+        Frequency: every time / intermittent
+    validations:
+      required: false
+  - type: textarea
+    id: regression
+    attributes:
+      label: Regression / last working version
+      description: If this previously worked, give the last working versions and what changed.
+      placeholder: |
+        Last working: WEX version / Graphics version / macOS version
+        First failing: WEX version / Graphics version / macOS version
+        Other changes: hardware, display connection or configuration changes
+    validations:
+      required: false
+  - type: textarea
+    id: logs-and-attachments
+    attributes:
+      label: Logs and attachments
+      description: Remove personal information before uploading.
+      placeholder: |
+        Paste relevant log excerpts or attach log files, crash reports, screenshots or videos.
+        Include when each log or capture was taken relative to the issue.
+    validations:
+      required: false
