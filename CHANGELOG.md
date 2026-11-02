@@ -11,7 +11,7 @@ Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphi
 
 ### Fixed
 
-- Restore graphics initialization and acceleration on omitted Tiger Lake and Alder/Raptor Lake mobile PCI IDs, including the single-channel Alder Lake identity, and select resources correctly across Tiger Lake variants. Use matching WhateverXe Graphics payloads. Raptor Lake-U still requires separate display-clock support and is not supported.
+- Fix graphics initialization and acceleration on additional supported Tiger Lake and Alder/Raptor Lake GPU variants, including single-channel configurations.
 - Fix graphics initialization on compatible Sequoia and Tahoe updates without requiring an exact OS build match.
 - Fix display freezes during cursor resizing and improve multi-display startup and display off/on with MIPI DSI panels.
 - Fix system power-off hangs with a USB-C display connected on Alder Lake-class GPUs.
