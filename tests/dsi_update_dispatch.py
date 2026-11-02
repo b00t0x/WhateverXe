@@ -52,6 +52,7 @@ const XELP::DSI::AppleAdapter::Timing *dsiPresentation(uint32_t mode){
  return XELP::DSI::AppleAdapter::acceptsMode(mode,dsiFixedMode.clientMode)?&t:nullptr;
 }
 IOService *panel=nullptr,*nativeFB=nullptr;bool dsiModeTarget(IOService *f){return f && f==panel;}
+constexpr uint32_t kIOSystemPowerAttribute=0x73707772U, kIOMessageSystemWillRestart=0xe0000310U;
 constexpr uint32_t kIOReturnNotReady=0xe00002d8U,kIOReturnUnsupported=0xe00002c7U,kIOReturnSuccess=0;
 #define FunctionCast(f,p) reinterpret_cast<decltype(&f)>(p)
 uint32_t nativeMode(IOService*,int32_t m,int32_t d){assert(!fbLock.depth && !owner);assert(m==0x10000 && d==2);++modeCalls;return 7;}
@@ -210,6 +211,16 @@ struct Case {
 };
 int main(){
 
+ {Case c;put(&c.fb,0x4284,2U);
+  auto restart=[&]{return XE::wrapDSISetAttribute(&c.fb,kIOSystemPowerAttribute,kIOMessageSystemWillRestart);};
+  assert(restart()==kIOReturnUnsupported && !xe.stopCalls);
+  xe.dsiPowerTest=true;
+  assert(XE::wrapDSISetAttribute(&c.fb,kIOSystemPowerAttribute,0xe0000250U)==kIOReturnUnsupported);
+  assert(restart()==kIOReturnNotReady && Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==2);
+  xe.stopOK=true;assert(restart()==kIOReturnSuccess && xe.dsiRuntimePower.sleeping);
+  assert(Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==0);
+  auto stops=xe.stopCalls;assert(restart()==kIOReturnSuccess && xe.stopCalls==stops);
+ }
  for(unsigned attr:{0x706F7772U,0x70777273U}){Case c;xe.dsiPowerTest=true;put(&c.fb,0x4284,2U);
   assert(XE::wrapDSISetAttribute(&c.fb,attr,1)==kIOReturnNotReady && xe.stopCalls==1);
   assert(Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==2);

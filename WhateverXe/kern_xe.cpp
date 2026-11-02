@@ -1,5 +1,7 @@
 #include "kern_display13_color.hpp"
 #include <mach/clock.h>
+#include <IOKit/IOMessage.h>
+#include <IOKit/graphics/IOGraphicsTypes.h>
 //
 //  kern_xe.cpp
 //  WhateverGreen

@@ -118,6 +118,11 @@ uint32_t XE::wrapDSISetAttribute(IOService *fb,uint32_t attribute,uintptr_t valu
                     if(value>UINT32_MAX)return kIOReturnUnsupported;
                     return wrapDSISetPowerState(fb,static_cast<uint32_t>(value));
                 }
+                // IOGraphics sends spwr before the platform resets. Park the adopted
+                // panel through its own power path while display resources are live.
+                if(attribute==kIOSystemPowerAttribute && value==kIOMessageSystemWillRestart &&
+                   callbackXE->dsiPowerTest && dsiModeTarget(fb))
+                    return wrapDSISetPowerState(fb,0);
                 if(attribute==0x626B7376)return callbackXE->saveDSIBrightness(fb,value);
                 if(XELP::DSI::AppleAdapter::transportAttribute(attribute))return kIOReturnUnsupported;
                 token=beginDSIFramebufferWriter(fb);if(token<0)return kIOReturnNotReady;
