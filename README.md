@@ -18,14 +18,37 @@ Use the latest releases of [WhateverXe](https://github.com/b00t0x/WhateverXe/rel
 
 Sequoia and Tahoe accept compatible updates within their OS family. Future Apple changes may require an update to WEX or Graphics.
 
-Implemented GPU families: Tiger Lake-U/H35/H45, Alder Lake-N / Twin Lake, Alder Lake-H/P/U/S/HX, and Raptor Lake-H/P/S/HX. Tested configurations are listed below; other models in these families remain unverified. See [device selection](docs/device-selection.md) for PCI IDs.
+### Tested on hardware
 
-Raptor Lake-U still needs dedicated display-clock support. Rocket Lake-S also requires further implementation. Xe-LPG and Xe2 or later are outside this project's scope.
+- Tiger Lake-U: 48- and 80-EU configurations.
+- Alder Lake-N: 16-, 24- and 32-EU configurations.
+- Alder Lake-H: 96-EU configurations, including single-channel operation.
+- Alder Lake-S: UHD Graphics 770.
+
+See [tested features and known issues](#tested-features-and-known-issues) for OS coverage and display configurations. PCI IDs are listed in [device selection](docs/device-selection.md).
+
+### Expected to work, not yet tested on hardware
+
+- Other supported Tiger Lake-U/H35 configurations, including 96 EU, and Tiger Lake-H45.
+- Other supported Alder Lake-N configurations and Twin Lake.
+- Other supported Alder Lake-H/P/U and Raptor Lake-H/P configurations.
+- Other supported Alder Lake-S/HX and Raptor Lake-S/HX configurations.
+- Internal eDP on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P is implemented but has not been tested on hardware.
+
+### Further implementation required
+
+- Raptor Lake-U: dedicated display-clock handling is not implemented.
+- Rocket Lake-S: display control requires additional support.
+
+### No support planned
+
+- Xe-LPG, including Meteor Lake integrated graphics.
+- Xe2 and later graphics architectures.
 
 ## Installation
 
 1. Add Lilu, `WhateverXe.kext` and [AMFIPass 1.4.1 Mod](https://github.com/b00t0x/WhateverXe-Graphics/blob/main/extras/AMFIPass-v1.4.1-Mod-RELEASE.zip) to OpenCore, with WEX after Lilu. Use the WEX **RELEASE** ZIP; DEBUG is for troubleshooting.
-2. Set `csr-active-config=03080000` (`0x803`) and apply the configuration below.
+2. Set `csr-active-config=03080000` (`0x803`) and apply the [configuration](#configuration).
 3. Boot the target macOS, install the latest [WhateverXe Graphics pkg](https://github.com/b00t0x/WhateverXe-Graphics/releases), then restart. [Package installation and removal](https://github.com/b00t0x/WhateverXe-Graphics#install).
 
 Use the linked **Mod** AMFIPass instead of upstream AMFIPass; do not load both. WhateverGreen and WhateverXe must not be enabled together. `amfi=0x80` and `ipc_control_port_options=0` are unnecessary.
@@ -73,7 +96,7 @@ The common regression checks cover Metal, OpenGL, OpenCL, hardware H.264 encode/
 | Alder Lake-H | Big Sur–Tahoe: 96 EU, three displays using HDMI and a DP-to-HDMI adapter. Single-channel `4626` graphics acceleration checked on Big Sur |
 | Alder Lake-S | Big Sur–Tahoe: UHD 770, HDMI/DP/USB-C and up to three displays; Safari video, with Widevine checked on Big Sur/Tahoe |
 
-MIPI DSI support is **experimental and tested only on GPD MicroPC 2 and CHUWI MiniBook X N100**. Do not expect it to work on other devices. Internal eDP support on Alder/Raptor Lake mobile GPUs is implemented but has not been tested on hardware.
+MIPI DSI support is **experimental and tested only on GPD MicroPC 2 and CHUWI MiniBook X N100**. Do not expect it to work on other devices.
 
 ### Known issues and limits
 

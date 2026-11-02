@@ -18,14 +18,37 @@ WhateverXeは、WhateverGreenを基に開発した、一部のIntel Xe-LP内蔵G
 
 SequoiaとTahoeは同じOS系列内の互換性のある更新に対応します。将来のApple側の変更によりWEXやGraphicsの更新が必要になる場合があります。
 
-実装済みのGPU系列はTiger Lake-U/H35/H45、Alder Lake-N / Twin Lake、Alder Lake-H/P/U/S/HX、Raptor Lake-H/P/S/HXです。検証した構成は下表のとおりで、同系列の他モデルは未検証です。PCI IDは[デバイス選択](docs/device-selection.md)を参照してください。
+### 実機で動作確認済み
 
-Raptor Lake-Uは専用の表示クロック対応が未実装で、Rocket Lake-Sも追加対応が必要です。Xe-LPG・Xe2以降は対象外です。
+- Tiger Lake-U：48 EU・80 EU構成。
+- Alder Lake-N：16 EU・24 EU・32 EU構成。
+- Alder Lake-H：シングルチャネルを含む96 EU構成。
+- Alder Lake-S：UHD Graphics 770。
+
+OS別の範囲と表示構成は[動作確認済みの機能と既知の問題](#動作確認済みの機能と既知の問題)、PCI IDは[デバイス選択](docs/device-selection.md)を参照してください。
+
+### 動作を期待できるが実機未検証
+
+- 96 EUを含む対応IDの他のTiger Lake-U/H35構成と、Tiger Lake-H45。
+- 対応IDの他のAlder Lake-N構成とTwin Lake。
+- 対応IDの他のAlder Lake-H/P/U・Raptor Lake-H/P構成。
+- 対応IDの他のAlder Lake-S/HX・Raptor Lake-S/HX構成。
+- Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/Pの内蔵eDPは実装済み・実機未検証です。
+
+### 対応に追加改修が必要
+
+- Raptor Lake-U：専用の表示クロック制御が未実装です。
+- Rocket Lake-S：表示制御に追加対応が必要です。
+
+### 対応予定なし
+
+- Meteor Lakeの内蔵GPUなど、Xe-LPG。
+- Xe2以降のグラフィックス世代。
 
 ## インストール
 
 1. Lilu・`WhateverXe.kext`・[AMFIPass 1.4.1 Mod](https://github.com/b00t0x/WhateverXe-Graphics/blob/main/extras/AMFIPass-v1.4.1-Mod-RELEASE.zip)をOpenCoreに追加し、WEXはLiluの後に設定します。WEXは**RELEASE** ZIPを使用してください。DEBUGは障害調査用です。
-2. `csr-active-config=03080000`（`0x803`）と、以下の設定を適用します。
+2. `csr-active-config=03080000`（`0x803`）と、[設定](#設定)を適用します。
 3. 対象macOSを起動して最新版の[WhateverXe Graphics pkg](https://github.com/b00t0x/WhateverXe-Graphics/releases)を導入し、再起動します。[pkgの導入・削除手順](https://github.com/b00t0x/WhateverXe-Graphics/blob/main/README_ja.md#インストール)。
 
 AMFIPassは本家版に代えてリンク先の**Mod版**を使用し、両方を同時に読み込まないでください。WhateverGreenとWhateverXeも併用できません。`amfi=0x80`と`ipc_control_port_options=0`は不要です。
@@ -73,7 +96,7 @@ BIOS/UEFIで設定できる場合は、**DVMT Pre-Allocatedを96MB**にします
 | Alder Lake-H | Big Sur〜Tahoe：96 EU、HDMIとDP→HDMI変換器による3画面。シングルチャネル構成の`4626`でもBig Surの加速を確認 |
 | Alder Lake-S | Big Sur〜Tahoe：UHD 770、HDMI/DP/USB-C、最大3画面、Safari動画。WidevineはBig Sur/Tahoeで確認 |
 
-MIPI DSIは**GPD MicroPC 2とCHUWI MiniBook X N100のみで検証した試験的対応**です。それ以外の機器での動作は期待しないでください。Alder/Raptor LakeモバイルGPUの内蔵eDPは実装済み・実機未検証です。
+MIPI DSIは**GPD MicroPC 2とCHUWI MiniBook X N100のみで検証した試験的対応**です。それ以外の機器での動作は期待しないでください。
 
 ### 既知の問題と制限
 
