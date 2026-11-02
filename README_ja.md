@@ -22,7 +22,7 @@ SequoiaとTahoeは同じOS系列内の互換性のある更新に対応します
 
 - Tiger Lake-U：48 EU・80 EU構成。
 - Alder Lake-N：16 EU・24 EU構成。
-- Twin Lake：32 EU（N250）。
+- Twin Lake：32 EU構成。
 - Alder Lake-H：シングルチャネルを含む96 EU構成。
 - Alder Lake-S：UHD Graphics 770。
 

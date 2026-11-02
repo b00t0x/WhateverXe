@@ -22,7 +22,7 @@ Sequoia and Tahoe accept compatible updates within their OS family. Future Apple
 
 - Tiger Lake-U: 48- and 80-EU configurations.
 - Alder Lake-N: 16- and 24-EU configurations.
-- Twin Lake: 32 EU (N250).
+- Twin Lake: 32-EU configurations.
 - Alder Lake-H: 96-EU configurations, including single-channel operation.
 - Alder Lake-S: UHD Graphics 770.
 
