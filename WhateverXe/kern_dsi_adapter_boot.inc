@@ -293,7 +293,7 @@ bool XE::bindDSIResources(IOService *controller) {
     // before native display users start; this is not an opt-in host trial.
     bool prepareExternalClock=false;
     if(ready && !dsiPanelOnly && Display13FBTopology::multiOutputWiring(adlnOutputWiring)) {
-        const auto current=Display13Clock::read(io);
+        const auto current=Display13Clock::read(io,display13ClockVariant());
         ready=current.status==Display13Clock::Status::Complete;
         prepareExternalClock=ready && current.nativeHz()!=current.nativeMaxHz();
     }

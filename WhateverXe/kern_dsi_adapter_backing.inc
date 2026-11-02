@@ -266,7 +266,7 @@ bool XE::switchDSINativeSurface() {
         decltype(owned) &owns;
         IO(IOMemoryMap *m,decltype(owned) &f):Display13FBBootIO{m},owns(f){}
         bool ready(){return owns();}
-        uint64_t nativeClockHz(){Display13FBClockIO clock{map};return Display13Clock::read(clock).nativeHz();}
+        uint64_t nativeClockHz(){Display13FBClockIO clock{map};return Display13Clock::read(clock,display13ClockVariant()).nativeHz();}
         uint64_t nowUs(){uint64_t t=0,ns=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&ns);return ns/1000;}
         void delayUs(unsigned us){if(us>=1000)IOSleep((us+999)/1000);else IODelay(us);}
         void write(uint32_t reg,uint32_t value) {

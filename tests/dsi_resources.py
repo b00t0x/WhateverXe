@@ -21,6 +21,7 @@ code=r'''
 #include <map>
 #include <vector>
 using namespace XELP::DSI;
+Display13Clock::Variant display13ClockVariant(){return Display13Clock::Variant::ADLP;}
 IO_FIXTURE
 unsigned lockLevel=0;
 struct IORecursiveLock{};struct IOLock{};struct IOSimpleLock{};

@@ -4,6 +4,7 @@
 #include <cstring>
 #include <vector>
 #include "AppleIntelTGLCompatPortProbe.hpp"
+#include "kern_display13_clock.hpp"
 struct Meta {unsigned size=0x1C20;unsigned getClassSize(){return size;}};
 struct OSObject {
  virtual ~OSObject()=default;

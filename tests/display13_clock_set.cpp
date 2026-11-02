@@ -40,6 +40,21 @@ struct IO {
 };
 int main() {
     const Conditions ready {true,true,1};
+    for(unsigned id:{0xa721U,0xa7a1U,0xa7a9U,0xa7acU,0xa7adU})
+        assert(variantForPCI((id<<16)|0x8086)==Variant::RPLU);
+    assert(variantForPCI(0xa7a88086)==Variant::ADLP);
+    for(unsigned ref:{19200U,24000U,38400U}) {
+        assert(select(ref,624000000,false,Variant::RPLU)==960000000);
+        assert(select(ref,624000000,false,Variant::ADLP)>960000000);
+    }
+    {
+        IO io;
+        assert(set(io,960000000,ready,Variant::ADLP).status==ChangeStatus::InvalidFrequency);
+        assert(io.writes.empty());
+        auto r=set(io,960000000,ready,Variant::RPLU);
+        assert(r.status==ChangeStatus::Complete && r.after.cdclkKHz==480000 &&
+               r.after.ratio==50 && io.regs[Data]==1);
+    }
     assert(select(38400,0,true)==1305600000 && select(24000,0,true)==1296000000);
     assert(select(38400,345600000,false)==358400000 && select(38400,358400000,false)==384000000);
     assert(!select(38400,1305600000,false) && !select(0,0,true));

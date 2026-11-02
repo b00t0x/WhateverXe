@@ -25,6 +25,7 @@ SequoiaとTahoeは同じOS系列内の互換性のある更新に対応します
 - Twin Lake：32 EU構成。
 - Alder Lake-H：シングルチャネルを含む96 EU構成。
 - Alder Lake-S：UHD Graphics 770。
+- Raptor Lake-U：Intel Processor U300の48 EU構成（Big Sur）。
 
 OS別の範囲と表示構成は[動作確認済みの機能と既知の問題](#動作確認済みの機能と既知の問題)、PCI IDは[デバイス選択](docs/device-selection.md)を参照してください。
 
@@ -32,13 +33,12 @@ OS別の範囲と表示構成は[動作確認済みの機能と既知の問題](
 
 - 96 EUを含む対応IDの他のTiger Lake-U/H35構成と、Tiger Lake-H45。
 - 対応IDの他のAlder Lake-N / Twin Lake構成。
-- 対応IDの他のAlder Lake-H/P/U・Raptor Lake-H/P構成。
+- 対応IDの他のAlder Lake-H/P/U・Raptor Lake-H/P/U構成。
 - 対応IDの他のAlder Lake-S/HX・Raptor Lake-S/HX構成。
 - Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/Pの内蔵eDPは実装済み・実機未検証です。
 
 ### 対応に追加改修が必要
 
-- Raptor Lake-U：専用の表示クロック制御が未実装です。
 - Rocket Lake-S：表示制御に追加対応が必要です。
 
 ### 対応予定なし
@@ -81,6 +81,7 @@ BIOS/UEFIで設定できる場合は、**DVMT Pre-Allocatedを96MB**にします
 ### その他の設定
 
 - 内蔵画面の輝度調整には`SSDT-PNLF`を追加します。
+- MiniBook X U300の検証構成では、内蔵DSIのファームウェア表示を引き継ぐために `-wex-dsi-adopt` を使用します。
 - GPUは自動選択するため、通常は`device-id`上書きは不要です。
 - Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/Pではタイル形式を自動選択します。`-yTileDisable`は使わないでください。`AAPL,GfxYTile`は不要です。
 
@@ -94,10 +95,11 @@ BIOS/UEFIで設定できる場合は、**DVMT Pre-Allocatedを96MB**にします
 | Tiger Lakeラップトップ | Big Sur〜Tahoe：48 EU、内蔵eDPと輝度調整、HDMI/USB-C、最大3画面・消灯復帰 |
 | Alder Lake-NミニPC | Big Sur〜Tahoe：16/24 EU、1080p60のHDMI 2画面・消灯復帰 |
 | Alder Lake-N / Twin Lakeラップトップ | MicroPC 2（N250）とMiniBook X N100のMIPI DSI。Big Sur：輝度・回転・消灯復帰・外部HDMI/USB-C共存。MicroPC 2はHiDPI・最大3画面も確認。Tahoe：MicroPC 2の内蔵／外部表示・輝度・回転・HiDPI |
+| Raptor Lake-Uラップトップ | Big Sur：MiniBook X U300の内蔵MIPI DSI 1200×1920・50 Hz、Metal計算・描画、OpenGL、H.264ハードウェアencode/decode・HEVC decode |
 | Alder Lake-H | Big Sur〜Tahoe：96 EU、HDMIとDP→HDMI変換器による3画面。シングルチャネル構成の`4626`でもBig Surの加速を確認 |
 | Alder Lake-S | Big Sur〜Tahoe：UHD 770、HDMI/DP/USB-C、最大3画面、Safari動画。WidevineはBig Sur/Tahoeで確認 |
 
-MIPI DSIは**GPD MicroPC 2とCHUWI MiniBook X N100のみで検証した試験的対応**です。それ以外の機器での動作は期待しないでください。
+MIPI DSI対応は**試験的**です。GPD MicroPC 2、CHUWI MiniBook X N100とU300の内蔵パネルで検証しました。
 
 ### 既知の問題と制限
 
@@ -109,7 +111,6 @@ MIPI DSIは**GPD MicroPC 2とCHUWI MiniBook X N100のみで検証した試験的
 
 ### ロードマップ
 
-- Raptor Lake-Uの表示クロック対応。
 - Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/PでのDisplayPort・USB-C・内蔵画面対応の拡充。
 - 画面再接続の安定性改善とシステム全体のスリープ／復帰の調査。
 

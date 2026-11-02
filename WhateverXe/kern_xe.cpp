@@ -228,6 +228,9 @@ static bool xelpInstallNVRAMABI(KernelPatcher &patcher,size_t index,mach_vm_addr
 XE *XE::callbackXE;
 static IOPCIDevice *xelpSelectedGPU;
 static XELP::Profile xelpSelectedProfile;
+static Display13Clock::Variant display13ClockVariant() {
+    return Display13Clock::variantForPCI(xelpSelectedProfile.identity);
+}
 static bool xelpSelectedDevice(IOPCIDevice *pci) {
     return pci && pci==xelpSelectedGPU && xelpSelectedProfile.displayAdmitted() &&
         XELP::same(xelpSelectedProfile,XELP::deviceProfile(pci));
@@ -4029,7 +4032,7 @@ void XE::adlnBootstrap(IOPCIDevice *pci) {
     }
     auditDSIBoot(pci,io.base,io.length,result,barReady && reservationReady);
     if(checkKernelArgument("-wex-dsi-hdmi-test")) {
-        auto handoff=Display13DSITrial::transfer(io,barReady && xelpMemoryMatches(pci),result,xelpMemory,board.hdmi);
+        auto handoff=Display13DSITrial::transfer(io,barReady && xelpMemoryMatches(pci),result,xelpMemory,board.hdmi,display13ClockVariant());
         pci->setProperty("WEXDisplay13DSIHandoff",&handoff,sizeof(handoff));
         AlderLakeN::readDisplay(io,barReady,result);
         pci->setProperty("WEXDisplay13DSIAfter",&result,sizeof(result));
@@ -9029,7 +9032,7 @@ Display13Clock::Readout XE::adlnClockReadout(IOService *controller) {
 				}
 				uint32_t read(uint32_t reg) const {return *reinterpret_cast<volatile uint32_t *>(base+reg);}
 			} io {static_cast<uintptr_t>(map->getVirtualAddress())};
-			r=Display13Clock::read(io);
+			r=Display13Clock::read(io,display13ClockVariant());
 		}
 		OSSafeReleaseNULL(map);
 	}
@@ -9075,7 +9078,7 @@ void XE::wrapAlderLakeNClockSet(IOService *controller,uint64_t nativeHz) {
 			Display13FBClockGuard guard;
 			const bool idle=!Display13WM::busyPipes(c.pipe) && !c.dbuf.updating;
 			const bool cold=idle && !active && adlnBeginClockGuard(guard);
-			const auto current=Display13Clock::read(io);
+			const auto current=Display13Clock::read(io,display13ClockVariant());
 			const bool changing=current.nativeHz()!=nativeHz;
 			if(changing && idle && active==1 && mutex && !c.pipe[0].wmPending && !c.dbuf.unretired && !c.dbuf.faulted &&
 				current.status==Display13Clock::Status::Complete && c.pipe[0].wmLatch.status==Display13WM::Status::Complete &&
@@ -9087,7 +9090,7 @@ void XE::wrapAlderLakeNClockSet(IOService *controller,uint64_t nativeHz) {
 			// the current Hz plus target bandwidth qualifies it BEFORE crawl;
 			// a second latch at the actual new Hz qualifies the new certificate.
 			if(changing && activeReady)c.pipe[0].watermarkClockHz=0;
-			result=Display13Clock::set(io,nativeHz,{c.bridge.bootAdopted && (active || cold),wmReady,active});
+			result=Display13Clock::set(io,nativeHz,{c.bridge.bootAdopted && (active || cold),wmReady,active},display13ClockVariant());
 			if(cold && result.status==Display13Clock::ChangeStatus::Complete)adlnInvalidateWM();
 			if(changing && activeReady && result.status==Display13Clock::ChangeStatus::Complete) {
 				afterWM=adlnVerifyWMLatch(fb,result.after.nativeHz(),nativeHz);c.pipe[0].wmLatch=afterWM;
@@ -9126,12 +9129,12 @@ void XE::adlnSetDualClock(IOService *controller,uint64_t nativeHz) {
         !c.bridge.state.faulted && !c.clockFaulted && !c.watermarkFaulted &&
         Display13Power::objectAssociations(c.power,0x80,controller,0xC60);
     Display13FBClockIO clockIO {c.map};
-    auto current=valid ? Display13Clock::read(clockIO) : Display13Clock::Readout {};
+    auto current=valid ? Display13Clock::read(clockIO,display13ClockVariant()) : Display13Clock::Readout {};
     evidence[2]=current.nativeHz();
     // Core independently re-reads the actual clock for an unchanged request.
     // No synthetic unchanged success, gate or peer-lock dependency is added.
     if(valid && current.status==Display13Clock::Status::Complete && current.nativeHz()==nativeHz)
-        result=Display13Clock::set(clockIO,nativeHz,{false,false,0});
+        result=Display13Clock::set(clockIO,nativeHz,{false,false,0},display13ClockVariant());
     else {
         auto measure=[&](uint32_t &mask) {
             Display13FBPowerIO io {c.map};const auto wells=io.read(Display13Power::Driver);mask=0;
@@ -9189,7 +9192,7 @@ void XE::adlnSetDualClock(IOService *controller,uint64_t nativeHz) {
                     TGLFBBinding::publish(paths[p],reinterpret_cast<uintptr_t>(fb),reinterpret_cast<uintptr_t>(path),binding,p);
             }
         }
-        const auto now=ready ? Display13Clock::read(clockIO) : Display13Clock::Readout {};
+        const auto now=ready ? Display13Clock::read(clockIO,display13ClockVariant()) : Display13Clock::Readout {};
         ready=ready && now.status==current.status && now.nativeHz()==current.nativeHz() &&
             !c.bridge.state.faulted && !c.clockFaulted && !c.watermarkFaulted;
         evidence[10]=ready;
@@ -9207,7 +9210,7 @@ void XE::adlnSetDualClock(IOService *controller,uint64_t nativeHz) {
             }
             const bool activeReady=active && evidence[12]==active;
             if(activeReady)for(unsigned p=0;p<3;++p)if(active&(1U<<p))c.pipe[p].watermarkClockHz=0;
-            result=Display13Clock::set(clockIO,nativeHz,{c.bridge.bootAdopted && (active || cold),idle && (cold || activeReady),active});
+            result=Display13Clock::set(clockIO,nativeHz,{c.bridge.bootAdopted && (active || cold),idle && (cold || activeReady),active},display13ClockVariant());
             if(cold && result.status==Display13Clock::ChangeStatus::Complete)adlnInvalidateWM();
             if(activeReady && result.status==Display13Clock::ChangeStatus::Complete) {
                 for(unsigned p=0;p<3;++p)if(active&(1U<<p)) {
@@ -9246,7 +9249,7 @@ void XE::wrapAlderLakeNClockDisable(IOService *controller) {
 		!c.bridge.state.faulted && !c.clockFaulted && !Display13WM::busyPipes(c.pipe) && !c.dbuf.updating) {
 		Display13FBClockGuard guard;
 		if(adlnBeginClockGuard(guard)) {
-			Display13FBClockIO io {c.map};result=Display13Clock::stop(io,{true,false,0});
+			Display13FBClockIO io {c.map};result=Display13Clock::stop(io,{true,false,0},display13ClockVariant());
 			if(result.status==Display13Clock::ChangeStatus::Complete) {
 				if(result.before.nativeHz())c.resumeClockHz=result.before.nativeHz();
 				c.clock=result.after;c.clockStopped=true;adlnInvalidateWM();
@@ -9263,10 +9266,10 @@ uint64_t XE::wrapAlderLakeNClockCalculate(IOService *controller,uint64_t minimum
 	uint64_t selected=0,record[5] {};IOLockLock(c.lock);
 	if(callbackXE->display13FBLifecycleHooksReady && callbackXE->adlnHasExternalDisplay && controller==c.controller &&
 		c.bridge.begun && !c.bridge.state.faulted && !c.clockFaulted) {
-		Display13FBClockIO io {c.map};const auto clock=Display13Clock::read(io);
+		Display13FBClockIO io {c.map};const auto clock=Display13Clock::read(io,display13ClockVariant());
 		if(clock.status==Display13Clock::Status::Complete || (c.clockStopped && clock.status==Display13Clock::Status::Disabled)) {
 			const bool external=reinterpret_cast<bool (*)(IOService *)>(callbackXE->adlnHasExternalDisplay)(controller);
-			selected=Display13Clock::select(clock.refKHz,minimumHz,external);
+			selected=Display13Clock::select(clock.refKHz,minimumHz,external,display13ClockVariant());
 			record[3]=external;record[4]=clock.refKHz;
 			if(selected)*reinterpret_cast<uint64_t *>(reinterpret_cast<uint8_t *>(controller)+0xEA0)=selected;
 		}
@@ -9661,7 +9664,7 @@ Display13WM::Latch XE::adlnVerifyWMLatch(IOService *fb,uint64_t nativeHz,uint64_
 		IOMemoryMap *map;
 		bool readable(uint32_t reg) const {return map && map->getLength()==0x1000000 && map->getVirtualAddress() && !(reg&3) && reg<=0xFFFFFC;}
 		uint32_t read(uint32_t reg) const {return *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg);}
-		uint64_t nativeClockHz() {Display13FBClockIO clockIO {map};return Display13Clock::read(clockIO).nativeHz();}
+		uint64_t nativeClockHz() {Display13FBClockIO clockIO {map};return Display13Clock::read(clockIO,display13ClockVariant()).nativeHz();}
 		uint64_t nowUs() {uint64_t t=0,ns=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&ns);return ns/1000;}
 		void delayUs(unsigned us) {IOSleep(us/1000);}
 	} io {c.map};
@@ -9858,7 +9861,7 @@ void XE::display13WMArmUpdate(IOService *fb) {
 	uint64_t record[16] {};IOLockLock(c.lock);
 	Display13WM::Latch result;Display13DBUF::Status retired=Display13DBUF::Status::Unavailable;
 	const auto pending=c.pipe[pipe].wmPending,old=c.dbuf.unretired;
-	Display13FBClockIO clockIO {c.map};const auto actualHz=Display13Clock::read(clockIO).nativeHz();
+	Display13FBClockIO clockIO {c.map};const auto actualHz=Display13Clock::read(clockIO,display13ClockVariant()).nativeHz();
 	trigger[9]=path ? Display13FBMemory::field<uint32_t>(path,0x35F0) : UINT32_MAX;
 	if(intent.valid && !trigger[9])result=adlnVerifyWMLatch(fb,actualHz,actualHz);
 	else result.status=Display13WM::Status::Conflict;
@@ -9957,13 +9960,13 @@ void XE::wrapAlderLakeNEngineEnable(void *power) {
 		else {Display13FBPowerIO io {c.map};acquired=Display13Power::acquire(io,c.bridge.state,c.engine,Display13Power::bit(Display13Power::Domain::PW1));}
 	}
 	c.writes+=acquired.writes;
-	Display13FBClockIO clockIO {c.map};auto clock=Display13Clock::read(clockIO);
+	Display13FBClockIO clockIO {c.map};auto clock=Display13Clock::read(clockIO,display13ClockVariant());
 	if(clock.status==Display13Clock::Status::Disabled && c.clockStopped && c.resumeClockHz &&
 		!c.bridge.state.faulted && !c.bridge.state.suspended && !c.clockFaulted && !c.dbuf.updating &&
 		!Display13WM::busyPipes(c.pipe)) {
 		Display13FBClockGuard guard;
 		if(adlnBeginClockGuard(guard)) {
-			const auto changed=Display13Clock::set(clockIO,c.resumeClockHz,{true,true,0});
+			const auto changed=Display13Clock::set(clockIO,c.resumeClockHz,{true,true,0},display13ClockVariant());
 			if(changed.status==Display13Clock::ChangeStatus::Complete) {
 				clock=changed.after;c.clockStopped=false;adlnInvalidateWM();
 				*reinterpret_cast<uint64_t *>(reinterpret_cast<uint8_t *>(c.controller)+0xE98)=clock.nativeHz();
@@ -10058,7 +10061,7 @@ void XE::wrapAlderLakeNEngineDisable(void *power) {
 			if(ensureGate() && adlnBeginClockGuard(guard)) {
 				Display13FBDBUFIO io {c.map};status=Display13DBUF::stop(io,c.dbuf);
 				if(status==Display13DBUF::Status::Complete) {
-					Display13FBClockIO clockIO {c.map};clock=Display13Clock::stop(clockIO,{true,false,0});
+					Display13FBClockIO clockIO {c.map};clock=Display13Clock::stop(clockIO,{true,false,0},display13ClockVariant());
 					if(clock.status!=Display13Clock::ChangeStatus::Complete) {status=Display13DBUF::Status::Power;adlnFault(c.clockFaulted,__LINE__);}
 					else {
 						if(clock.before.nativeHz())c.resumeClockHz=clock.before.nativeHz();

@@ -21,6 +21,7 @@ struct Sequences {
     uint64_t delayUs {};
     bool valid() const {return status==SequenceStatus::Valid;}
 };
+inline bool longWrite(uint8_t type) {return type==0x29 || type==0x39;}
 inline uint32_t sequenceU32(const uint8_t *p) {
     return uint32_t(p[0]) | uint32_t(p[1])<<8 | uint32_t(p[2])<<16 | uint32_t(p[3])<<24;
 }
@@ -41,7 +42,7 @@ inline SequenceStatus validateSequence(Span bytes, Sequences &counts) {
                 // flags require a separate host contract, never silent coercion.
                 if(p[0] || length!=n-4)return SequenceStatus::Packet;
                 if(!((p[1]==0x05 && length==1) || (p[1]==0x15 && length==2) ||
-                     (p[1]==0x39 && length>=1)))return SequenceStatus::Packet;
+                     (longWrite(p[1]) && length>=1)))return SequenceStatus::Packet;
                 ++counts.packets;break;
             }
             case 2:

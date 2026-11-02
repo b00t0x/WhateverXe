@@ -128,12 +128,12 @@ bool XE::probeDSIPanel(IOService *controller,bool prepareExternalClock) {
             if(prepareExternal) {
                 auto &c=display13FBPower;
                 Display13FBClockIO clockIO {c.map};
-                const auto current=Display13Clock::read(clockIO);
+                const auto current=Display13Clock::read(clockIO,display13ClockVariant());
                 cdclk.before=current;cdclk.requestedHz=current.nativeMaxHz();
                 const bool stopped=io.ready() && state.stopped && !state.started &&
                     !c.engineEnabled && Display13FBIRQ::consumersStopped(io,7,c.transcoders);
                 if(!stopped || current.status!=Display13Clock::Status::Complete)return false;
-                cdclk=Display13Clock::set(clockIO,current.nativeMaxHz(),{true,true,0});
+                cdclk=Display13Clock::set(clockIO,current.nativeMaxHz(),{true,true,0},display13ClockVariant());
                 if(cdclk.status!=Display13Clock::ChangeStatus::Complete) {
                     adlnFault(c.clockFaulted,__LINE__);return false;
                 }

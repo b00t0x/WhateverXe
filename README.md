@@ -25,6 +25,7 @@ Sequoia and Tahoe accept compatible updates within their OS family. Future Apple
 - Twin Lake: 32-EU configurations.
 - Alder Lake-H: 96-EU configurations, including single-channel operation.
 - Alder Lake-S: UHD Graphics 770.
+- Raptor Lake-U: 48-EU Intel Processor U300 on Big Sur.
 
 See [tested features and known issues](#tested-features-and-known-issues) for OS coverage and display configurations. PCI IDs are listed in [device selection](docs/device-selection.md).
 
@@ -32,13 +33,12 @@ See [tested features and known issues](#tested-features-and-known-issues) for OS
 
 - Other supported Tiger Lake-U/H35 configurations, including 96 EU, and Tiger Lake-H45.
 - Other supported Alder Lake-N / Twin Lake configurations.
-- Other supported Alder Lake-H/P/U and Raptor Lake-H/P configurations.
+- Other supported Alder Lake-H/P/U and Raptor Lake-H/P/U configurations.
 - Other supported Alder Lake-S/HX and Raptor Lake-S/HX configurations.
 - Internal eDP on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P is implemented but has not been tested on hardware.
 
 ### Further implementation required
 
-- Raptor Lake-U: dedicated display-clock handling is not implemented.
 - Rocket Lake-S: display control requires additional support.
 
 ### No support planned
@@ -81,6 +81,7 @@ These settings are unnecessary at 96MB and do not increase firmware-allocated me
 ### Other settings
 
 - Add `SSDT-PNLF` for internal-display brightness control.
+- The tested MiniBook X U300 setup uses `-wex-dsi-adopt` to adopt the firmware’s internal DSI scanout.
 - GPU selection is automatic; a `device-id` override is normally unnecessary.
 - Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P select tiling automatically. Do not use `-yTileDisable`; `AAPL,GfxYTile` is unnecessary.
 
@@ -94,10 +95,11 @@ The common regression checks cover Metal, OpenGL, OpenCL, hardware H.264 encode/
 | Tiger Lake laptops | Big Sur–Tahoe: 48 EU, internal eDP and brightness, HDMI/USB-C, up to three displays and display off/on |
 | Alder Lake-N mini PCs | Big Sur–Tahoe: 16/24 EU, two 1080p60 HDMI displays and display off/on |
 | Alder Lake-N / Twin Lake laptops | MIPI DSI on MicroPC 2 (N250) and MiniBook X N100. Big Sur: brightness, rotation, display off/on and external HDMI/USB-C coexistence; MicroPC 2 also has HiDPI and up to three displays. Tahoe: MicroPC 2 internal/external displays, brightness, rotation and HiDPI |
+| Raptor Lake-U laptop | Big Sur: MiniBook X U300, internal MIPI DSI at 1200×1920 @ 50 Hz, Metal compute/render, OpenGL, hardware H.264 encode/decode and HEVC decode |
 | Alder Lake-H | Big Sur–Tahoe: 96 EU, three displays using HDMI and a DP-to-HDMI adapter. Single-channel `4626` graphics acceleration checked on Big Sur |
 | Alder Lake-S | Big Sur–Tahoe: UHD 770, HDMI/DP/USB-C and up to three displays; Safari video, with Widevine checked on Big Sur/Tahoe |
 
-MIPI DSI support is **experimental and tested only on GPD MicroPC 2 and CHUWI MiniBook X N100**. Do not expect it to work on other devices.
+MIPI DSI support is **experimental**. The tested panels are those in the GPD MicroPC 2 and CHUWI MiniBook X N100 and U300.
 
 ### Known issues and limits
 
@@ -109,7 +111,6 @@ MIPI DSI support is **experimental and tested only on GPD MicroPC 2 and CHUWI Mi
 
 ### Roadmap
 
-- Implement Raptor Lake-U display-clock support.
 - Complete DisplayPort, USB-C and internal-display support on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P.
 - Improve display reconnection reliability and investigate full system sleep/wake.
 

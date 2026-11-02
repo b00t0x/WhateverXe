@@ -247,7 +247,8 @@ template<class IO> bool start(IO &io,XELPComboClock::ClockAllocation &allocation
        !a.rmw(0x6B0C0,0xF000,0x4000) || !a.set(0x6B030,p.transport,~(1U<<20)) ||
        !a.set(0x6B400,p.function))return false;
     s.stage=Stage::Link;
-    if(!a.wait(0x6B030,1U<<20,1U<<20,2500,10) || !a.wait(0x6B0D8,0x30001,0,2500,10) ||
+    // Some DSI panels need longer than 2.5 ms after the transcoder is configured.
+    if(!a.wait(0x6B030,1U<<20,1U<<20,10000,10) || !a.wait(0x6B0D8,0x30001,0,2500,10) ||
        !a.wait(0x6B0D0,0x1FFF,0x1040,100,10))return false;
     s.stage=Stage::Ready;s.started=true;return true;
 }

@@ -29,6 +29,10 @@ int main(int argc,char **argv) {
     assert(packet(0x15,{data,2}).header==0x40122915);
     assert(packet(0x39,{data,5}).header==0xC0000539);
     assert(!packet(6,{data,1}).valid&&!packet(5,{nullptr,1}).valid&&!packet(0x39,{data,257}).valid);
+    const uint8_t generic[]={0xde,0};
+    Mock tx;Host genericHost(true);
+    assert(genericHost.send(tx,0x29,{generic,2}));
+    assert(tx.h.size()==1 && tx.h[0]==0xc0000229 && tx.p.size()==1 && tx.p[0]==0xde);
     Mock io;Host off;assert(!off.send(io,5,{data,1})&&off.error==HostError::Disabled&&io.h.empty());
     Host ok(true);assert(ok.send(io,0x39,{data,5})&&ok.pending);
     assert(io.p.size()==2&&io.p[0]==0x56341229&&io.p[1]==0x78);

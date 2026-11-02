@@ -135,8 +135,11 @@ template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const P
         bool gpio(unsigned role,unsigned value){return this->io.gpio(role,value);}
     } port{io};
     const auto sequence=[&](unsigned id) {
-        const bool video=r.stage==Stage::BacklightOff || r.stage==Stage::TranscoderOn || r.stage==Stage::BacklightOn;
-        const auto budget=video?videoCreditBudgetUs(profile.mode):100;
+        // INIT can queue a full burst of LP payloads before its first delay.
+        // Wait for that burst to drain before the next panel operation.
+        const bool frameBudget=r.stage==Stage::Init || r.stage==Stage::BacklightOff ||
+            r.stage==Stage::TranscoderOn || r.stage==Stage::BacklightOn;
+        const auto budget=frameBudget?videoCreditBudgetUs(profile.mode):100;
         if(!r.host.run(port,profile.sequences,id,budget)){r.error=Error::Sequence;return false;}return true;
     };
     const auto delay=[&](unsigned index) {
