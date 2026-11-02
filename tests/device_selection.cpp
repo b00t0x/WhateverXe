@@ -25,7 +25,7 @@ int main() {
   assert(!strcmp(model(f),entry.model));
   auto nonIntel=select(0x123410DE,0,true,&value,4);assert(!nonIntel.admitted());
  }
- assert(implemented==41); // Recognition of other table rows adds no native backend.
+ assert(implemented==60); // Recognition of other table rows adds no native backend.
  uint32_t id=0x46D2;
  assert(select(0x12348086,0,true,&id,4).admitted());
  assert(select(0x12348086,1,true,&id,4).admitted());

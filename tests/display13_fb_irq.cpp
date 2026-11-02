@@ -13,7 +13,7 @@ struct IO {
     uint32_t rejectRegister {UINT32_MAX};
     IO() {
         r[Master]=r[GfxMaster]=0;r[DDIControl]=0x3300;r[0x64100]=r[0x64000]=0;
-        r[TCControl]=0;
+        r[TCControl]=r[NorthControl]=0;
         r[0xC4004]=~0U;r[0xC4008]=r[0xC400C]=0;
         for(unsigned p=0;p<3;++p) {
             r[0x70008+p*0x1000]=p ? 0 : 0xC0000000;
@@ -36,7 +36,7 @@ struct IO {
         writes.push_back(reg);check(reg);assert(r.count(reg));
         if(reg==rejectRegister)return;
         if(reg==Master || reg==GfxMaster) {r[reg]=(r[reg]&~Enable)|(rejectEnable ? 0 : value&Enable);return;}
-        if(reg==TCControl) {r[reg]=(value&~0x333333U)|((r[reg]&0x333333U)&~value);return;}
+        if(reg==TCControl || reg==NorthControl) {r[reg]=(value&~0x333333U)|((r[reg]&0x333333U)&~value);return;}
         if(reg==DDIControl) {r[reg]=(value&~0x3333U)|((r[reg]&0x3333U)&~value);return;}
         for(unsigned p=0;p<3;++p) {
             if(reg==PipeIIR(p)) {r[reg]&=~value;return;}
@@ -44,10 +44,55 @@ struct IO {
                 r[reg]=(value&~0xFU)|((r[reg]&0xFU)&~value);return;
             }
         }
-        if(reg==0xC4008)r[reg]&=~value;else r[reg]=value;
+        if(reg==0xC4008 || reg==HPDBank)r[reg]&=~value;else r[reg]=value;
     }
 };
 int main() {
+    // DSI0 can feed A/B/C. IRQ/frame/plane banks follow the pipe, while
+    // control/function come from DSI0. Keep external A active for B/C cases.
+    for(unsigned pipe=0;pipe<3;++pipe) {
+        IO io;State s;s.transcoders.dsi0Pipe=pipe;
+        io.r[0x70008+0x1000*pipe]=0;io.r[0x7B008]=0xC0000000;
+        const uint32_t inputs[]={0,5,6};io.r[0x6B400]=0x80000006|(inputs[pipe]<<12);
+        const auto expected=(1U<<pipe)|(pipe?1U:0U);
+        auto actual=readActivePipes(io,7,s.transcoders);assert(actual.status==Status::Complete && actual.active==expected);
+        assert(!consumersStopped(io,1U<<pipe,s.transcoders));
+        io.r[DDIControl]|=12; // HPD-A enable + OUTPUT_DATA (panel reset).
+        assert(enable(io,s,0,NativeGT,expected,pipe?2U:0U)==Status::Complete);
+        assert(s.active==expected && (io.r[DDIControl]&12)==4);
+        assert(!(io.r[0xC400C]&(1U<<16)) && (io.r[0xC4004]&(1U<<16)));
+        io.r[Master]=0;s.enabled=false;
+        const auto before=io.writes.size();
+        assert(parkStoppedPipe(io,s,pipe,0,0,0)==Status::Topology && io.writes.size()==before);
+        io.r[0x7B008]=0x40000000;
+        assert(readActivePipes(io,7,s.transcoders).status==Status::Topology);
+        assert(!consumersStopped(io,1U<<pipe,s.transcoders));
+        io.r[0x7B008]=0;assert(!consumersStopped(io,1U<<pipe,s.transcoders)); // DSI function still enabled.
+        io.r[0x6B400]&=~Enable;assert(consumersStopped(io,1U<<pipe,s.transcoders));
+        assert(parkStoppedPipe(io,s,pipe,0,0,0)==Status::Complete && s.active==(pipe?1U:0U));
+        io.wells&=~(1U<<(10+2*pipe));
+        assert(!consumersStopped(io,1U<<pipe,s.transcoders));
+    }
+    {IO io;Display13Transcoder::Bindings b{0};io.r[0x70008]=0;
+     io.r[0x7B008]=0xC0000000;io.r[0x6B400]=0x80005006;
+     assert(readActivePipes(io,7,b).status==Status::Readback); // Stale binding to A, hardware feeds B.
+     io.r[0x6B400]=0x80000006;io.r[0x70008]=0xC0000000;
+     assert(readActivePipes(io,7,b).status==Status::Readback); // Two timing consumers.
+     b.dsi0Pipe=3;assert(readActivePipes(io,7,b).status==Status::Topology);}
+    // DP-alt and HDMI notifications use different native output words.
+    // A short pulse must not become a fake fixed-DP hotplug on the same DDI.
+    for(unsigned tc=0;tc<4;++tc)for(unsigned pulse:{1U,2U,3U}) {
+        IO io;State state;const auto alt=8U<<tc,north=1U<<(16+tc);
+        assert(enable(io,state,0,0,1,2|alt,alt)==Status::Complete);
+        assert((io.r[HPDBank+4]&north) && !(io.r[0xc400c]&(1U<<(24+tc))));
+        io.r[Master]=Enable|(1U<<21)|(1U<<23);
+        io.r[HPDBank]=north|(1U<<tc); // masked TBT status remains untouched
+        io.r[NorthControl]|=pulse<<(4*tc);io.r[DDIControl]|=0x20;io.r[0xc4008]=1U<<17;
+        const auto e=collect(io,state);
+        const auto expected=((pulse&1)?2U:0U)|((pulse&2)?1U:0U);
+        assert(e.status==Status::Complete && e.aux==(expected<<(2*tc)) && e.hotplug==4);
+        assert(io.r[HPDBank]==(1U<<tc) && !(io.r[NorthControl]&(3U<<(4*tc))));
+    }
     // Actual TC1-only firmware enable masks: north TC3/TBT3 and PCH DDI B.
     {IO io;State state;io.r[HPDBank+4]=0x40004;io.r[HPDBank-4]=0;
      io.r[0xC400C]=0x07020000;io.r[0xC4004]=0x38853f07;io.r[0xC4008]=0x20000;
@@ -150,7 +195,24 @@ int main() {
          reg==DSBInterrupt(1,0) || reg==DSBInterrupt(1,1) || reg==DSBInterrupt(1,2));
      for(auto pair:before)if(std::find(io.writes.begin(),io.writes.end(),pair.first)==io.writes.end())assert(io.r[pair.first]==pair.second);
      io.writes.clear();assert(extendActivePipes(io,state,3)==Status::Complete && io.writes.empty());
-     io.r[0x71008]=0;assert(extendActivePipes(io,state,3)==Status::Topology && io.writes.empty());
+     io.r[0x71008]=0;assert(extendActivePipes(io,state,3)==Status::Complete && state.active==3 && io.writes.empty());
+    }
+    // Wake DSI A while a stopped USB-C peer C retains its armed bank.
+    // No peer notification, pending completion, master or GT may be reset.
+    {IO io;State state;state.transcoders.dsi0Pipe=0;io.r[0x70008]=0;
+     io.r[0x7B008]=0;io.r[0x6B400]=6;io.r[0x72008]=0xC0000000;
+     assert(enable(io,state,0,NativeGT,4,2)==Status::Complete);
+     io.r[0x72008]=0;io.r[0x7B008]=0xC0000000;io.r[0x6B400]=0x80000006;
+     io.r[PipeIIR(2)]=8;io.r[DSBInterrupt(2,0)]|=1;
+     io.r[Master]|=1U<<18;io.r[GfxMaster]|=NativeGT;
+     const auto before=io.r;io.writes.clear();
+     assert(readActivePipes(io,7,state.transcoders).active==1);
+     assert(extendActivePipes(io,state,7)==Status::Complete && state.active==5 && !state.faulted);
+     for(auto reg:io.writes)assert(reg==PipeIIR(0)-4 || reg==PipeIIR(0)+4 ||
+         reg==DSBInterrupt(0,0) || reg==DSBInterrupt(0,1) || reg==DSBInterrupt(0,2));
+     for(auto pair:before)if(std::find(io.writes.begin(),io.writes.end(),pair.first)==io.writes.end())assert(io.r[pair.first]==pair.second);
+     io.r[0x71008]=0xC0000000;io.r[0x72008]=0xC0000000;
+     assert(extendActivePipes(io,state,7)==Status::Complete && state.active==7);
     }
     {IO io;io.wells=0x403;io.reads.clear();assert(readActivePipes(io,3).active==1);
      assert(std::find(io.reads.begin(),io.reads.end(),0x71008)==io.reads.end());

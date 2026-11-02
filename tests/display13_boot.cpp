@@ -160,6 +160,7 @@ struct Runtime : IO {
     }
     bool inheritedVerified(uintptr_t,uintptr_t,unsigned){return false;}
     bool powerHeld(){return mode.accessLease.owner && mode.auxLease.owner && Display13Power::held(*this,power,mode.auxLease.domains);}
+    bool retainedOwned(unsigned d){return owned(d);}
     bool owned(unsigned d){return d==port.ddi && mode.phase==Display13TC::Mode::Phase::Active && mode.ownership.active && native==4;}
     bool quiescent(unsigned d){return d==port.ddi && !(read(port.buffer)&0x80000000U);}
     bool quiescent(uintptr_t,uintptr_t,unsigned d){return quiescent(d) && !(read(port.pll)&0xcc000000U) && !ddi.owner;}
@@ -297,6 +298,29 @@ static void unusedTCBoot() {
     assert(io.writes.size()==1 && io.writes[0].offset==0x64300 && io.writes[0].value==0x80);
     auto again=Display13Boot::releaseUnusedTC(io,AlderLakeN::readDisplay(io,true),true,w);
     assert(again.status==Display13Boot::Status::Complete && again.writes==0);
+    // DSI-only GOP firmware can leave DP-alt ownership with no TC output.
+    {IO t;auto wiring=setup(t);wiring.hdmi&=~8U;wiring.ddc[3]=0;wiring.dp=wiring.typeC=8;
+     t.regs[0x161500]=0x1d;const auto before=t.regs;
+     const auto released=Display13Boot::releaseUnusedTC(t,AlderLakeN::readDisplay(t,true),true,wiring);
+     assert(released.status==Display13Boot::Status::Complete && released.cleared==8 && released.writes==1);
+     for(auto x:before)if(x.first!=0x64300)assert(t.regs[x.first]==x.second);
+     t.regs[0x64300]=0xc0;t.regs[0x161500]=6;t.writes.clear();
+     assert(Display13Boot::releaseUnusedTC(t,AlderLakeN::readDisplay(t,true),true,wiring).status!=Display13Boot::Status::Complete && t.writes.empty());}
+    // Firmware may leave the idle port mux ungated after the last OS used it.
+    for(unsigned alt=0;alt<2;++alt) {
+        IO t;auto wiring=setup(t);
+        if(alt){wiring.hdmi&=~8U;wiring.ddc[3]=0;wiring.dp=wiring.typeC=8;t.regs[0x161500]=0x1d;}
+        t.regs[Display13TC::Clock::Gate]&=~(1U<<12);const auto before=t.regs;
+        const auto released=Display13Boot::releaseUnusedTC(t,AlderLakeN::readDisplay(t,true),true,wiring);
+        assert(released.status==Display13Boot::Status::Complete && released.cleared==8 && released.writes==2);
+        assert(t.writes[0].offset==Display13TC::Clock::Gate && t.writes[0].value==(before.at(Display13TC::Clock::Gate)|(1U<<12)));
+        assert(t.writes[1].offset==0x64300 && t.writes[1].value==0x80);
+        for(auto x:before)if(x.first!=0x64300 && x.first!=Display13TC::Clock::Gate)assert(t.regs[x.first]==x.second);
+        IO failed;auto fw=setup(failed);failed.regs[Display13TC::Clock::Gate]&=~(1U<<12);
+        failed.failWrite=Display13TC::Clock::Gate;
+        const auto rejected=Display13Boot::releaseUnusedTC(failed,AlderLakeN::readDisplay(failed,true),true,fw);
+        assert(rejected.status==Display13Boot::Status::Readback && failed.regs[0x64300]==0xc0 && failed.writes.size()==1);
+    }
     // Any live/ambiguous resource prevents release of this unclassified port.
     for(unsigned fault=0;fault<9;++fault) {
         IO t;auto wiring=setup(t);
@@ -305,7 +329,7 @@ static void unusedTCBoot() {
         if(fault==2)t.regs[0x161500]|=1;
         if(fault==3)t.regs[0x4610C]=0x80000000;
         if(fault==4)t.regs[0x46038]=0xCC000000;
-        if(fault==5)t.regs[Display13TC::Clock::Gate]&=~(1U<<12);
+        if(fault==5)t.regs[Display13TC::Clock::Gate]=UINT32_MAX;
         if(fault==6)t.regs[0x64310]=0x80000000;
         if(fault==7)t.regs[0x64300]=UINT32_MAX;
         if(fault==8)t.regs[0x161500]=UINT32_MAX;

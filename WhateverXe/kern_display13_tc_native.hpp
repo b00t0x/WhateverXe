@@ -26,6 +26,12 @@ static constexpr Entry entries[]={
     {"__ZN14AppleIntelPort15writeRegister32Ejj",0x1fea8,{0x55,0x48,0x89,0xe5,0x48,0xff,0x5,0x9d,0x73,0xb,0x0,0x48,0x8b,0xbf,0x78,0x5,0x0,0x0,0x89,0xf6}},
 
 };
+// Nonzero base Mode skips the reset callback and records only software mode.
+// DSI uses mode1 through this exact branch, never the hardware HAL setter.
+static constexpr uint32_t baseModeBranchOffset=0x1b4db;
+static constexpr uint8_t baseModeBranch[]={0x85,0xf6,0x75,0x2e};
+static constexpr uint32_t baseModeStoreOffset=0x1b50d;
+static constexpr uint8_t baseModeStore[]={0x41,0x89,0x9e,0x50,0x05,0x00,0x00,0x31,0xc0,0x5b,0x41,0x5e,0x5d,0xc3};
 // Native clock replacements retain these DDI reference boundaries.
 // Boot Mode is acquired in PowerWell::init: native ports must already exist.
 // Full modesets stop the inherited link before LightUpDP programs its PLL.

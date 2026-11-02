@@ -38,10 +38,15 @@ struct Display13FBDBUFIO {void *map;};
 void adlnFault(bool &fault,unsigned){fault=true;}
 void adlnPublishMemory(const char*,unsigned,void*,size_t){}
 struct XE {
- bool display13FramebufferRequested=true;unsigned adlnOutputWiring=0x78;void *adlnPlatform{};
+ bool display13FramebufferRequested=true;struct Wiring{unsigned value=0x78,dsi=0;operator unsigned()const{return value;}Wiring &operator=(unsigned v){value=v;return *this;}}adlnOutputWiring;void *adlnPlatform{};
  uintptr_t orgAlderLakeNFreePath{},orgDisplay13FreeResources{},orgDisplay13AllocateResources{};
+ bool disposeDSIPath(IOService*,OSObject*);
  static bool adlnFreeStoppedPipe(IOService*);
  static void wrapAlderLakeNFreePath(IOService*,OSObject*);
+ static void drainDisplay13TCMode(unsigned ddi) {
+  assert(ddi==3 && ctlDepth && !ownerDepth);
+  assert(!display13FBPower.pipe[0].memoryFramebuffer && !display13FBPower.pipe[0].publishedScanout);
+ }
  static uint32_t releaseDisplay13Path(IOService*,OSObject*),retireDisplay13Paths(void*),wrapDisplay13FreeResources(void*);
  static bool display13RetirementHealthy(),wrapDisplay13AllocateResources(void*),retireDisplay13Controller(void*);
 }state,*callbackXE=&state;
@@ -51,6 +56,7 @@ TGLFBBinding::Readout adlnInspectPathBinding(IOService*f,OSObject*p,void*,unsign
  if(!p||Display13FBMemory::field<void*>(p,0x32b0)!=f)return {};
  return {TGLFBBinding::Status::Complete,pipe,3};
 }
+bool dsiLifecycleTarget(IOService*,OSObject*){return true;}
 // FUNCTIONS
 alignas(16) static uint8_t ctl[0x1c20],fb[0x4b90],peer[0x4b90],path[0x3730];
 static unsigned failure,memoryCalls,pathCalls,postCalls,transactionStops,allocCalls;
@@ -71,6 +77,13 @@ void nativePath(IOService*f,OSObject*p){
  if(failure==4)return; // no progress must terminate the enclosing native loop
  put(f,0x49e8,0U);put(f,0x49f0,static_cast<void*>(nullptr));
  put(p,0x3644,0U);put(p,0x32b0,static_cast<void*>(nullptr));put(p,0x3648,static_cast<void*>(nullptr));
+}
+unsigned dsiDisposals=0;bool dsiRefuse=false;
+bool XE::disposeDSIPath(IOService *f,OSObject *p){
+ assert(ctlDepth && fbDepth && !ownerDepth);++dsiDisposals;
+ if(dsiRefuse)return false;
+ put(f,0x49e8,0U);put(f,0x49f0,uintptr_t(0));put(p,0x3644,0U);put(p,0x32b0,uintptr_t(0));put(p,0x3648,uintptr_t(0));
+ return true;
 }
 void transactions(void*){assert(ctlDepth&&!fbDepth);++transactionStops;}
 void disable(void*f,bool){assert(ctlDepth&&!fbDepth);put(path,0x3644,failure==5?2U:1U);}
@@ -139,6 +152,14 @@ int main(int argc,char**argv){
  // completes. Clear only that synthetic peer for the empty-controller case.
  assert(!XE::retireDisplay13Controller(ctl));assert(pathCalls==1);
  display13FBPower.pipe[1]={};assert(XE::retireDisplay13Controller(ctl));assert(pathCalls==1);
+ // DSI selected at the real release boundary must never fall through to the
+ // normal audio/DDI cleanup body, including when its dedicated disposal fails.
+ setup(native);state.adlnOutputWiring.dsi=1;dsiRefuse=true;dsiDisposals=0;
+ assert(XE::wrapDisplay13FreeResources(fb)==kIOReturnNotReady && dsiDisposals==1 && !pathCalls && !postCalls);
+ assert(Display13FBMemory::field<void*>(path,0x32b0)==fb && display13FBPower.pipe[0].memoryFramebuffer==reinterpret_cast<IOService*>(fb));
+ setup(native);state.adlnOutputWiring.dsi=1;dsiRefuse=false;dsiDisposals=0;
+ assert(!XE::wrapDisplay13FreeResources(fb) && dsiDisposals==1 && !pathCalls && postCalls==4);
+ assert(!display13FBPower.pipe[0].memoryFramebuffer);
  setup(native);state.display13FramebufferRequested=false;display13FBPower.memoryFaulted=true;
  assert(XE::display13RetirementHealthy()&&XE::retireDisplay13Controller(nullptr)); // other backends unchanged
  if(image)munmap(image,bytes);

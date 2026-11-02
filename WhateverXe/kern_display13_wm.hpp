@@ -155,8 +155,11 @@ inline uint32_t cursorWidth(uint32_t control) {
         default:return 0;
     }
 }
+inline bool cursorWidthSupported(uint32_t width) {
+    return width==64 || width==128 || width==256;
+}
 inline bool cursorMatches(uint32_t control,uint32_t width,bool allowDisabled=false) {
-    if(control==UINT32_MAX || (width!=64 && width!=128 && width!=256))return false;
+    if(control==UINT32_MAX || !cursorWidthSupported(width))return false;
     return (!(control&0x27) && allowDisabled) || cursorWidth(control)==width;
 }
 inline Level yTiledLevel(uint32_t width,uint32_t htotal,uint64_t pixelHz,uint32_t latencyUs,uint32_t allocation) {
@@ -240,6 +243,7 @@ struct Snapshot {
     uint32_t pipeLineTime {};
     uint64_t pipePixelHz {};
     unsigned pipeIndex {}; // Display pipe, not physical HDMI DDI or framebuffer index.
+    Display13Transcoder::Bindings transcoders;
 };
 // FlushTriggerPackets writes these native packets in append order. A flip
 // queued after WM enable may supersede the surface sampled at enable time.
@@ -289,7 +293,7 @@ inline bool clockFits(const Snapshot &s,uint64_t nativeHz) {
         (!s.cursorActive || (s.cursor && s.cursor->status==Status::Complete &&
             s.cursor->pixelHz && s.cursor->pixelHz<=nativeHz/2));
 }
-enum class LatchCheck : uint32_t {None,Controls,OtherPlane,DSB,Clock,Registers,Live,Frame,AwaitingScanout};
+enum class LatchCheck : uint32_t {None,Controls,OtherPlane,DSB,Clock,Registers,Live,Frame,AwaitingScanout,AwaitingFlip};
 struct Latch {
     Status status {Status::Unavailable};
     uint32_t frameBefore {},frameAfter {},waitUs {},budgetUs {},lastReg {},expected {},observed {};
@@ -321,17 +325,18 @@ template<class IO> bool verifyWM(IO &io,Latch &r,const Plan &p,bool cursor,bool 
 // nor the workloop, so hardware can advance while delayUs sleeps.
 template<class IO> Latch latch(IO &io,const Snapshot &s) {
     Latch r;
-    if(s.pipeIndex>=3) {r.status=Status::Input;return r;}
+    if(s.pipeIndex>=3 || !s.transcoders.valid()) {r.status=Status::Input;return r;}
     const uint32_t bank=s.pipeIndex*0x1000;
+    const auto timing=s.transcoders.timing(s.pipeIndex);
     if(!s.primary || s.primary->status!=Status::Complete || !s.primary->normal[0].enable ||
        !s.primary->sagv.enable || !clockFits(s,s.nativeClockHz) || !s.pipeLineTime || s.pipeLineTime>511 ||
        (s.cursorActive && (!s.cursor || s.cursor->status!=Status::Complete || !s.cursor->sagv.enable)))return r;
-    const uint32_t required[] {0x45404,0x70008+bank,0x70180+bank,0x70080+bank,0x70190+bank,0x60000+bank,0x6000C+bank,0x70040+bank};
+    const uint32_t required[] {0x45404,0x70008+bank,0x70180+bank,0x70080+bank,0x70190+bank,timing,timing+0xC,0x70040+bank};
     for(auto reg:required)
         if(!io.readable(reg))return r;
     const auto wells=io.read(0x45404);
     if(!Display13FBIRQ::powered(wells,s.pipeIndex)) {r.status=Status::Power;return r;}
-    const auto ht=io.read(0x60000+bank),vt=io.read(0x6000C+bank);
+    const auto ht=io.read(timing),vt=io.read(timing+0xC);
     const auto htotal=((ht>>16)&0x3FFF)+1,vtotal=((vt>>16)&0x3FFF)+1;
     if(ht==UINT32_MAX || vt==UINT32_MAX || htotal!=s.primary->htotal || !s.primary->height || s.primary->height>8192 || vtotal<s.primary->height || !s.primary->pixelHz) {r.status=Status::Input;return r;}
     const auto period=ceilDiv(uint64_t(htotal)*vtotal*1000000,s.pipePixelHz);
@@ -343,14 +348,15 @@ template<class IO> Latch latch(IO &io,const Snapshot &s) {
     for(;;) {
         const auto power=io.read(0x45404);
         if(!Display13FBIRQ::powered(power,s.pipeIndex)) {r.status=Status::Power;return r;}
-        const auto pipe=io.read(0x70008+bank),plane=io.read(0x70180+bank),cursor=io.read(0x70080+bank);
+        const auto pipe=Display13Transcoder::control(io,s.pipeIndex,s.transcoders),plane=io.read(0x70180+bank),cursor=io.read(0x70080+bank);
         r.check=LatchCheck::Controls;r.pipeControl=pipe;r.planeControl=plane;r.cursorControl=cursor;
-        // Native enablePlane may return before any scanout is attached, while
-        // programPipeScaler still flushes a zero SURF trigger via armUpdate.
-        // A disabled primary with no intended surface is not a live latch to
-        // prove yet. Keep WM/DDB pending; never retire storage or certify the
-        // shared clock until a later real plane/surface update passes below.
-        const bool preparing=plane!=UINT32_MAX && !(plane&Enabled) && !s.primarySurface && !cursor && !s.cursorActive;
+        // Native enablePlane/scaler can flush WM before enabling scanout.
+        // Reconnect may retain a nonzero SURF from the previous path, so a
+        // surface address alone cannot distinguish this from initial setup.
+        // A disabled primary has no live latch to prove, even if the cursor
+        // is already active. Keep WM/DDB pending and the shared clock
+        // unqualified until a later enabled plane passes the full proof.
+        const bool preparing=plane!=UINT32_MAX && !(plane&Enabled);
         if(pipe==UINT32_MAX || plane==UINT32_MAX || cursor==UINT32_MAX || (pipe&0xC0000000)!=0xC0000000 ||
            (!preparing && (!(plane&Enabled) || !supportedRGBControl(plane) || (((plane>>10)&7)==4)!=s.primary->yTiled)) ||
            bool(cursor&0x27)!=s.cursorActive || (s.cursorActive && !cursorMatches(cursor,s.cursor->width))) {r.status=Status::Conflict;return r;}
@@ -373,7 +379,7 @@ template<class IO> Latch latch(IO &io,const Snapshot &s) {
         if(r.clockHz!=s.nativeClockHz) {r.status=Status::Conflict;return r;}
         if(preparing) {r.check=LatchCheck::AwaitingScanout;return r;}
         r.check=LatchCheck::Registers;
-        if(!compare(io,r,0x60000+bank,ht) || !compare(io,r,0x6000C+bank,vt) || !compare(io,r,0x45270+4*s.pipeIndex,s.pipeLineTime) ||
+        if(!compare(io,r,timing,ht) || !compare(io,r,timing+0xC,vt) || !compare(io,r,0x45270+4*s.pipeIndex,s.pipeLineTime) ||
            !compare(io,r,0x70190+bank,((s.primary->height-1)<<16)|(s.primary->width-1)) ||
            !compare(io,r,0x7027C+bank,s.primaryDDB) || !compare(io,r,0x7017C+bank,s.cursorDDB) ||
            !compare(io,r,0x45004,s.ipc) || !compare(io,r,0x7019C+bank,s.primarySurface) ||
@@ -389,12 +395,20 @@ template<class IO> Latch latch(IO &io,const Snapshot &s) {
             // readback catches up (observed for a native direct cursor swap).
             // Keep every programmed/control/clock check on each poll; qualify
             // retirement only after both actual live surfaces match. A stable
-            // mismatch at the existing deadline remains a Readback failure.
+            // mismatch at the existing deadline leaves retirement pending.
+            // A later native flush may prove it; do not fault the owner or
+            // infer success from the programmed surface. WM/DDB resources
+            // and clock qualification remain held until a complete proof.
             r.check=LatchCheck::Live;
             const bool live=compare(io,r,0x701AC+bank,s.primarySurface) &&
                 (!s.cursorActive || compare(io,r,0x700AC+bank,s.cursorSurface));
             if(live) {r.status=Status::Complete;return r;}
-            if(r.waitUs>=r.budgetUs)return r;
+            if(r.waitUs>=r.budgetUs) {
+                if(r.status==Status::Readback && r.observed!=UINT32_MAX) {
+                    r.status=Status::Unavailable;r.check=LatchCheck::AwaitingFlip;
+                }
+                return r;
+            }
         }
         if(r.waitUs>=r.budgetUs) {r.status=Status::CommitTimeout;return r;}
         io.delayUs(1000);

@@ -1,5 +1,6 @@
 #include "kern_xelp_os.hpp"
 #include <cassert>
+#include <cstdio>
 
 int main() {
     using namespace XELP;
@@ -12,6 +13,14 @@ int main() {
     assert(kernelOS("Darwin Kernel Version 24.6.1: update/RELEASE_X86_64")==OS::Sequoia);
     assert(kernelOS("Darwin Kernel Version 25.6.1: update/RELEASE_X86_64")==OS::Tahoe);
     assert(kernelOS("Darwin Kernel Version 25.7.0: update/RELEASE_X86_64")==OS::Tahoe);
+    // Metamorphic family acceptance: vary servicing minor/patch and arbitrary
+    // build metadata, without adding known Apple builds to an allowlist.
+    for(unsigned major=24;major<=25;++major) for(unsigned minor=6;minor<(major==24 ? 7U : 9U);++minor)
+        for(unsigned patch=0;patch<100;patch+=7) {
+            char version[160];
+            snprintf(version,sizeof(version),"Darwin Kernel Version %u.%u.%u: synthetic-%u/RELEASE_X86_64",major,minor,patch,minor*109+patch);
+            assert(kernelOS(version)==(major==24 ? OS::Sequoia : OS::Tahoe));
+        }
     const char *rejected[] {
         "Darwin Kernel Version 23.6.0: update/RELEASE_X86_64",
         "Darwin Kernel Version 24.5.0: update/RELEASE_X86_64",

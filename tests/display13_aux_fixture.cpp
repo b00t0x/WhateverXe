@@ -2,6 +2,7 @@
 // completion and kernel imports are mocked; optional native callers execute
 // their original get/put, retry, buffer-copy and result paths.
 bool failGet=false,failPut=false,failCommand=false;unsigned auxCalls=0,auxResult=0;
+bool disconnectDuringCommand=false,loseTCIdentity=false;
 void getAux(void *power,unsigned ddi){
  assert(!locked&&power==display13FBPower.power);auto &c=display13FBPower;Display13FBPowerIO io{c.map};
  if(failGet)c.map->drop=0x45444;
@@ -26,6 +27,8 @@ unsigned auxTransport(void *port,unsigned,uint32_t *packet,unsigned,bool){
  assert(c.bridge.putAUX(io,ddi).status==Display13Power::Status::Complete&&c.bridge.auxBusy());
  packet[0]=0;packet[1]=0x12345678;
  if(failCommand)c.map->regs[0x45444]=0;
+ if(disconnectDuringCommand)tcConnected=false;
+ if(loseTCIdentity)tcOwned=false;
  return auxResult;
 }
 unsigned syntheticFront(void *port,unsigned,void *data,unsigned){
@@ -48,6 +51,7 @@ void auxSetup(Fixture &f,Map &map,unsigned ddi,bool hdmi,unsigned mode){
  state.orgDisplay13ReadAUX=state.orgDisplay13WriteAUX=reinterpret_cast<uintptr_t>(syntheticFront);
  state.orgDisplay13I2CAUX=reinterpret_cast<uintptr_t>(syntheticI2C);state.orgDisplay13RunAUX=reinterpret_cast<uintptr_t>(auxTransport);
  failGet=failPut=failCommand=false;auxCalls=auxResult=0;
+ disconnectDuringCommand=loseTCIdentity=false;
  // Probe must work after all DDI/pipe owners are gone.
  Display13FBPowerIO io{&map};assert(c.bridge.putDDI(io,ddi).status==Display13Power::Status::Complete);
  assert(c.bridge.putPG(io,1).status==Display13Power::Status::Complete);
@@ -66,6 +70,37 @@ int main(int argc,char **argv){
   for(unsigned at:{0x1CEABU,0x1D19CU})redirect(image,at,0x300040,reinterpret_cast<uintptr_t>(stackFail));
  }
  unsigned cases=0;
+ // A selected DSI path must never reach native AUX get/put or HAL, even if
+ // its port object has the donor's AUX-A register coordinates initialized.
+ {Fixture f(0,0,0);Map map;auxSetup(f,map,0,false,1);
+  state.adlnOutputWiring.dp&=~1U;state.adlnOutputWiring.panel=0;state.adlnOutputWiring.dsi=1;
+  assert(Display13FBTopology::apply(f.platform,sizeof(f.platform),f.donor,state.adlnOutputWiring));
+  const auto reads=map.reads.size(),writes=map.writes.size();uint32_t data[5]{0xabcdef01};
+  assert(XE::wrapDisplay13ReadAUX(f.port,0x100,data,4)==kIOReturnNotReady);
+  assert(XE::wrapDisplay13WriteAUX(f.port,0x100,data,4)==kIOReturnNotReady);
+  assert(XE::wrapDisplay13I2CAUX(f.port,0,data,4,0)==kIOReturnNotReady);
+  assert(XE::wrapDisplay13RunAUX(f.port,0,data,4,false)==kIOReturnNotReady);
+  assert(!auxCalls && data[0]==0xabcdef01 && map.reads.size()==reads && map.writes.size()==writes);
+  assert(!display13FBPower.bridge.state.faulted && !display13FBPower.bridge.nativeAUXRefs(0));
+ }
+ // Exact production completion checks: a disconnect during AUX is a failed
+ // transaction, not a permanently faulted bridge. Lost ownership still is.
+ for(unsigned ddi=3;ddi<=6;++ddi)for(bool lost:{false,true})for(unsigned nativeError:{0U,0xE00002BCU}) {
+  Fixture f(0,0,ddi);Map map;auxSetup(f,map,ddi,false,3);auto &c=display13FBPower;
+  tcOwned=true;disconnectDuringCommand=true;loseTCIdentity=lost;auxResult=nativeError;
+  uint32_t data[5]{};
+  assert(XE::wrapDisplay13ReadAUX(f.port,0x202,data,4)==(nativeError?nativeError:kIOReturnNotReady));
+  assert(auxCalls==1 && !c.bridge.auxBusy() && c.bridge.state.faulted==lost);
+  assert(!data[0]);
+  if(!lost) {
+   assert(!c.bridge.nativeAUXRefs(ddi));
+   const auto calls=auxCalls;
+   assert(XE::wrapDisplay13ReadAUX(f.port,0x202,data,4)==kIOReturnNotReady && auxCalls==calls);
+   tcConnected=true;disconnectDuringCommand=false;auxResult=0;
+   assert(!XE::wrapDisplay13ReadAUX(f.port,0x202,data,4) && data[0]==0x12345678);
+   assert(!c.bridge.state.faulted && !c.bridge.nativeAUXRefs(ddi));
+  }
+ }
  for(unsigned ddi=0;ddi<2;++ddi)for(bool hdmi:{false,true})for(unsigned mode:{0U,1U})
  for(unsigned op=0;op<3;++op)for(unsigned fault=0;fault<5;++fault){
   Fixture f(0,0,ddi);Map map;auxSetup(f,map,ddi,hdmi,mode);auto &c=display13FBPower;

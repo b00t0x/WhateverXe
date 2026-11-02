@@ -14,8 +14,14 @@ Keep README.md and README_ja.md synchronized in the same change, including
 requirements, compatibility, links and examples. Do not add personal names or
 private identifying information to user documentation without explicit consent.
 
-Document required and optional boot arguments in both READMEs. Do not add
-migration instructions for unreleased internal revisions.
+Keep setup essentials prominent in both READMEs. Do not append hardware internals,
+diagnostic boot arguments or per-change validation details. MIPI DSI needs only
+its user-facing scope and limitations in README. Consolidate common regression
+coverage and describe only configuration-specific differences in the table.
+Preserve concise GPU-family lists grouped as hardware-tested, expected but untested,
+further implementation required, and no support planned. Reference a distant table
+by its section link rather than saying "below".
+Do not add migration instructions for unreleased internal revisions.
 Public docs describe current settings and requirements. Keep
 investigation notes, implementation diaries, internal diagnostic layouts,
 experimental procedures and live machine evidence in the maintainer's private

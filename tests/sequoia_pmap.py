@@ -1,39 +1,18 @@
 #!/usr/bin/env python3
-"""Execute actual 24H32 template bridges against a guarded synthetic pmap frame.
+"""Execute actual Sequoia template bridges against a guarded synthetic pmap frame.
 
 This checks instruction/register/flag semantics only, not native locking, TLBs,
 or GPU coherency. Optional --kernel checks all source guards against exact bytes.
 """
 from pathlib import Path
-import argparse,hashlib,re,struct,subprocess,tempfile
+import argparse,re,subprocess,tempfile
 R=Path(__file__).resolve().parents[1]
 s=(R/'WhateverXe/kern_xe.cpp').read_text()
-a=argparse.ArgumentParser();a.add_argument('--kernel',type=Path);a=a.parse_args()
+a=argparse.ArgumentParser();a.add_argument('--kernel',type=Path);a.add_argument('--hde-source',type=Path);a=a.parse_args()
 bridges='\n'.join(re.search(r'extern "C" __attribute__\(\(naked,used\)\) void tglSequoiaPmap'+kind+r'Bridge\(\) \{.*?\n\}',s,re.S)[0] for kind in ['New','Update'])
 if a.kernel:
- d=a.kernel.read_bytes()
- assert hashlib.sha256(d).hexdigest()=='fb8da6196bcc6828d0ea9c750239a9115854429cb24c1bb88437c66546019faa'
- segments=[];pos=32
- for _ in range(struct.unpack_from('<I',d,16)[0]):
-  command,size=struct.unpack_from('<II',d,pos)
-  if command==0x19:segments.append(struct.unpack_from('<4Q',d,pos+24))
-  pos+=size
- def read(va,n):
-  for base,vs,off,fs in segments:
-   if base<=va and va+n<=base+fs:return d[off+va-base:off+va-base+n]
-  raise ValueError(hex(va))
- block=s[s.index('static void tglPrepareSequoiaMMIOUC'):s.index('static void tglPrepareSonomaMMIOUC')]
- # Derive the addresses from the actual runtime guard expressions, so an
- # incorrect call-site offset cannot be hidden by a separate fixture offset.
- sites={}
- for base,offset,name in re.findall(r'!memcmp\(reinterpret_cast<void \*>\((fn|protect)(\+0x[0-9A-Fa-f]+)?\),([A-Za-z]+),sizeof',block):
-  sites[name]=(0 if base=='fn' else 0xffffff80003ffc50-0xffffff800042c890)+(int(offset[1:],16) if offset else 0)
- assert len(sites)==9,sites
- for name,offset in sites.items():
-  values=re.search(r'const uint8_t '+name+r'\[\] \{([^}]+)\}',block)[1]
-  values=bytes(int(v.strip(),0) for v in values.split(','))
-  assert read(0xffffff800042c890+offset,len(values))==values,name
- print('PASS: exact kernel SHA and all 9 runtime guards')
+ from pmap_kernel_contract import check
+ check(a.kernel,s,"Sequoia",a.hde_source)
 cpp=r'''#include <stdint.h>
 #include <initializer_list>
 #include <string.h>

@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -34,10 +35,10 @@ int main(int argc,char **argv) {
  assert(XELP::display13TCDPProbeCapable(xelpProbeCapabilities));
  assert(!XELP::display13TCDPProbeCapable(+[](uint32_t,uint32_t)->uint32_t{return 3;}));
  for(unsigned schema=0;schema<5;++schema)for(unsigned abi=0;abi<6;++abi)
-  assert(xelpProbeCapabilities(schema,abi)==(schema==1&&abi==3?(XELP::ProbeDisplay13ComboDP|XELP::ProbeDisplay13FixedTC|XELP::ProbeDisplay13FixedDP|XELP::ProbeDisplay13Panel):0));
+  assert(xelpProbeCapabilities(schema,abi)==(schema==1&&abi==3?(XELP::ProbeDisplay13ComboDP|XELP::ProbeDisplay13FixedTC|XELP::ProbeDisplay13FixedDP|XELP::ProbeDisplay13Panel|XELP::ProbeDisplay13DPAlt):0));
  assert(!XELP::display13ProbeCapable(+[](uint32_t,uint32_t)->uint32_t{return 0;}));
  assert(!XELP::display13ProbeCapable(+[](uint32_t,uint32_t)->uint32_t{return 2;}));
- assert(argc==2);const bool adln=!strncmp(argv[1],"adln",4);
+ assert(argc==2 || argc==3);const bool adln=!strncmp(argv[1],"adln",4);
  const bool rpls=!strncmp(argv[1],"rpls",4);
  const bool adls=!strncmp(argv[1],"adls",4) || rpls;
  const bool adlp=!strncmp(argv[1],"adlp",4) || !strncmp(argv[1],"rplp",4);
@@ -59,6 +60,7 @@ int main(int argc,char **argv) {
  if(fake){pci.identity=0x12348086;fakeID.value=adln?0x46D2:0x9A49;pci.property=&fakeID;}
  if(adlp){pci.identity=!strncmp(argv[1],"rplp",4)?0xA7A88086:0x46A68086;pci.revision=12;
   if(!strcmp(argv[1],"adlp-fb")){fakeID.value=0x9A49;pci.property=&fakeID;}}
+ if(argc==3)pci.identity=(uint32_t(strtoul(argv[2],nullptr,16))<<16)|0x8086;
  controller.provider=&pci;platform[0x12]=9;
  map.address=reinterpret_cast<uintptr_t>(mmio.data());map.bytes=mmio.size();
  field<void *>(&controller,0xC40)=&access;field<void *>(&controller,0xD40)=platform;

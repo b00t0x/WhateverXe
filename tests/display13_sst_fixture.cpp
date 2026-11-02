@@ -44,11 +44,12 @@ struct Display13FBPowerIO {
 // TC lifecycle itself is exercised by display13_tc_mode. This fixture
 // supplies the ownership witness and verifies the frontend does not borrow
 // Combo leases; false is the default for all existing Combo regressions.
-bool tcOwned=false,tcLinked=false;
+bool tcOwned=false,tcLinked=false,tcConnected=true;
 struct Display13FBTCIO {
  OSObject *object;unsigned tc;
- bool owned(unsigned d){return tcOwned && tc<4 && d==tc+3 && Display13FBMemory::field<unsigned>(object,0x550)==4;}
- bool linkHeld(){return tcLinked && owned(tc+3);}
+ bool retainedOwned(unsigned d){return tcOwned && tc<4 && d==tc+3 && (Display13FBMemory::field<unsigned>(object,0x550)==4 || Display13FBMemory::field<unsigned>(object,0x550)==3);}
+ bool owned(unsigned d){return tcConnected && retainedOwned(d);}
+ bool linkHeld(){return tcLinked && retainedOwned(tc+3);}
 };
 struct Display13FBSSTIO {
  Map *map;uint32_t read(uint32_t r){assert(locked);return map->read(r);}
@@ -65,13 +66,14 @@ struct XE {
  Display13OutputWiring adlnOutputWiring;void *adlnPlatform=nullptr,*adlnTopologyController=nullptr;
  uintptr_t orgDisplay13TrainingPattern=0,orgDisplay13SignalLevels=0;
  uintptr_t orgDisplay13EnablePort=0,orgDisplay13DisablePort=0;
- static bool display13MainLinkAUX(void*,bool);
+ static bool display13MainLinkAUX(void*,bool,bool=false);
  static uint32_t wrapDisplay13EnablePort(void*);static uint32_t wrapDisplay13DisablePort(void*);
  static uint8_t *display13SSTPort(void*);static bool display13HDMIPort(void*);
  static uint32_t wrapDisplay13TCSignal(void*,uint32_t,uint32_t,void*){assert(false);return 1;}
  static uint32_t wrapDisplay13SignalLevels(void*,uint32_t,uint32_t,void*);
  static uint32_t wrapDisplay13TrainingPattern(void*,uint32_t);
 }state,*callbackXE=&state;
+uintptr_t dsiLogicalSurface(const void*){return 0;}
 // BINDING
 // FUNCTIONS
 unsigned nativeSignal(void*,unsigned,unsigned,void*){assert(!locked);++calls;return nativeResult;}
@@ -119,7 +121,7 @@ unsigned nativePattern(void *path,unsigned pattern){
 }
 void setup(Fixture &f,Map &map,unsigned ddi,unsigned pipe,unsigned lanes,unsigned rate,bool panel=false){
  display13FBPower.~Context();new(&display13FBPower)Context;state={};calls=nativeResult=0;bound=true;loseAfterNative=false;
- tcOwned=tcLinked=false;assert(objectRefs.empty());linkCalls=linkResult=0;changeBuffer=bufferIdle=true;loseLinkPower=false;
+ tcOwned=tcLinked=false;tcConnected=true;assert(objectRefs.empty());linkCalls=linkResult=0;changeBuffer=bufferIdle=true;loseLinkPower=false;
  auto &c=display13FBPower;c.controller=f.ctl;c.access=f.access;c.map=&map;
  currentPath=f.path;
  put(f.ctl,0xC8,c.power);put(c.power,0x10,static_cast<void *>(f.ctl));put(c.power,0x78,static_cast<void *>(f.access));
@@ -233,8 +235,9 @@ int main(int argc,char **argv){
  // TC SST frontend: real graph/bridge and native pattern replay. The
  // separate lifecycle suite proves the ownership witness supplied here.
  for(unsigned ddi=3;ddi<=6;++ddi)for(unsigned pipe=0;pipe<3;++pipe)
- for(unsigned lanes:{1U,2U,4U})for(unsigned rate:{6U,10U,20U,30U}){
+ for(unsigned lanes:{1U,2U,4U})for(unsigned rate:{6U,10U,20U,30U})for(bool alt:{false,true}){
   Fixture f(2-pipe,pipe,ddi);Map map;setup(f,map,ddi,pipe,lanes,rate);
+  if(alt){state.adlnOutputWiring.typeC=1U<<ddi;put(f.port,0x550,3U);}
   Display13FBPowerIO power{&map};auto &bridge=display13FBPower.bridge;
   Display13Power::Lease modeAUX;
   assert(Display13Power::acquire(power,bridge.state,modeAUX,Display13Power::auxDomain(ddi)).status==Display13Power::Status::Complete);
@@ -245,6 +248,8 @@ int main(int argc,char **argv){
   assert(map.regs[0x60400+0x1000*pipe]==(((ddi+1)<<27)|0x02000000|((lanes-1)<<1)));
   assert(!XE::wrapDisplay13EnablePort(f.port));
   assert(!XE::wrapDisplay13TrainingPattern(f.path,0));
+  tcConnected=false; // HPD/assignment disappeared before native disable.
+  assert(XE::wrapDisplay13EnablePort(f.port)==kIOReturnNotReady);
   assert(!XE::wrapDisplay13DisablePort(f.port));
   assert(objectRefs.empty() && Display13Power::held(power,bridge.state,Display13Power::auxDomain(ddi)));
   assert(!bridge.nativeAUXRefs(ddi));

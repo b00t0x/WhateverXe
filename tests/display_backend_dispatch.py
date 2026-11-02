@@ -5,7 +5,7 @@ import re,subprocess,tempfile
 r=Path(__file__).resolve().parents[1]
 s=(r/'WhateverXe/kern_xe.cpp').read_text()
 a=s.index('\t// Display dispatch is independent')
-b=s.index('\nstatic bool adlnWriterMappingBound();',a)
+b=s.index('\n}',a)+2
 body=s[a:b].rstrip()[:-1]
 kernel_start=s.index('\tif (adlnDetected || display13FramebufferRequested) {')
 kernel_end=s.index('\n\tif (tglRequested) {',kernel_start)

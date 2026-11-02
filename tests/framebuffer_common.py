@@ -60,6 +60,7 @@ struct KernelPatcher {
 };
 bool tglInstallSonomaSurfaceABI(KernelPatcher&,size_t,uintptr_t,size_t,bool){return surfaceOK;}
 bool xelpInstallNVRAMABI(KernelPatcher&,size_t,uintptr_t,size_t){return nvramOK;}
+unsigned shutdownCalls=0;
 struct XE {
  bool framebufferDonorAttempted=false,framebufferDonorCommonReady=false,framebufferBackendInstalled=false;
  bool display13FramebufferRequested=false,tglPlatformNVRAMReady=false,tglProbeReady=false,tglFramebufferInitReady=false;
@@ -69,6 +70,7 @@ struct XE {
  uintptr_t xelpProviderProbe=0x2000,xelpProviderConfigureProbe=0x3000;
  unsigned commonRuntimeCalls=0,backendCalls=0,startCalls=0;bool stopDuringStart=false,nativeOK=true;
  bool processFramebufferKext(KernelPatcher&,size_t,uintptr_t,size_t);
+ bool processDisplay13Shutdown(KernelPatcher&,size_t,uintptr_t,size_t){++shutdownCalls;return true;}
  bool processFramebufferCommon(KernelPatcher&,size_t,uintptr_t,size_t);
  bool processFramebufferDonorRuntime(KernelPatcher&,size_t,uintptr_t,size_t){++commonRuntimeCalls;return runtimeOK;}
  bool processFramebufferAGDC(KernelPatcher&,size_t,uintptr_t,size_t){return agdcOK;}
@@ -81,7 +83,7 @@ struct XE {
  static bool wrapFramebufferStart(IOService*,IOService*);
  static bool wrapDisplay13FramebufferStart(IOService*,IOService*);
  static bool wrapTGLFramebufferStart(IOService*,IOService*);
- static void wrapTGLProbePort(){}static void wrapFramebufferInit(){}static void wrapFramebufferComputeLanes(){}
+ static void wrapDisplay13ProbeMode(){}static void wrapTGLProbePort(){}static void wrapFramebufferInit(){}static void wrapFramebufferComputeLanes(){}
 };
 XE *callbackXE;
 bool XE::wrapDisplay13FramebufferStart(IOService*,IOService*){assert(callbackXE->display13FramebufferRequested);assert(!callbackXE->framebufferStartedController);if(callbackXE->stopDuringStart)callbackXE->tglLeasesStopping=true;++callbackXE->startCalls;return callbackXE->nativeOK;}
@@ -97,19 +99,29 @@ int main(int argc,char **argv){
   if(argc>1)assert(!memcmp(image.data()+span.first,span.second.data(),span.second.size()));
   else memcpy(image.data()+span.first,span.second.data(),span.second.size());
  }
- for(bool display13:{false,true})for(unsigned failure=0;failure<13;++failure){
+ for(bool display13:{false,true})for(unsigned failure=0;failure<14;++failure){
+  shutdownCalls=0;
   auto b=image;uintptr_t pure=0x1234;memcpy(b.data()+0xccad0+0x188,&pure,sizeof(pure));
   XE x;callbackXE=&x;x.display13FramebufferRequested=display13;KernelPatcher p;
   surfaceOK=failure!=5;nvramOK=failure!=6;x.runtimeOK=failure!=7;x.agdcOK=failure!=8;x.backendOK=failure!=9;x.trainingOK=failure!=10;x.stopDuringStart=failure==11;x.nativeOK=failure!=12;
   if(failure>=1&&failure<=4)p.failAt=failure;
   bool handled=x.processFramebufferKext(p,1,(uintptr_t)b.data(),b.size());
+  assert(shutdownCalls==(display13 && failure!=1?1U:0U));
   assert(handled==(failure!=1));
-  IOService c;assert(XE::wrapFramebufferStart(&c,&c)==(failure==0));
+  IOService c;
+  if(failure==13){XELPComboClock::ClockSnapshot clocks;clocks.layout=XELPComboClock::Layout::Display13;
+   clocks.mux[0]=0xC01;clocks.enable[1]=0xCC000000;
+   assert(comboClockTransaction.allocation.retain(0,1,reinterpret_cast<uintptr_t>(&c),clocks));}
+  assert(XE::wrapFramebufferStart(&c,&c)==(failure==0));
   assert(x.startCalls==((failure==0||failure==11||failure==12)?1U:0U));
   assert(x.framebufferStartedController==(failure==0?static_cast<void*>(&c):nullptr));
   if(failure==0)assert(!XE::wrapFramebufferStart(&c,&c)&&x.startCalls==1);
+  if(failure==13){assert(!x.framebufferStartInProgress && comboClockTransaction.allocation.binding[0]==2);
+   assert(comboClockTransaction.allocation.release(0,reinterpret_cast<uintptr_t>(&c)));
+   assert(XE::wrapFramebufferStart(&c,&c) && x.startCalls==1);}
   const auto calls=p.attempts,backends=x.backendCalls;
   x.processFramebufferKext(p,1,(uintptr_t)b.data(),b.size());
+  assert(shutdownCalls==(display13 && failure!=1?1U:0U));
   assert(p.attempts==calls&&x.backendCalls==backends); // no second trampoline
  }
  puts("PASS common-before-backend order, single ownership, partial failures and mandatory native-start gate");

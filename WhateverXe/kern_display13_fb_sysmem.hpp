@@ -39,14 +39,14 @@ template<class IO> Result install(IO &io,const Display13FBMemory::PoolLayout &la
     const auto &p=layout.slots[slot];
     if(p.state || p.descriptor) {r.status=Status::Layout;return r;}
     if(!io.ownsWindow(slot,p) || !io.consumersStopped(slot,p)) {r.status=Status::Ownership;return r;}
-    // Cache the complete physical page list, checking even a late invalid page
-    // and every prior PTE before exposing any RAM to the display/GPU.
+    // An unallocated window has no defined PTE contents: firmware may leave
+    // arbitrary bits here. Ownership comes from the reserved allocator range
+    // and the empty native slot, not from zero/scratch entries. Preflight all
+    // physical pages, then initialize only that owned, stopped window.
     for(unsigned i=0;i<p.pages;++i) {
         uint64_t span=0;const auto physical=io.physical(uint64_t(i)*4096,span);
         r.firstBadPage=i;
         if(!Display13FBGTT::physicalRange(physical,span,4096)) {r.status=Status::Physical;return r;}
-        const auto old=io.readPTE(reg(p,i));r.observed=old;
-        if(old && old!=scratchPTE) {r.status=Status::Occupied;return r;}
         pages[i]=physical;++r.checked;
     }
     for(unsigned i=0;i<p.pages;++i) {
@@ -54,8 +54,7 @@ template<class IO> Result install(IO &io,const Display13FBMemory::PoolLayout &la
         if(!io.ownsWindow(slot,p) || !io.consumersStopped(slot,p)) {r.status=Status::Ownership;return r;}
         uint64_t span=0;const auto physical=io.physical(uint64_t(i)*4096,span);
         if(physical!=pages[i] || span<4096) {r.status=Status::BackingChanged;return r;}
-        const auto address=reg(p,i);const auto old=io.readPTE(address);r.observed=old;
-        if(old && old!=scratchPTE) {r.status=Status::Occupied;return r;}
+        const auto address=reg(p,i);
         r.expected=Display13FBGTT::pte(pages[i],0);
         // A possibly delivered write requires backing retention even when
         // the posting read fails. The caller owns that reference through error.

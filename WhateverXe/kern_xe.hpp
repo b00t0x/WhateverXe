@@ -9,6 +9,16 @@
 #define kern_xe_hpp
 
 #include "kern_tgl_tc_boot.hpp"
+#include "kern_dsi_boot.hpp"
+#include "kern_dsi_apple_timing.hpp"
+#include "kern_dsi_ggtt.hpp"
+#include "kern_dsi_surface.hpp"
+#include "kern_dsi_quiesce.hpp"
+#include "kern_dsi_clock.hpp"
+#include "kern_dsi_commands.hpp"
+#include "kern_dsi_panel.hpp"
+#include "kern_dsi_backlight.hpp"
+#include "kern_dsi_restart.hpp"
 #include "kern_tgl_tc_native.hpp"
 #include "kern_tgl_native_fia.hpp"
 #include "kern_tgl_hdmi_wiring.hpp"
@@ -35,6 +45,7 @@ class IOPCIDevice;
 class IOInterruptEventSource;
 namespace Display13Clock { struct Readout; }
 namespace Display13WM { struct Latch; }
+namespace XELP { namespace DSI { struct Profile; } }
 
 class XE {
 public:
@@ -91,6 +102,8 @@ private:
     // Render and Display selections are independent; shared PHY/port code
     // must not depend on which GT implementation the product uses.
     bool display12SmallGTDetected {},display12SmallGTReady {};
+    bool tglGT2Detected {},tglGT2Ready {};
+    XELP::GTResources tglGT2Resources;
     bool adlsDisplaySelected {},adlsDisplayHooksReady {};
     bool adlsPortInitReady {},tglHPDHookReady {};
     bool adlsPLLTableReady {},adlsClockReady {},adlsPowerReady {},adlsPanelPWMReady {};
@@ -130,6 +143,39 @@ private:
     // Display handoff needs GOP/GGTT, mapper and aperture qualification,
     // independently of GT fuses or an accelerator being allowed to start.
     bool display13BootReady {false};
+    OSData *dsiFirmware {}; // Private immutable copy backing profile/sequence spans.
+    XELP::DSI::Profile dsiProfile;
+    XELP::DSI::Boot dsiBoot;
+    XELP::DSI::GGTTMode dsiGGTT;
+    bool prepareDSIFirmware(IOService *);
+    bool dsiResourcesReady {};
+    bool bindDSIResources(IOService *);
+    XELP::DSI::Quiesce::Result dsiStop;
+    XELP::DSI::Clock::Result dsiClockStop;
+    bool dsiStopAttempted {},dsiIRQParked {},dsiDDIReleased {},dsiMemoryReleased {};
+    bool quiesceDSIPath(IOService *,IOService *,OSObject *,bool retain=false);
+    bool resumeDSIPath(IOService *,IOService *,OSObject *);
+    XELP::DSI::Backlight dsiBacklight;
+    uint32_t setDSIBrightness(IOService *,uintptr_t);
+    uint32_t saveDSIBrightness(IOService *,uintptr_t);
+    void publishDSIBacklight();
+    static void recordDSIAttribute(IOService *,unsigned,uint32_t,uintptr_t,uint32_t);
+    bool processDSIPathDisposal(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    bool disposeDSIPath(IOService *,OSObject *);
+    mach_vm_address_t dsiFreePlane {},dsiFreeScaler {},dsiDetachPath {},dsiRemovePath {},dsiPipeMap {};
+    bool dsiPGReleased {};
+    static uint32_t wrapDisplay13ProbeMode(OSObject *);
+    bool dsiCacheHooksReady {};
+    mach_vm_address_t orgDSICache[2] {};
+    bool processDisplay13DSICache(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    bool updateDSIBootCache(IOService *,IOService *,OSObject *);
+    bool adoptDSIBootPath(IOService *,OSObject *);
+    static void wrapDSIUpdateCache(IOService *,IOService *,OSObject *);
+    static void wrapDSIGetCRTC(IOService *,IOService *,OSObject *);
+    bool dsiBootProbeReady {};
+    mach_vm_address_t orgDSIBootProbe {};
+    bool processDisplay13DSIBoot(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    static uint32_t wrapDSIBootProbe(IOService *,bool *,uint32_t *);
     // Render additionally requires the native GT resource certificate.
     bool adlnNativeReady {false};
 	bool display13FramebufferRequested {false};
@@ -147,14 +193,14 @@ private:
  mach_vm_address_t display13AUXControllerSlot {};
  mach_vm_address_t orgDisplay13ReadAUX {},orgDisplay13WriteAUX {},orgDisplay13I2CAUX {},orgDisplay13RunAUX {};
  bool processDisplay13FramebufferAUX(KernelPatcher &,size_t,mach_vm_address_t,size_t);
- static bool display13AUXReady(void *port,bool command);
+ static bool display13AUXReady(void *port,bool command,bool retained=false);
  static uint32_t wrapDisplay13ReadAUX(void *port,uint32_t address,void *data,uint32_t length);
  static uint32_t wrapDisplay13WriteAUX(void *port,uint32_t address,void *data,uint32_t length);
  static uint32_t wrapDisplay13I2CAUX(void *port,uint32_t command,uint32_t *packet,uint32_t length,uint8_t flag);
  static uint32_t wrapDisplay13RunAUX(void *port,uint32_t command,uint32_t *packet,uint32_t length,bool flag);
  mach_vm_address_t orgDisplay13TrainingPattern {},orgDisplay13SignalLevels {};
  mach_vm_address_t orgDisplay13EnablePort {},orgDisplay13DisablePort {};
- static bool display13MainLinkAUX(void *port,bool acquire);
+ static bool display13MainLinkAUX(void *port,bool acquire,bool stopping=false);
  static uint32_t wrapDisplay13EnablePort(void *port);
  static uint32_t wrapDisplay13DisablePort(void *port);
  bool processDisplay13FramebufferSST(KernelPatcher &,size_t,mach_vm_address_t,size_t);
@@ -174,13 +220,99 @@ private:
  static uint32_t wrapDisplay13TrainingPattern(void *path,uint32_t pattern);
  static uint32_t wrapDisplay13SignalLevels(void *port,uint32_t swing,uint32_t emphasis,void *overrideConfig);
 	mach_vm_address_t xelpProviderProbe {},xelpProviderConfigureProbe {};
- bool display13DPProbeReady {},display13TCProbeReady {},display13TCDPProbeReady {},display13FBDPHooksReady {};
+ bool display13DPAltProbeReady {},display13DPProbeReady {},display13TCProbeReady {},display13TCDPProbeReady {},display13FBDPHooksReady {};
  bool adlpDisplaySelected {};
  bool adlpRenderRequested {};
  Display13OutputWiring display13BoardWiring(IOService *);
  bool prepareDisplay13BootScanout(IOPCIDevice *);
     bool xelpBindProbe(void *controller);
 	bool display13FBTopologyHooksReady {false};
+    bool display13DSIModeHooksReady {};
+    mach_vm_address_t orgDSIMode[9] {},orgDSIScalerSupport {},orgDSIDetailedValidation {},orgDSISourceValidation {},orgDSIPixelInfo {};
+    bool processDisplay13DSIModes(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    static void recordDSIClient(IOService *,unsigned,uint64_t,uint32_t);
+    bool releaseDSIFixedMode(IOService *);
+    bool bindDSIFixedMode(IOService *,const XELP::DSI::Profile &);
+    static uint32_t setDSIPortMode(OSObject *,uint32_t);
+    static uint32_t wrapDSIDDC(IOService *,uint32_t,uint8_t *,uint64_t *,uint32_t,OSObject *);
+    static uint32_t wrapDSIGetCurrentMode(IOService *,int32_t *,int32_t *);
+    static uint32_t wrapDSIGetOnlineInfo(IOService *,OSObject *,uint8_t *,uint8_t *);
+    static uint32_t wrapDSISetDetailedTimings(IOService *,OSArray *);
+    static uint32_t wrapDSISetDisplayMode(IOService *,int32_t,int32_t);
+    static bool dsiNativeUpdateAllowed(IOService *);
+    static bool dsiSharedWriterStopped(IOService *,unsigned);
+    bool processDSINativeWriters(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    bool processDSINativeTransactions(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    bool processDSINativeAttributes(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    mach_vm_address_t orgDSIAttributes[4] {};
+    static uint32_t wrapDSISetStream(IOService *,IOService *,OSObject *,const void *);
+    static uint32_t wrapDSISetAttribute(IOService *,uint32_t,uintptr_t);
+    static uint32_t wrapDSISetConnectionAttribute(IOService *,int32_t,uint32_t,uintptr_t);
+    static uint32_t wrapDSISetPowerState(IOService *,uint32_t);
+    mach_vm_address_t orgDSITransaction[5] {};
+    static int beginDSIFramebufferWriter(IOService *);
+    static uint32_t wrapDSIFlipTransaction(IOService *,void *,uint64_t,void *);
+    static uint32_t wrapDSIGammaTransaction(IOService *,void *,void *);
+    static uint32_t wrapDSICscTransaction(IOService *,void *,void *,uint64_t,bool);
+    static uint32_t wrapDSIPlaneGammaTransaction(IOService *,void *,bool);
+    static uint32_t wrapDSISetGammaTable(IOService *,uint32_t,uint32_t,uint32_t,void *,bool);
+    bool dsiNativeWriterHooksReady {};
+    bool dsiBackingHooksReady {};
+    bool dsiPanelOnly {};
+    bool dsiCommandTest {};
+    bool dsiPanelTest {};
+    bool dsiHostTest {};
+    bool dsiStopTest {};
+    bool dsiPowerTest {};
+    struct {
+        bool sleeping {},failed {};uint32_t cycles {};
+        XELP::DSI::Surface::Plane plane;
+        uint32_t cursorControl {},cursorPosition {},cursorBase {};
+        XELP::DSI::Restart::State host;
+        XELP::DSI::Panel::Result panel;
+    } dsiRuntimePower;
+    XELP::DSI::Panel::Shutdown dsiPanelStop;
+    XELP::DSI::Restart::State dsiHostRestart;
+    XELP::DSI::Panel::Result dsiPanelTrial;
+    bool probeDSIPanel(IOService *,bool prepareExternalClock=false);
+    XELP::DSI::Host dsiCommandHost;
+    bool probeDSICommands(IOService *);
+    mach_vm_address_t orgDSIBacking[2] {};
+    bool processDSIBackingHooks(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    mach_vm_address_t dsiComputeGeometry {},dsiModeCPU[4] {};
+    bool publishDSINativeBacking();
+    bool publishDSINativeMode(IOService *);
+    uint32_t setDSIPresentation(IOService *,uint32_t,const XELP::DSI::AppleAdapter::Timing &);
+    bool releaseDSILogical(IOService *);
+    bool probeDSIModeGeometry(IOService *);
+    bool prepareDSINativeBacking(IOService *);
+    bool validateDSINativeBacking();
+    bool initializeDSINativeBacking();
+    bool switchDSINativeSurface();
+    bool dsiArmedBackingOwned(IOService *,OSObject *);
+    bool retireDSINativeBacking(IOService *,OSObject *);
+    XELP::DSI::Session dsiSession;
+    XELP::DSI::Session::Cleanup dsiCleanup;
+    bool discardDSINativeBacking(IOService *);
+    void probeDSINativeBacking(IOService *);
+    bool dsiBackingAttempted {};
+    uint32_t dsiBackingStage {};
+    static uint32_t wrapDSIBackingAllocate(OSObject *,void *,uint32_t);
+    static uint32_t wrapDSIBackingFree(OSObject *,void *,uint32_t);
+
+    mach_vm_address_t orgDSICursor[2] {};
+    static int beginDSINativeWriter(IOService *,IOService *);
+    static void endDSINativeWriter(int);
+    static uint32_t wrapDSICursorImage(IOService *,IOService *,void *);
+    static uint32_t wrapDSICursorState(IOService *,IOService *,int32_t,int32_t,bool,bool);
+    static uint32_t wrapDSIValidateMode(IOService *,int32_t,const void **,const void **);
+    static uint32_t wrapDSIGetModes(IOService *,int32_t *);
+    static uint32_t wrapDSIGetModeCount(IOService *);
+    static uint32_t wrapDSIGetModeInformation(IOService *,int32_t,void *);
+    static uint32_t wrapDSIPixelInfo(IOService *,int32_t,int32_t,int32_t,void *);
+    static uint32_t wrapDSIValidateDetailed(IOService *,void *,uint64_t);
+    static bool wrapDSIValidateSource(IOService *,void *);
+    static bool wrapDSIScalerSupport(void *,uint32_t,uint32_t,uint32_t,uint32_t,uint64_t,uint32_t,bool);
 	Display13OutputWiring adlnOutputWiring;
  mach_vm_address_t adlnComboPLLFractionCaller {};
 	uint64_t adlnPlatform[0x1C0/8] {};
@@ -232,6 +364,7 @@ private:
     bool processDisplay13FramebufferTC(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     static unsigned display13TCTarget(OSObject *,bool cleanup=false);
     static uint32_t wrapDisplay13TCMode(OSObject *,uint32_t);
+    static void drainDisplay13TCMode(unsigned);
     static void wrapDisplay13TCEnableClocks(void *,void *,void *,uint32_t *);
     static void wrapDisplay13TCDisableClocks(void *,void *,void *);
     static uint32_t wrapDisplay13TCSignal(void *,uint32_t,uint32_t,void *);
@@ -242,6 +375,9 @@ private:
     mach_vm_address_t orgDisplay13FBEnable {},orgAlderLakeNConnectionAttr {},orgAlderLakeNPortDDC {},orgDisplay13FBDDC {};
     static uint32_t wrapDisplay13FBEnable(IOService *fb);
     bool processFramebufferAGDC(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    bool processDisplay13TrialAGDC(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    static uint32_t wrapDisplay13TrialCommit(void *,void *,void *);
+    mach_vm_address_t orgDisplay13TrialCommit {};
     mach_vm_address_t orgFramebufferUserClient {},orgFramebufferAGDCCallback {};
     static uint32_t wrapFramebufferUserClient(IOService *,void *,void *,uint32_t,void **);
     static uint32_t wrapFramebufferAGDCCallback(IOService *,uint32_t,unsigned long,uint32_t);
@@ -285,6 +421,7 @@ private:
 	static void wrapAlderLakeNPlaneWMEnable(OSObject *plane,bool arm);
 	static void wrapDisplay13CursorWMEnable(OSObject *plane,bool arm);
 	static void wrapDisplay13WMArmUpdate(IOService *framebuffer);
+    static void display13WMArmUpdate(IOService *framebuffer);
 	static Display13WM::Latch adlnVerifyWMLatch(IOService *framebuffer,uint64_t nativeHz,uint64_t targetHz);
 	mach_vm_address_t orgDisplay13WMArmUpdate {};
 	static void wrapAlderLakeNPrimaryDBUF(OSObject *plane,uint32_t start,uint32_t end,bool wait);
@@ -338,6 +475,7 @@ private:
 	static void wrapDisplay13FBProcessDE(IOService *controller,uint32_t *pipe,uint32_t *aux,uint32_t *hotplug);
 	static bool wrapDisplay13FBProcessIRQ(IOService *controller);
 	static void wrapDisplay13FBSWIRQ(IOService *controller,IOInterruptEventSource *source,int count);
+    void auditDSIBoot(IOPCIDevice *,volatile const uint8_t *,uint64_t,const AlderLakeN::DisplayReadout &,bool);
 	void adlnBootstrap(IOPCIDevice *pci);
 	uint16_t tglDeviceId {0}; // Physical PCI ID, not a DeviceProperties override.
 	mach_vm_address_t orgTGLEnableCombo {}, orgTGLEngineEnable {}, orgTGLEngineDisable {};
@@ -624,6 +762,10 @@ private:
  bool framebufferDonorAttempted {},framebufferDonorCommonReady {},framebufferBackendInstalled {};
  mach_vm_address_t orgFramebufferStart {},orgFramebufferInit {},orgFramebufferComputeLanes {},framebufferLaneCaller {};
  __attribute__((noinline)) bool processFramebufferKext(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+ bool processDisplay13Shutdown(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+ static uint32_t wrapDisplay13Shutdown(void *,void *);
+ static void finishDisplay13TCShutdown(void *);
+ mach_vm_address_t orgDisplay13Shutdown {},display13ShutdownPowerCaller {};
  __attribute__((noinline)) bool processFramebufferCommon(KernelPatcher &,size_t,mach_vm_address_t,size_t);
  bool framebufferTrainingHooksReady {};
  bool framebufferStartInProgress {};

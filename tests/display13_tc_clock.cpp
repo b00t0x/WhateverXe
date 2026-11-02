@@ -7,6 +7,7 @@ using namespace Display13TC;
 struct IO {
     Port p;std::map<uint32_t,uint32_t> regs,bank;
     std::vector<std::pair<uint32_t,uint32_t>> writes;
+    bool connected {true};
     bool held {},power {true},owner {true},idle {true},stuckPower {},stuckLock {},fault {};
     unsigned time {},locks {},unlocks {};uint32_t reject {},absent {};
     unsigned expectedLanes {4};
@@ -25,7 +26,8 @@ struct IO {
     }
     bool linkHeld(){return power&&link;}
     bool powerHeld(){return power;}
-    bool owned(unsigned d){return owner && d==p.ddi;}
+    bool retainedOwned(unsigned d){return owner && d==p.ddi;}
+    bool owned(unsigned d){return retainedOwned(d) && connected;}
     bool quiescent(unsigned d){return idle && d==p.ddi;}
     bool readable(uint32_t r){return r!=absent && (regs.count(r) || (r>=p.phy && r<p.phy+0x1000));}
     uint32_t key(uint32_t r){return (((regs[p.hip]>>p.shift)&15)<<12)|(r-p.phy);}
@@ -45,6 +47,69 @@ struct IO {
     void bankFault(){fault=true;}
 };
 int main() {
+    // Independent Linux DP DDI rate encodings; retain ownership, lane width,
+    // reversal, enable and unrelated bits; replace the previous rate code.
+    for(const auto &pair:std::map<unsigned,unsigned>{{6,0},{10,1},{20,2},{30,3}}) {
+        uint32_t value=0xfff1abcd;
+        assert(DPSignal::bufferRate(pair.first,value));
+        assert(value==((0xfff1abcdU&~0x700000U)|(pair.second<<20)));
+    }
+    for(unsigned invalid:{0U,1U,12U,UINT32_MAX}) {
+        uint32_t value=0xa5a5a5a5;assert(!DPSignal::bufferRate(invalid,value) && value==0xa5a5a5a5);
+    }
+    for(unsigned ddi=3;ddi<=6;++ddi)for(unsigned reset=0;reset<4;++reset) {
+        IO io(ddi);io.link=true;
+        io.bank[0x14]=0xa5a50001|((reset&1)?0x800:0);
+        io.bank[0x1014]=0x5a5a0002|((reset&2)?0x800:0);
+        const auto hip=io.regs[io.p.hip];uint32_t before[2]{},after[2]{};
+        assert(DPSignal::prepareBuffer(io,io.p,before,after));
+        assert(after[0]==0xa5a50001 && after[1]==0x5a5a0002);
+        assert(io.bank[0x14]==after[0] && io.bank[0x1014]==after[1] && io.regs[io.p.hip]==hip);
+        io.regs[io.p.buffer]|=0x80000000;
+        assert(DPSignal::prepareBuffer(io,io.p,before,after)); // retained, already released
+        io.bank[0x14]|=0x800;const auto prior=io.bank;
+        assert(!DPSignal::prepareBuffer(io,io.p,before,after) && io.bank==prior);
+    }
+    for(unsigned failure=0;failure<6;++failure) {
+        IO io(3);io.link=true;io.bank[0x14]=io.bank[0x1014]=0x800;
+        if(failure==0)io.power=false;if(failure==1)io.owner=false;if(failure==2)io.link=false;
+        if(failure==3)io.regs[io.p.buffer]=UINT32_MAX;if(failure==4)io.regs[io.p.buffer]&=~128U;
+        if(failure==5)io.reject=io.p.phyRegister(0x14);
+        uint32_t before[2]{},after[2]{};assert(!DPSignal::prepareBuffer(io,io.p,before,after));
+        assert(io.bank[0x14]==0x800 && io.bank[0x1014]==0x800);
+    }
+    // Pin D, both physical orientations: do not change the USB pair's
+    // signal coefficients or wake register. Logical main-link lanes stay0/1.
+    for(unsigned ddi=3;ddi<=6;++ddi)for(unsigned physical:{3U,12U}) {
+        IO io(ddi);io.expectedLanes=2;io.regs[io.p.ready]=0x1d;
+        for(unsigned group=0;group<2;++group)for(unsigned reg:{0xa0U,0xd00U,0x2c0U,0x2c4U,0x2c8U})io.bank[group*0x1000+reg]=0xa5a5a5a5;
+        Clock::LinkStage stage;assert(DPSignal::startLink(io,io.p,DPClock::calculate(10,38400),2,&stage,4,physical));
+        const unsigned usb=physical==3?0x1000:0;
+        for(unsigned reg:{0xd00U,0x2c0U,0x2c4U,0x2c8U})assert(io.bank[usb+reg]==0xa5a5a5a5);
+        const auto count=io.writes.size();
+        assert(!DPSignal::startLink(io,io.p,DPClock::calculate(10,38400),4,&stage,4,physical) && io.writes.size()==count);
+    }
+    // Stop retains ownership and power even when the connector state is gone.
+    for(unsigned ddi=3;ddi<=6;++ddi)for(unsigned gone:{0U,4U,0x1dU,UINT32_MAX}) {
+        IO io(ddi);io.expectedLanes=2;io.regs[io.p.ready]=0x1d;
+        for(unsigned group=0;group<2;++group)for(unsigned reg:{0xa0U,0xd00U,0x2c0U,0x2c4U,0x2c8U})io.bank[group*0x1000+reg]=0;
+        assert(DPSignal::startLink(io,io.p,DPClock::calculate(10,38400),2,nullptr,4,12));
+        io.connected=false;io.regs[io.p.ready]=gone;
+        const auto bank=io.bank;const auto peer=io.regs[Clock::Gate]&~Clock::gateBit(io.p.tc);
+        const auto before=io.writes.size();
+        assert(!Clock::enable(io,io.p,TMDSClock::calculate(148500,38400)) && io.writes.size()==before);
+        assert(Clock::stopLink(io,io.p) && !io.link && io.linkPuts==1);
+        assert(io.bank==bank && !(io.regs[io.p.pll]&0xcc000000U));
+        assert((io.regs[Clock::Gate]&~Clock::gateBit(io.p.tc))==peer);
+        assert(Clock::stopLink(io,io.p) && io.linkPuts==1); // no double put
+    }
+    for(unsigned fault=0;fault<7;++fault) {
+        IO io(4);io.connected=false;io.regs[io.p.ready]=0;
+        if(fault==0)io.owner=false;if(fault==1)io.power=false;if(fault==2)io.idle=false;
+        if(fault==3)io.regs[io.p.buffer]|=1U<<31;if(fault==4)io.regs[io.p.buffer]&=~64U;
+        if(fault==5)io.regs[io.p.buffer]&=~128U;if(fault==6)io.regs[io.p.pll]=UINT32_MAX;
+        assert(!Clock::stopLink(io,io.p) && io.writes.empty() && !io.linkPuts);
+    }
     // Independent DP divisor oracle: 8.1 GHz / (5 * link symbol clock).
     const unsigned rates[]={6,10,20,30},high[]={5,3,3,2},div[]={2,2,1,1};
     // Existing independent Linux capture of TC3 at RBR x4.
@@ -138,7 +203,7 @@ int main() {
     for(unsigned failure=0;failure<8;++failure) {
         IO io(3);
         if(failure==0)io.power=false;if(failure==1)io.owner=false;if(failure==2)io.idle=false;
-        if(failure==3)io.regs[io.p.ready]=5;if(failure==4)io.regs[io.p.buffer]|=1U<<31;
+        if(failure==3)io.regs[io.p.ready]=6;if(failure==4)io.regs[io.p.buffer]|=1U<<31;
         if(failure==5)io.regs[io.p.buffer]&=~64U;if(failure==6)io.absent=io.p.pll;if(failure==7)io.regs[io.p.pll]=~0U;
         assert(!Clock::enable(io,io.p,full) && io.writes.empty());
         assert(!Clock::disable(io,io.p) && io.writes.empty());

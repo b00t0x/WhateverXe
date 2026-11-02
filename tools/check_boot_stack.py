@@ -20,7 +20,8 @@ LIMITS = {
     '_ZN2XE21processTGLAcceleratorER13KernelPatchermym': 6144,
     '_ZN2XE15processKextFullER13KernelPatchermym': 6144,
     '_ZL22tglStartOrderSerializePvS_P11OSSerialize': 3328,
-    '_ZN2XE24wrapDisplay13WMArmUpdateEP9IOService': 2816,
+    '_ZN2XE20display13WMArmUpdateEP9IOService': 2816, # Existing body behind the DSI entry guard.
+    '_ZN2XE24wrapDisplay13WMArmUpdateEP9IOService': 256,
     '_ZN12_GLOBAL__N_120tglCaptureHangDetailERKN14TGLHangPending7CaptureEPKhRKN13TGLHangSelect9SelectionE': 2688,
     '_ZN2XE17tglObserveScanoutEPvS0_jbj': 2304,
     '_ZN12_GLOBAL__N_120tglRecoverySerializeEPvS0_P11OSSerialize': 2304,

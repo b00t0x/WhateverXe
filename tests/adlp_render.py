@@ -18,6 +18,7 @@ int kextIntelTGL,kextIntelTGLFb;
 bool adlnNativeRCSProfileRequested=false,display13TraceEnabled=false,display13Offline=false;
 struct XE {
  XELP::Profile xeProfile;
+ bool tglGT2Detected=false,tglGT2Ready=false;
  bool display12SmallGTDetected=false,adlsDisplaySelected=false;
  bool adlnRequested=false,adlnDetected=false,adlnKernelReady=false,adlnNativeRequested=false;
  bool adlpDisplaySelected=false,adlpRenderRequested=false,display13FramebufferRequested=false;
@@ -29,10 +30,11 @@ struct XE {
 };
 FUNCTION
 int main(){
- const uint32_t mobile[]={0x46a3,0x46a6,0x46a8,0x46aa,0x46b3,0x46c3,0xa7a0,0xa7a1,0xa7a8,0xa7a9,0xa7aa,0xa7ab,0xa7ac,0xa7ad};
+ const uint32_t mobile[]={0x4626,0x4628,0x462a,0x46a0,0x46a1,0x46a2,0x46b0,0x46b1,0x46b2,0x46c0,0x46c1,0x46c2,0xa720,0xa721,0x46a3,0x46a6,0x46a8,0x46aa,0x46b3,0x46c3,0xa7a0,0xa7a1,0xa7a8,0xa7a9,0xa7aa,0xa7ab,0xa7ac,0xa7ad};
+ constexpr unsigned mobileSelectors=2*sizeof(mobile)/sizeof(mobile[0]);
  unsigned cases=0;
- for(unsigned which=0;which<30;++which)for(unsigned rev=0;rev<256;++rev)for(unsigned off=0;off<2;++off) {
-  noaccel=off;XE x;const bool isMobile=which<28,isN=which==28;
+ for(unsigned which=0;which<mobileSelectors+2;++which)for(unsigned rev=0;rev<256;++rev)for(unsigned off=0;off<2;++off) {
+  noaccel=off;XE x;const bool isMobile=which<mobileSelectors,isN=which==mobileSelectors;
   const auto pci=(isMobile?mobile[which/2]:isN?0x46d1:0x9a49)<<16|0x8086;
   const auto effective=isMobile && (which&1)?0x9a498086:pci;
   const auto p=XELP::identify(pci,rev,effective);x.selectProfile(p);
@@ -47,7 +49,7 @@ int main(){
  }
  noaccel=false;XE unknown;unknown.selectProfile(XELP::identify(0x4c8a8086,12));
  assert(!unknown.adlpRenderRequested && !unknown.adlnDetected && !unknown.tglAcceleratorRequested);
- assert(cases==15360);puts("PASS 15360 production profile selections: all mobile Display13 IDs/revisions, physical and legacy donor selectors, noaccel, ADL-N and TGL");
+ assert(cases==(mobileSelectors+2)*256*2);puts("PASS production profile selections: all mobile Display13 IDs/revisions, physical and legacy donor selectors, noaccel, ADL-N and TGL");
 }
 '''.replace('FUNCTION',f)
 with tempfile.TemporaryDirectory(prefix='wex-adlp-render-') as d:

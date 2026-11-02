@@ -52,7 +52,7 @@ static uint32_t read32(void *access, unsigned long offset) {
 // it does not read plugin boot arguments or depend on framebuffer globals.
 // The provider pins the immutable binding until reboot, like the donor owner.
 extern "C" uint32_t xelpProbeCapabilities(uint32_t schema,uint32_t configABI) {
-    return schema==XELP::ProbeCapabilityABI && configABI==XELP::ProbeABI ? XELP::ProbeDisplay13ComboDP|XELP::ProbeDisplay13FixedTC|XELP::ProbeDisplay13FixedDP|XELP::ProbeDisplay13Panel : 0;
+    return schema==XELP::ProbeCapabilityABI && configABI==XELP::ProbeABI ? XELP::ProbeDisplay13ComboDP|XELP::ProbeDisplay13FixedTC|XELP::ProbeDisplay13FixedDP|XELP::ProbeDisplay13Panel|XELP::ProbeDisplay13DPAlt : 0;
 }
 extern "C" bool xelpConfigureDisplay(void *controller,const XELP::ProbeConfig *config) {
     if(!controller || !config || !config->valid())return false;

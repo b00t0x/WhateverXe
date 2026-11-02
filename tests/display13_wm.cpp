@@ -261,6 +261,21 @@ int main() {
         assert(latch(io,io.snapshot(variable)).status==Status::Readback);
         variable.height=0;assert(latch(io,io.snapshot(variable)).status==Status::Input);
     }
+    // DSI timing follows transcoder0 while the surface/frame/WM proof stays
+    // on the actual pipe. Remove ordinary timings so accidental fallback fails.
+    for(unsigned pipe=0;pipe<3;++pipe) {
+        LatchIO io(p);io.moveToPipe(pipe);const auto bank=0x1000*pipe;
+        io.regs[0x6B000]=io.regs[0x60000+bank];io.regs[0x6B00C]=io.regs[0x6000C+bank];
+        io.regs.erase(0x60000+bank);io.regs.erase(0x6000C+bank);
+        io.regs[0x70008+bank]=0;io.regs[0x7B008]=0xC0000000;
+        const uint32_t inputs[]={0,5,6};io.regs[0x6B400]=0x80000006|(inputs[pipe]<<12);
+        auto expected=io.snapshot(p);expected.transcoders.dsi0Pipe=pipe;
+        auto result=latch(io,expected);
+        assert(result.status==Status::Complete && result.waitUs==2000 && io.writes.empty());
+        io.regs[0x6B400]^=1U<<12;assert(latch(io,expected).status==Status::Conflict);
+        io.regs[0x6B400]^=1U<<12;io.regs[0x70008+bank]=0xC0000000;
+        assert(latch(io,expected).status==Status::Conflict);
+    }
     LatchIO committed(p);const auto proof=latch(committed,committed.snapshot(p));
     assert(proof.status==Status::Complete && proof.frameBefore==100 && proof.frameAfter==101 && proof.waitUs==2000);
     assert(proof.budgetUs==51001 && committed.writes.empty());
@@ -283,10 +298,19 @@ int main() {
     assert(delayedProof.status==Status::Complete && delayedProof.frameAfter!=delayedProof.frameBefore && delayedProof.waitUs==3000);
     DelayedCursor stuckCursor(p,cursor);stuckCursor.stuck=true;
     const auto stuckProof=latch(stuckCursor,stuckCursor.snapshot(p,&cursor));
-    assert(stuckProof.status==Status::Readback && stuckProof.waitUs==52000 && stuckProof.lastReg==0x700AC);
+    assert(stuckProof.status==Status::Unavailable && stuckProof.check==LatchCheck::AwaitingFlip && stuckProof.waitUs==52000 && stuckProof.lastReg==0x700AC);
     LatchIO oldLive(p);oldLive.surface=finalFlip.primary;oldLive.regs[0x7019C]=oldLive.surface;
     oldLive.oldSurface=true;
-    assert(latch(oldLive,oldLive.snapshot(p)).status==Status::Readback);
+    const auto pendingFlip=latch(oldLive,oldLive.snapshot(p));
+    assert(pendingFlip.status==Status::Unavailable && pendingFlip.check==LatchCheck::AwaitingFlip && oldLive.writes.empty());
+    // Repeated attempts cannot manufacture completion or retire anything.
+    oldLive.elapsed=0;
+    assert(latch(oldLive,oldLive.snapshot(p)).status==Status::Unavailable);
+    oldLive.elapsed=0;oldLive.oldSurface=false;
+    assert(latch(oldLive,oldLive.snapshot(p)).status==Status::Complete);
+    // An invalid read remains a fault, even at the live-register boundary.
+    LatchIO invalidLive(p);invalidLive.oldSurface=true;invalidLive.regs[0x701AC]=UINT32_MAX;
+    assert(latch(invalidLive,invalidLive.snapshot(p)).status==Status::Readback);
     auto clockPlan=committed.snapshot(p);
     assert(clockFits(clockPlan,1305600000) && clockFits(clockPlan,297000000));
     assert(!clockFits(clockPlan,296999999));
@@ -301,7 +325,7 @@ int main() {
     const auto timeoutProof=latch(sameFrame,sameFrame.snapshot(p));
     assert(timeoutProof.status==Status::CommitTimeout && timeoutProof.waitUs==52000);
     LatchIO staleSurface(p);staleSurface.oldSurface=true;
-    assert(latch(staleSurface,staleSurface.snapshot(p)).status==Status::Readback);
+    assert(latch(staleSurface,staleSurface.snapshot(p)).status==Status::Unavailable);
     LatchIO poweredOff(p);poweredOff.losePower=true;
     assert(latch(poweredOff,poweredOff.snapshot(p)).status==Status::Power);
     LatchIO invalidWM(p);invalidWM.regs[0x70258]^=1;
@@ -349,14 +373,23 @@ int main() {
         assert(latch(wrongWM,wrongWM.snapshot(p)).status==Status::Readback);
         LatchIO wrongLine(p);wrongLine.moveToPipe(pipe);wrongLine.regs[0x45270+4*pipe]=118;
         assert(latch(wrongLine,wrongLine.snapshot(p)).status==Status::Readback);
-        // The diagnostic must retain the rejecting branch and the values
-        // already consumed by it, including pipe C, without probing farther.
+        // Reconnect keeps the old SURF while native WM/scaler flushes precede
+        // plane enable. A nonzero address cannot certify an active scanout.
         LatchIO disabledPlane(p);disabledPlane.moveToPipe(pipe);
         disabledPlane.regs[0x70180+0x1000*pipe]&=~Enabled;
         const auto controls=latch(disabledPlane,disabledPlane.snapshot(p));
-        assert(controls.status==Status::Conflict && controls.check==LatchCheck::Controls &&
+        assert(controls.status==Status::Unavailable && controls.check==LatchCheck::AwaitingScanout &&
             controls.pipeControl==0xC0000000 && controls.planeControl==0x04000000 &&
-            !controls.cursorControl && disabledPlane.reads.back()==0x70080+0x1000*pipe && disabledPlane.writes.empty());
+            !controls.cursorControl && disabledPlane.writes.empty() && !disabledPlane.elapsed && controls.frameAfter==0);
+        disabledPlane.regs[0x70280+0x1000*pipe]=Enabled;
+        assert(latch(disabledPlane,disabledPlane.snapshot(p)).status==Status::Conflict);
+        disabledPlane.regs[0x70280+0x1000*pipe]=0;
+        disabledPlane.regs[0x70180+0x1000*pipe]|=Enabled;
+        disabledPlane.frozen=true;
+        assert(latch(disabledPlane,disabledPlane.snapshot(p)).status==Status::CommitTimeout);
+        disabledPlane.frozen=false;disabledPlane.elapsed=0;
+        disabledPlane.regs[0x701AC+0x1000*pipe]=0;
+        assert(latch(disabledPlane,disabledPlane.snapshot(p)).status==Status::Complete);
         // Native scaler flush before the first attached scanout: timing and
         // WM are programmed, but the primary remains disabled and SURF is 0.
         // This is pending, not success; a later enabled surface must earn the
@@ -385,6 +418,22 @@ int main() {
         LatchIO blankWithCursor(p);blankWithCursor.moveToPipe(pipe);blankWithCursor.surface=0;
         blankWithCursor.regs[0x70180+bank]=0;blankWithCursor.regs[0x70080+bank]=7;
         assert(latch(blankWithCursor,blankWithCursor.snapshot(p)).status==Status::Conflict);
+        // A qualified cursor may arrive before the first primary surface.
+        // It cannot certify retirement; the later primary still needs VBlank
+        // and live-surface evidence. An inconsistent cursor remains a fault.
+        LatchIO cursorFirst(p,&cursor);cursorFirst.moveToPipe(pipe);
+        cursorFirst.surface=0;cursorFirst.regs[0x70180+bank]=0;cursorFirst.regs[0x7019C+bank]=0;
+        const auto cursorPending=latch(cursorFirst,cursorFirst.snapshot(p,&cursor));
+        assert(cursorPending.status==Status::Unavailable && cursorPending.check==LatchCheck::AwaitingScanout &&
+            cursorFirst.writes.empty() && !cursorFirst.elapsed);
+        cursorFirst.regs[0x70080+bank]=0;
+        assert(latch(cursorFirst,cursorFirst.snapshot(p,&cursor)).status==Status::Conflict);
+        cursorFirst.regs[0x70080+bank]=0x22;
+        assert(latch(cursorFirst,cursorFirst.snapshot(p,&cursor)).status==Status::Conflict);
+        cursorFirst.regs[0x70080+bank]=7;
+        cursorFirst.regs[0x70180+bank]=0x84000000;
+        cursorFirst.regs[0x7019C+bank]=cursorFirst.surface=0x100000;
+        assert(latch(cursorFirst,cursorFirst.snapshot(p,&cursor)).status==Status::Complete && cursorFirst.elapsed==2000);
         LatchIO peerPlane(p);peerPlane.moveToPipe(pipe);peerPlane.regs[0x70280+0x1000*pipe]=Enabled;
         const auto peer=latch(peerPlane,peerPlane.snapshot(p));
         assert(peer.status==Status::Conflict && peer.check==LatchCheck::OtherPlane &&

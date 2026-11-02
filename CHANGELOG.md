@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.0
+
+Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) package with this update.
+
+### Added
+
+- Add USB-C DisplayPort Alt Mode output on Alder Lake-class GPUs, including multi-display startup and reconnection.
+- Add experimental MIPI DSI display support with graphics acceleration, brightness control, display off/on, rotation, HiDPI and external-display coexistence. Tested on GPD MicroPC 2 and CHUWI MiniBook X N100 only; do not expect it to work on other devices. System sleep/wake remains unsupported.
+
+### Fixed
+
+- Fix graphics initialization and acceleration on additional supported Tiger Lake and Alder/Raptor Lake GPU variants, including single-channel configurations.
+- Fix graphics initialization on compatible Sequoia and Tahoe updates without requiring an exact OS build match.
+- Fix display freezes during cursor resizing and improve multi-display startup and display off/on with MIPI DSI panels.
+- Fix system power-off hangs with a USB-C display connected on Alder Lake-class GPUs.
+
 ## 0.6.1
 
 Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) package.

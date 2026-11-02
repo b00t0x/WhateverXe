@@ -114,14 +114,24 @@ struct Clock {
     static uint32_t gateBit(unsigned tc) {return tc<3?1U<<(12+tc):tc==3?1U<<21:0;}
     // Runtime IO validates the immutable owner/config/path bindings. A ready
     // register alone never authorizes touching an active/foreign clock.
-    template<class IO> static bool preflight(IO &io,const Port &p) {
+    template<class IO> static bool accessible(IO &io,const Port &p) {
         Port checked;
         if(!Port::resolve(p.ddi,checked) || p.pll!=checked.pll || p.clock!=checked.clock || p.ready!=checked.ready ||
            p.buffer!=checked.buffer || p.tc!=checked.tc || p.phy!=checked.phy || p.hip!=checked.hip || p.shift!=checked.shift ||
-           !io.powerHeld() || !io.owned(p.ddi) || !io.quiescent(p.ddi))return false;
-        const uint32_t registers[]={p.pll,p.clock,p.ready,p.buffer,Gate};
+           !io.powerHeld() || !io.quiescent(p.ddi))return false;
+        const uint32_t registers[]={p.pll,p.clock,p.buffer,Gate};
         for(auto reg:registers)if(!io.readable(reg) || io.read(reg)==UINT32_MAX)return false;
-        return (io.read(p.ready)&7)==4 && (io.read(p.buffer)&0x80000040)==64;
+        return true;
+    }
+    template<class IO> static bool preflight(IO &io,const Port &p) {
+        return accessible(io,p) && io.owned(p.ddi) && io.readable(p.ready) && io.read(p.ready)!=UINT32_MAX &&
+            (io.read(p.ready)&6)==4 && (io.read(p.buffer)&0x80000040)==64;
+    }
+    // HPD, pin assignment and TCSS mode may disappear before native teardown.
+    // Only stop our retained, powered hardware after buffer/scanout quiescence.
+    // Never use this certificate to start a PLL or program the PHY.
+    template<class IO> static bool stopPreflight(IO &io,const Port &p) {
+        return accessible(io,p) && io.retainedOwned(p.ddi) && (io.read(p.buffer)&0x800000c0U)==0xc0;
     }
     template<class IO> static bool rmw(IO &io,uint32_t reg,uint32_t mask,uint32_t value) {
         const auto irq=io.lock();const auto old=io.read(reg);
@@ -136,11 +146,15 @@ struct Clock {
             if(elapsed==1000)return false;io.delayUs(10);
         }
     }
-    template<class IO> static bool disable(IO &io,const Port &p) {
-        if(!preflight(io,p))return false;
+private:
+    template<class IO> static bool disableRegisters(IO &io,const Port &p) {
         return rmw(io,Gate,gateBit(p.tc),gateBit(p.tc)) && rmw(io,p.clock,0xf0000000,0) &&
             rmw(io,p.pll,Enable,0) && wait(io,p.pll,Locked,0) &&
             rmw(io,p.pll,Power,0) && wait(io,p.pll,Powered,0);
+    }
+public:
+    template<class IO> static bool disable(IO &io,const Port &p) {
+        return preflight(io,p) && disableRegisters(io,p);
     }
     template<class IO> static bool enable(IO &io,const Port &p,const TMDSClock &plan) {
         if(!plan.valid() || !preflight(io,p))return false;
@@ -178,7 +192,8 @@ struct Clock {
         step(LinkStage::Complete);return true;
     }
     template<class IO> static bool stopLink(IO &io,const Port &p) {
-        return io.unstarted() || (preflight(io,p) && io.linkPower(false) && disable(io,p));
+        return io.unstarted() || (stopPreflight(io,p) && io.linkPower(false) &&
+            stopPreflight(io,p) && disableRegisters(io,p));
     }
 
 };

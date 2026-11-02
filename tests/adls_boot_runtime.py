@@ -9,6 +9,7 @@ code='''
 #include <cassert>
 struct IOService {};
 struct XE {
+ bool tglGT2Detected=false,tglGT2Ready=false;
  bool display12SmallGTDetected=false,display12SmallGTReady=true;
  bool adlsDisplaySelected=true,adlsDisplayHooksReady=true,adlsBootConsumersFailed=false;
  static bool wrapTGLAcceleratorStart(IOService*,IOService*);

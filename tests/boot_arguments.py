@@ -15,7 +15,8 @@ assert 'PE_parse_boot_arg' not in provider and 'checkKernelArgument' not in prov
 external = {'-igfxdvmt', 'gfxrst', '-allow3d', '-disablegfxfirmware'}
 used = set()
 for directory in ['WhateverXe', 'AppleIntelTGLCompat']:
-    for path in (root / directory).glob('*.cpp'):
+    for path in (root / directory).iterdir():
+        if path.suffix not in {'.cpp', '.inc'}: continue
         used.update(re.findall(r'(?:checkKernelArgument|PE_parse_boot_argn)\("([^"]+)"', path.read_text()))
 for array, expected in [('Off', '-wexoff'), ('Debug', '-wexdbg'), ('Beta', '-wexbeta')]:
     body = re.search(r'bootarg' + array + r'\[\] \{(.*?)\}', start, re.S).group(1)
@@ -64,6 +65,7 @@ static int kextIntelTGLFb, kextAppleIntelTGLCompat, kextIntelTGL;
 static struct { void onKextLoadForce(int *) {} } lilu;
 struct XE {
  XELP::Profile xeProfile;
+ bool tglGT2Detected=false,tglGT2Ready=false;
  bool adlnRequested=false, adlnDetected=false, adlnKernelReady=false, adlnNativeRequested=false, adlsDisplaySelected=false, display12SmallGTDetected=false;
  bool display13FramebufferRequested=false, display13TraceEnabled=false, adlpDisplaySelected=false, adlpRenderRequested=false;
  bool display12SmallGTReady=false, adlsDisplayHooksReady=false;
@@ -98,6 +100,12 @@ int main() {
   assert(wrapTGLFramebufferStartGate()==ready);
   assert(wrapTGLAcceleratorStartGate()==ready);
   assert(wrapTGLAcceleratorProbeGate()==ready);
+ }
+ for(unsigned bits=0;bits<4;++bits) {
+  XE selected;selected.tglGT2Detected=bits&1;selected.tglGT2Ready=bits&2;callbackXE=&selected;
+  assert(wrapTGLFramebufferStartGate());
+  assert(wrapTGLAcceleratorStartGate()==(!(bits&1) || (bits&2)));
+  assert(wrapTGLAcceleratorProbeGate()==(!(bits&1) || (bits&2)));
  }
  // Every implemented ADL-N/Twin ID enables the qualified normal path without args.
  XE xe;
@@ -145,7 +153,7 @@ int main() {
  }
  // Exercise the complete production selection, including the shared Display
  // adapter on registered desktop products and the still-unimplemented ADL-P.
- for(auto kernel:allKernels)for(auto id:{0x9A49U,0x9A78U,0x4690U,0x4680U,0xA780U,0x4688U,0x468BU,0xA788U,0xA78BU,0x9A60U,0x9A68U,0x9A70U,0x46A6U,0x46D2U})
+ for(auto kernel:allKernels)for(auto id:{0x9A49U,0x9A78U,0x9A59U,0x9AC0U,0x9AC9U,0x9AD9U,0x9AF8U,0x4690U,0x4680U,0xA780U,0x4688U,0x468BU,0xA788U,0xA78BU,0x9A60U,0x9A68U,0x9A70U,0x46A6U,0x46D2U})
  for(auto rev:{0U,4U,12U,255U})for(unsigned option=0;option<4;++option) {
   version=kernel;args={};
   if(option&1)args.insert("-wex-tgl-off");
@@ -153,7 +161,8 @@ int main() {
   XE selected;selected.init();selected.selectProfile(XELP::identify((id<<16)|0x8086,rev));
   const bool desktop=id==0x4690 || id==0x4680 || id==0xA780 || id==0x4688 || id==0x468B || id==0xA788 || id==0xA78B;
   const bool gt1=id==0x9A60 || id==0x9A68 || id==0x9A70;
-  const bool mobile=id==0x9A49 || id==0x9A78 || gt1;
+  const bool mobile=XELP::tigerLakeGT2Device((id<<16)|0x8086) || gt1;
+  assert(selected.tglGT2Detected==(mobile && !gt1));
   const bool mobile13=id==0x46A6 || id==0xA7A0;
   const bool small13=id==0x46D2;
   const bool render13=small13 || (mobile13 && !(option&2));

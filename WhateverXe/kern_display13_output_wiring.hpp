@@ -6,7 +6,9 @@
 struct Display13OutputWiring {
     static constexpr unsigned Ports=9;
     static constexpr uint32_t Physical=0x7B; // A/B + TC1..4, no Combo C.
-    uint32_t hdmi {},ddc[Ports] {},dp {},panel {};bool valid {};
+    // panel is eDP. DSI uses the donor's panel object shape, never its AUX,
+    // training or HPD protocol. Initially only DSI0 on physical PHY A exists.
+    uint32_t hdmi {},ddc[Ports] {},dp {},panel {},typeC {},dsi {};bool valid {};
     Display13OutputWiring()=default;
     Display13OutputWiring(const TGLHDMIWiring &w):hdmi(w.hdmi),valid(w.valid) {
         for(unsigned d=0;d<3;++d)ddc[d]=w.ddc[d];
@@ -15,10 +17,20 @@ struct Display13OutputWiring {
     static Display13OutputWiring fromProperty(const void *data,uint32_t bytes) {
         return TGLHDMIWiring::fromProperty(data,bytes);
     }
-    uint32_t selected() const {return hdmi|dp|panel;}
+    uint32_t selected() const {return hdmi|dp|panel|dsi;}
     uint32_t links() const {return dp|panel;}
+    uint32_t internal() const {return panel|dsi;}
+    uint32_t hotplug() const {return selected()&~dsi;}
+    enum class Transport {None,TMDS,DP,EDP,DSI};
+    Transport transport(unsigned ddi) const {
+        if(!described() || ddi>=Ports)return Transport::None;
+        const auto bit=1U<<ddi;
+        return dsi&bit ? Transport::DSI : panel&bit ? Transport::EDP :
+            dp&bit ? Transport::DP : hdmi&bit ? Transport::TMDS : Transport::None;
+    }
     bool described() const {
-        if(!valid || !selected() || (selected()&~0x7FU) || (dp&~Physical) || (hdmi&dp) || (panel&~3U) || (panel&(panel-1)) || (panel&(hdmi|dp)))return false;
+        if(!valid || !selected() || (selected()&~0x7FU) || (dp&~Physical) || (typeC&~(dp&0x78)) || (hdmi&dp) || (panel&~3U) || (panel&(panel-1)) || (panel&(hdmi|dp)) ||
+           (dsi&~1U) || (dsi&(hdmi|dp|panel)))return false;
         uint32_t used=0;
         for(unsigned d=0;d<Ports;++d) {
             const auto pin=ddc[d];
@@ -43,7 +55,7 @@ struct Display13OutputWiring {
     bool matches(const uint32_t *c) const {
         if(!described() || !c || c[0]>=Ports)return false;
         if(hdmi&(1U<<c[0]))return matchesHDMI(c);
-        if(panel&(1U<<c[0])) {
+        if(internal()&(1U<<c[0])) {
             const uint32_t expected[]={c[0],0,0,0,2,0x18};
             return !memcmp(c,expected,sizeof(expected));
         }
@@ -56,7 +68,7 @@ struct Display13OutputWiring {
     bool apply(void *platform,uint32_t bytes) const {
         if(!described() || !platform || bytes<0x1C0 || !TGLComboDP::accepts(dp&3,platform,bytes))return false;
         auto p=static_cast<uint8_t *>(platform);if(p[0x12]!=Ports)return false;
-        for(unsigned d=0;d<Ports;++d)if((hdmi|panel|(dp&0x78))&(1U<<d)) {
+        for(unsigned d=0;d<Ports;++d)if((hdmi|internal()|(dp&0x78))&(1U<<d)) {
             const auto c=reinterpret_cast<const uint32_t *>(p+0x20+24*d);
             const uint32_t panel[]={0,0,0,0,2,0x18};
             if(!d && !memcmp(c,panel,24))continue;
@@ -69,7 +81,7 @@ struct Display13OutputWiring {
             c[1]=ddc[d];c[2]=2;c[4]=0x800;c[5]=panel?0x202:(c[5]&~9U)|2U;
         }
         if(!TGLComboDP::apply(dp&3,platform,bytes))return false;
-        for(unsigned d=0;d<2;++d)if(panel&(1U<<d)) {
+        for(unsigned d=0;d<2;++d)if(internal()&(1U<<d)) {
             const uint32_t c[]={d,0,0,0,2,0x18};memcpy(p+0x20+24*d,c,sizeof(c));
         }
         return true;

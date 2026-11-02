@@ -39,6 +39,40 @@ struct Fixture {
     }
     Readout inspect(unsigned ddi=1,const Display13TC::Boot *tc=nullptr) {return Display13FBMemory::inspect(*this,controller,sizeof(controller),framebuffer,sizeof(framebuffer),0x10000000,memory,true,0,ddi,tc);}
 };
+static void testDSIBacking() {
+    const auto setup=[](Fixture &f) {
+        const std::map<uint32_t,uint32_t> source {
+            {0x7B008,0xC0000000},{0x6B400,0x80030006},{0x70008,0},{0x60400,0},
+            {0x6B030,0x20130300},{0x6B094,1},{0x6B404,0},{0x6B034,0},{0x64000,0x80000000},
+            {0x164280,0x1E07801},{0x46014,0xCC000000},{0x16428C,0x3001FB},{0x164290,0xE84},
+            {0x6B000,0x04650437},{0x6B008,0x044F044D},{0x6B00C,0x07D1077F},{0x6B014,0x07A907A7},
+            {0x51004,0x40000000},{0x42084,0},{0x70188,68},{0x70190,0x077F0437}};
+        for(auto entry:source)f.registers[entry.first]=entry.second;
+        return XELP::DSI::decodeReadout([&](uint32_t reg,uint32_t &v) {
+            auto i=f.registers.find(reg);if(i==f.registers.end())return false;v=i->second;return true;
+        },38400);
+    };
+    const auto inspect=[](Fixture &f,const XELP::DSI::Readout &source) {
+        return Display13FBMemory::inspect(f,f.controller,sizeof(f.controller),f.framebuffer,sizeof(f.framebuffer),
+            0x10000000,memory,true,0,0,nullptr,nullptr,false,&source);
+    };
+    Fixture good;const auto source=setup(good);assert(source.complete());
+    auto result=inspect(good,source);assert(result.status==Status::Complete && result.verifiedPages==good.ptes.size());
+    // The GOP has global DPT enabled, but its linear plane still addresses GGTT.
+    // No acceptance of tiled/rotated geometry or a shortened pool follows.
+    for(auto pair:std::map<uint32_t,uint32_t>{{0x70180,0x94000408},{0x70188,67},
+            {0x70190,0x0437077F},{0x42084,UINT32_MAX},{0x60400,0x80000000}}) {
+        Fixture bad;setup(bad);bad.registers[pair.first]=pair.second;
+        assert(inspect(bad,source).status==Status::DisplayState && !bad.reads);
+    }
+    for(auto reg:{0x7B008U,0x6B400U,0x6B000U,0x16428CU,0x51004U}) {
+        Fixture changed;setup(changed);changed.changeRegister=reg;
+        assert(inspect(changed,source).status==Status::StateChanged);
+    }
+    Fixture pte;setup(pte);pte.ptes[7]^=2;assert(inspect(pte,source).status==Status::PTE);
+    Fixture lost;setup(lost);lost.deadPower=true;assert(inspect(lost,source).status==Status::StateChanged);
+    auto wrong=source;wrong.identity.pipe=1;assert(inspect(good,wrong).status==Status::DisplayState);
+}
 static void testRelocatedPools() {
     for(auto ggc : {0xFEC1U,0x02C1U,0x03C1U,0x04C1U}) {
         Fixture f;const auto moved=XELPMemory::decode(ggc,0x91000001,1);assert(moved.valid);
@@ -75,6 +109,7 @@ static void testSlotClaims() {
 }
 
 int main() {
+    testDSIBacking();
     for(unsigned ddi=3;ddi<=6;++ddi) {
         Fixture f;const auto tc=ddi-3;
         f.registers[0x45454]=3U<<(2*ddi);f.registers[0x161500+4*tc]=0xC;
@@ -268,6 +303,11 @@ int main() {
     assert(!associations(shared.controller,sizeof(shared.controller),shared.framebuffer,sizeof(shared.framebuffer),owner+8));
     put(shared.framebuffer,0x4348,uintptr_t(1));
     assert(!associations(shared.controller,sizeof(shared.controller),shared.framebuffer,sizeof(shared.framebuffer),owner));
+    put(shared.framebuffer,0x4340,uintptr_t(0x543200));
+    assert(!associations(shared.controller,sizeof(shared.controller),shared.framebuffer,sizeof(shared.framebuffer),owner,true));
+    assert(!associations(shared.controller,sizeof(shared.controller),shared.framebuffer,sizeof(shared.framebuffer),owner,true,0x543208));
+    assert(associations(shared.controller,sizeof(shared.controller),shared.framebuffer,sizeof(shared.framebuffer),owner,true,0x543200));
+    assert(!associations(shared.controller,sizeof(shared.controller),shared.framebuffer,sizeof(shared.framebuffer),0,true,0x543200));
     Fixture changedOwner;put(changedOwner.controller,0xC0,owner);changedOwner.changeOwner=true;
     assert(Display13FBMemory::inspect(changedOwner,changedOwner.controller,sizeof(changedOwner.controller),changedOwner.framebuffer,sizeof(changedOwner.framebuffer),0x10000000,memory,true,owner).status==Status::StateChanged);
     Fixture sysmem;put(sysmem.controller,0xE49,uint8_t(1));assert(sysmem.inspect().status==Status::Association);

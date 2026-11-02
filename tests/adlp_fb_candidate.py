@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Replay production board selection and WEX/provider binding for firmware-selected fixed HDMI."""
 from pathlib import Path
+from production_source import read_source
 import re,subprocess,tempfile
-r=Path(__file__).resolve().parents[1];s=(r/'WhateverXe/kern_xe.cpp').read_text()
+r=Path(__file__).resolve().parents[1];s=read_source(r/'WhateverXe/kern_xe.cpp')
 f='\n'.join(re.search(re.escape(sig)+r'.*?\n\}',s,re.S).group() for sig in ['Display13OutputWiring XE::display13BoardWiring(', 'bool XE::xelpBindProbe('])
 code=r'''
 #include <cassert>
@@ -12,6 +13,8 @@ code=r'''
 #include "kern_display13_firmware.hpp"
 #include "kern_display13_fb_topology.hpp"
 #include "kern_alderlake_s.hpp"
+bool adopt=false,hdmiTrial=false;
+bool checkKernelArgument(const char *s){return !strcmp(s,"-wex-dsi-adopt")?adopt:!strcmp(s,"-wex-dsi-hdmi-test")?hdmiTrial:false;}
 struct OSData {void *data=nullptr;unsigned bytes=0;void *getBytesNoCopy(){return data;}unsigned getLength(){return bytes;}};
 #define OSDynamicCast(T,p) static_cast<T *>(p)
 struct IOService {OSData *property=nullptr;OSData *getProperty(const char *){return property;}};
@@ -19,12 +22,15 @@ struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegis
 XELP::ProbeConfig seen;unsigned calls=0;
 bool configure(void *c,const XELP::ProbeConfig *p){assert(c==(void*)1);seen=*p;++calls;return p->valid();}
 struct XE {
+ bool dsiPanelOnly=false,dsiCommandTest=false,dsiPanelTest=false,dsiHostTest=false,dsiStopTest=false,dsiPowerTest=false;
  XELP::Profile xeProfile=XELP::identify(0x46A68086,12,0x9A498086);
  XELP::VBT::Ports firmwarePorts;
  bool adlpDisplaySelected=true,adlsDisplaySelected=false,tglHDMIWiringApplied=false,tglTCWiringLoaded=false;
  bool display13PanelProbeReady=true,display13PanelPowerReady=true;
+ bool dsiResourcesReady=false,profileReady=true;
+ bool prepareDSIFirmware(IOService *){return profileReady;}
  bool display13FBTopologyHooksReady=true,display13TCProbeReady=true,display13FBTCHooksReady=true;
- bool display13TCDPProbeReady=true,display13DPProbeReady=false,display13FBSSTHooksReady=true,display13FBAUXHooksReady=true;
+ bool display13DPAltProbeReady=true,display13TCDPProbeReady=true,display13DPProbeReady=false,display13FBSSTHooksReady=true,display13FBAUXHooksReady=true;
  uintptr_t xelpProviderProbe=1,xelpProviderConfigureProbe=reinterpret_cast<uintptr_t>(configure);
  void *adlnTopologyController=(void*)1;Display13OutputWiring adlnOutputWiring,tglHDMIWiring;
  struct {bool valid=false;unsigned excluded=0;unsigned selected(){return 0;}}adlsWiring;
@@ -35,10 +41,22 @@ struct XE {
 };
 FUNCTIONS
 int main(){
+ XE dsi;dsi.adlnOutputWiring.valid=true;dsi.adlnOutputWiring.dsi=1;
+ dsi.adlnOutputWiring.hdmi=2;dsi.adlnOutputWiring.ddc[1]=2;
+ assert(!dsi.xelpBindProbe((void*)1));dsi.dsiResourcesReady=true;
+ assert(dsi.xelpBindProbe((void*)1) && seen.combo==2);
  XE x;IOService pci;x.firmwarePorts.status=XELP::VBT::Status::Valid;x.firmwarePorts.present=0x38;
  for(unsigned d=3;d<=5;++d){auto &p=x.firmwarePorts.port[d];p.type=d==5?4:0x12;p.ddc=d;p.capabilities=3;p.hdmiPreset=7;}
  auto w=x.display13BoardWiring(&pci);assert(w.described() && w.hdmi==0x18 && w.ddc[3]==9 && w.ddc[4]==10 && !w.dp);
  assert(!Display13FBTopology::supportedWiring(w) && Display13FBTopology::supportedWiring(w,true));
+ adopt=true;
+ auto dw=x.display13BoardWiring(&pci);assert(dw.described() && dw.dsi==1 && dw.hdmi==w.hdmi);
+ assert(!Display13FBTopology::supportedWiring(dw,true) && Display13FBTopology::supportedWiring(dw,true,true));
+ hdmiTrial=true;assert(!x.display13BoardWiring(&pci).described());hdmiTrial=false;
+ x.profileReady=false;assert(!x.display13BoardWiring(&pci).described());x.profileReady=true;
+ x.firmwarePorts.present|=1;x.firmwarePorts.port[0].type=0x12;x.firmwarePorts.port[0].ddc=1;
+ assert(!x.display13BoardWiring(&pci).described());x.firmwarePorts.present&=~1U;
+ adopt=false;assert(!x.display13BoardWiring(&pci).dsi);
  x.adlnOutputWiring=w;assert(x.xelpBindProbe((void*)1));
  assert(seen.valid() && !seen.combo && seen.comboBackend==3 && seen.legacy==0x18 && seen.legacyBackend==0x78);
  assert(seen.profile.family==XELP::Family::AlderLakeP && seen.profile.admitted());

@@ -4,6 +4,7 @@
 #define KERN_DISPLAY13_FB_IRQ_HPP
 #include <stdint.h>
 #include "kern_display13_power_bridge.hpp"
+#include "kern_display13_transcoder.hpp"
 namespace Display13FBIRQ {
 // The IRQ simple lock protects this list. Each node lives on its real native
 // handler's stack until end(). A later master restore cannot grant DE access
@@ -46,10 +47,11 @@ constexpr uint32_t DSBInterrupt(unsigned pipe,unsigned dsb) {return 0x70B28+0x10
 constexpr uint32_t DSBControl(unsigned pipe,unsigned dsb) {return DSBInterrupt(pipe,dsb)-0x20;}
 enum class Status : uint32_t {Unavailable,Complete,Power,ForeignIRQ,Topology,Readback,Faulted};
 struct State {
+    Display13Transcoder::Bindings transcoders;
     bool begun {},enabled {},faulted {};
     Status firstFailure {Status::Unavailable};
     uint32_t failureRegister {},failureBits {};
-    uint32_t excludedPCH {},ports {3};
+    uint32_t excludedPCH {},ports {3},typeC {};
     uint32_t active {},configured {},priorIER[3] {},priorIMR[3] {},priorPCHIER {},priorPCHIMR {};
     uint32_t priorTCEnable {},priorDDIEnable {},priorDSB[3][3] {},lastMaster {},raw[3] {},lastPCH {},lastDDI {},lastTC {},foreign {};
     uint64_t interrupts {},vblanks[3] {},flips[3] {},underruns[3] {},dsbErrors[3] {};
@@ -60,13 +62,15 @@ inline bool powered(uint32_t wells,unsigned pipe) {
     if(wells==UINT32_MAX || pipe>=3 || (wells&3)!=3)return false;
     return (wells&(1U<<(10+2*pipe))) && (!pipe || (wells&(1U<<2)));
 }
-template<class IO> ActivePipes readActivePipes(IO &io,uint32_t allowed) {
+template<class IO> ActivePipes readActivePipes(IO &io,uint32_t allowed,const Display13Transcoder::Bindings &transcoders={}) {
     ActivePipes r;r.allowed=allowed;
-    if(!allowed || (allowed&~7U)) {r.status=Status::Topology;return r;}
+    if(!allowed || (allowed&~7U) || !transcoders.valid()) {r.status=Status::Topology;return r;}
     const auto wells=io.read(Driver);if(wells==UINT32_MAX) {r.status=Status::Readback;return r;}
+    if(transcoders.dsi0Pipe<3 && !powered(wells,transcoders.dsi0Pipe)) {r.status=Status::Power;return r;}
     for(unsigned p=0;p<3;++p)if(powered(wells,p)) {
-        const auto conf=io.read(0x70008+0x1000*p);
+        const auto conf=Display13Transcoder::control(io,p,transcoders);
         if(conf==UINT32_MAX) {r.status=Status::Readback;return r;}
+        if(transcoders.dsi(p) && (conf&0xC0000000U) && (conf&0xC0000000U)!=0xC0000000U) {r.status=Status::Topology;return r;}
         if(conf&Enable)r.active|=1U<<p;
     }
     r.status=r.active && !(r.active&~allowed) ? Status::Complete : Status::Topology;return r;
@@ -81,7 +85,20 @@ inline uint32_t nativePipe(uint32_t raw,unsigned pipe) {
     for(unsigned dsb=0;dsb<3;++dsb)if(raw&(1U<<(13+dsb)))result|=1U<<(14+3*dsb+pipe);
     return result;
 }
-inline uint32_t pchOwned(const State &s) {return ((s.ports&7)<<16)|((s.ports>>3)<<24);}
+inline uint32_t pchOwned(const State &s) {return ((s.ports&7)<<16)|(((s.ports&~s.typeC)>>3)<<24);}
+inline uint32_t northOwned(const State &s) {return (s.typeC>>3)<<16;}
+constexpr uint32_t NorthControl=0x44038;
+inline uint32_t northControl(const State &s,uint32_t value) {
+    uint32_t r=0;for(unsigned tc=0;tc<4;++tc)if(s.typeC&(8U<<tc))r|=value<<(4*tc);return r;
+}
+// Exact c004fc1a processDEInterrupt: DP-alt events occupy the second output
+// word, bits2*TC (long) / 2*TC+1 (short), not PCH legacy hotplug bits6+.
+inline uint32_t nativeDPAlt(uint32_t pending,uint32_t control) {
+    uint32_t r=0;for(unsigned tc=0;tc<4;++tc)if(pending&(1U<<(16+tc))) {
+        if(control&(2U<<(4*tc)))r|=1U<<(2*tc);
+        if(control&(1U<<(4*tc)))r|=2U<<(2*tc);
+    }return r;
+}
 // Linux GEN11_DE_HPD: TC1..6 at bits16..21, TBT1..6 at bits0..5.
 // Apply the same connector exclusion to both PCH and north HPD banks.
 // Reference: samranahmad09/WhateverXe-RaptorLakeP, 2195924, this header.
@@ -93,7 +110,7 @@ inline uint32_t ddiMask(const State &s,uint32_t value) {
     uint32_t m=0;for(unsigned p=0;p<3;++p)if(s.ports&(1U<<p))m|=value<<(4*p);return m;
 }
 inline uint32_t tcMask(const State &s,uint32_t value) {
-    uint32_t m=0;for(unsigned tc=0;tc<4;++tc)if(s.ports&(8U<<tc))m|=value<<(4*tc);return m;
+    uint32_t m=0;for(unsigned tc=0;tc<4;++tc)if((s.ports&~s.typeC)&(8U<<tc))m|=value<<(4*tc);return m;
 }
 inline uint32_t nativeHotplug(uint32_t sde,uint32_t ddi,uint32_t tcStatus=0) {
     uint32_t result=0;
@@ -124,12 +141,14 @@ constexpr uint32_t NativeGT=(3U)|(1U<<29); // Exact donor non-display callback d
 // pipe's resources. Keep the live boot backend's default at pipe A. Changing
 // the set requires the existing masked/quiesced transition, not an idempotent
 // enable that silently admits a newly active bank.
-template<class IO> Status enable(IO &io,State &s,uint32_t excludedPCH=0,uint32_t sharedGT=0,uint32_t expectedPipes=1,uint32_t ports=3) {
+template<class IO> Status enable(IO &io,State &s,uint32_t excludedPCH=0,uint32_t sharedGT=0,uint32_t expectedPipes=1,uint32_t ports=3,uint32_t typeC=0) {
     if(s.faulted)return Status::Faulted;
-    if(!ports || (ports&~0x7FU) || (s.begun && ports!=s.ports))return fail(io,s,Status::Topology);
-    s.ports=ports;
+    const bool dsi=s.transcoders.dsi0Pipe!=UINT32_MAX;
+    if(!s.transcoders.valid() || (!ports && !dsi) || (dsi && (ports&1)) || (ports&~0x7FU) || (typeC&~(ports&0x78)) || (s.begun && (ports!=s.ports || typeC!=s.typeC)))return fail(io,s,Status::Topology);
+    if(dsi)excludedPCH|=1U<<16; // HPD-A is the panel reset GPIO, not hotplug.
+    s.ports=ports;s.typeC=typeC;excludedPCH|=(typeC>>3)<<24;
     if((excludedPCH&pchOwned(s)) || (excludedPCH&~(PCHTypeC|PCHCombo)) || (sharedGT && sharedGT!=NativeGT) || !expectedPipes || (expectedPipes&~7U))return fail(io,s,Status::Topology);
-    if(!available(io) || ((ports&0x78) && !io.readable(TCControl)))return Status::Unavailable;
+    if(!available(io) || (typeC && !io.readable(NorthControl)) || ((ports&0x78) && !io.readable(TCControl)))return Status::Unavailable;
     // Native repeated enable is idempotent. Do not drop a pending flip/DSB
     // completion or undo hwSetInterruptForTransaction's VBL mask.
     if(s.enabled && excludedPCH!=s.excludedPCH)return fail(io,s,Status::Topology);
@@ -137,11 +156,13 @@ template<class IO> Status enable(IO &io,State &s,uint32_t excludedPCH=0,uint32_t
     if(s.enabled && s.active)return (io.read(Master)&Enable) && (io.read(GfxMaster)&Enable) ?
         Status::Complete : fail(io,s,Status::Readback);
     auto wells=io.read(Driver);
+    if(dsi && !powered(wells,s.transcoders.dsi0Pipe))return fail(io,s,Status::Power);
     for(unsigned p=0;p<3;++p)if((expectedPipes&(1U<<p)) && !powered(wells,p))return fail(io,s,Status::Power);
     uint32_t active=0,configured=0;
     for(unsigned p=0;p<3;++p)if(powered(wells,p)) {
-        const auto conf=io.read(0x70008+0x1000*p);
+        const auto conf=Display13Transcoder::control(io,p,s.transcoders);
         if(conf==UINT32_MAX)return fail(io,s,Status::Readback);
+        if(s.transcoders.dsi(p) && (conf&0xC0000000U) && (conf&0xC0000000U)!=0xC0000000U)return fail(io,s,Status::Topology);
         if(conf&Enable)active|=1U<<p;
         const auto ier=io.read(PipeIIR(p)+4),imr=io.read(PipeIIR(p)-4);
         if((ier&~imr)&~PipeOwned)return fail(io,s,Status::ForeignIRQ,PipeIIR(p)+4,(ier&~imr)&~PipeOwned);
@@ -149,15 +170,13 @@ template<class IO> Status enable(IO &io,State &s,uint32_t excludedPCH=0,uint32_t
         configured|=1U<<p;
     }
     if(active!=expectedPipes)return fail(io,s,Status::Topology);
-    // This backend owns fixed legacy TC via PCH HPD. North TC/TBT
-    // interrupts describe DP-alt/TBT transports, even on the same physical
-    // connector. Mask those firmware enables for selected fixed ports too.
-    // Linux adlp_tc_phy_hpd_live_status separates these from PCH legacy HPD.
-    const uint32_t excludedHPD=hpdExcluded(excludedPCH|((ports&0x78)<<21));
+    // Fixed links use PCH HPD; USB-C DP-alt uses north TC HPD. TBT is not
+    // implemented. Preserve status for excluded transports while masking them.
+    const uint32_t excludedHPD=hpdExcluded(excludedPCH|((ports&0x78)<<21))&~northOwned(s);
     constexpr uint32_t otherBanks[] {0x44448,0x44468,HPDBank,0x44488};
     for(auto iir : otherBanks) {
         auto pending=io.read(iir+4)&~io.read(iir-4);
-        if(iir==HPDBank)pending&=~excludedHPD;
+        if(iir==HPDBank)pending&=~(excludedHPD|northOwned(s));
         if(pending)return fail(io,s,Status::ForeignIRQ,iir+4,pending);
     }
     const auto pchIER=io.read(0xC400C),pchIMR=io.read(0xC4004);
@@ -187,6 +206,17 @@ template<class IO> Status enable(IO &io,State &s,uint32_t excludedPCH=0,uint32_t
         if((io.read(HPDBank+4)&excludedHPD) || (~io.read(HPDBank-4)&excludedHPD))
             return fail(io,s,Status::Readback);
     }
+    if(typeC) {
+        const auto ctl=io.read(NorthControl);
+        if(ctl==UINT32_MAX)return fail(io,s,Status::Readback);
+        io.write(NorthControl,(ctl&~0x333333U)|northControl(s,8)|(ctl&northControl(s,3)));
+        io.write(HPDBank-4,io.read(HPDBank-4)&~northOwned(s));
+        io.write(HPDBank+4,io.read(HPDBank+4)|northOwned(s));
+        const auto stale=io.read(HPDBank)&northOwned(s);if(stale)io.write(HPDBank,stale);
+        if((io.read(NorthControl)&northControl(s,8))!=northControl(s,8) ||
+           (io.read(HPDBank+4)&northOwned(s))!=northOwned(s) || (io.read(HPDBank-4)&northOwned(s)))
+            return fail(io,s,Status::Readback);
+    }
     s.excludedPCH=excludedPCH;
     for(unsigned p=0;p<3;++p)if(configured&(1U<<p)) {
         const auto enabled=(active&(1U<<p)) ? (PipeOwned&~4U) : 0U;
@@ -206,7 +236,10 @@ template<class IO> Status enable(IO &io,State &s,uint32_t excludedPCH=0,uint32_t
     }
     const auto ddi=io.read(DDIControl);
     if(ddi==UINT32_MAX)return fail(io,s,Status::Readback);
-    io.write(DDIControl,(ddi&~0x3333U)|ddiMask(s,8)|(ddi&ddiMask(s,3))); // Clear only owned stale HPD status.
+    // DSI's HPD-A is an output GPIO: disable its HPD detector, preserve
+    // OUTPUT_DATA bit2 and leave its W1C status untouched under this IRQ lock.
+    io.write(DDIControl,(ddi&~(0x3333U|(dsi?8U:0U)))|ddiMask(s,8)|(ddi&ddiMask(s,3)));
+    if(dsi && (io.read(DDIControl)&12)!=(ddi&4))return fail(io,s,Status::Readback);
     if(ports&0x78) {
         const auto tc=io.read(TCControl);s.lastTC=tc;if(tc==UINT32_MAX)return fail(io,s,Status::Readback);
         io.write(TCControl,(tc&~0x333333U)|tcMask(s,8)|(tc&tcMask(s,3)));
@@ -240,9 +273,12 @@ template<class IO> Status disable(IO &io,State &s) {
 // stale-status ACK is part of this native activation boundary.
 template<class IO> Status extendActivePipes(IO &io,State &s,uint32_t allowed) {
     if(!s.begun || !s.enabled || s.faulted)return Status::Unavailable;
-    const auto actual=readActivePipes(io,allowed);
+    const auto actual=readActivePipes(io,allowed,s.transcoders);
     if(actual.status!=Status::Complete)return actual.status;
-    if(s.active&~actual.active)return Status::Topology;
+    // s.active tracks armed IRQ banks, not currently running transcoders.
+    // Native display-off may stop a peer while retaining its powered bank.
+    // Preserve that bank and pending completions until explicit retirement;
+    // it must not prevent another pipe from being rearmed during wake.
     const auto master=io.read(Master),gfx=io.read(GfxMaster);
     if(master==UINT32_MAX || gfx==UINT32_MAX || !(master&Enable) || !(gfx&Enable))return Status::Readback;
     const auto added=actual.active&~s.active;
@@ -293,14 +329,20 @@ inline uint32_t portPowerDomains() {
 }
 // PLL bypass transitions retain pending interrupt status. Unlike physical
 // well release, they only need stopped consumers while the master is masked.
-template<class IO> bool consumersStopped(IO &io,uint32_t pipes) {
+template<class IO> bool consumersStopped(IO &io,uint32_t pipes,const Display13Transcoder::Bindings &transcoders={}) {
+    if(!transcoders.valid())return false;
     const auto wells=io.read(Driver);
     if(wells==UINT32_MAX || (wells&3)!=3 || (wells&(3U<<16)))return false;
+    if(transcoders.dsi0Pipe<3 && (pipes&(1U<<transcoders.dsi0Pipe)) && !powered(wells,transcoders.dsi0Pipe))return false;
     for(unsigned p=0;p<3;++p)if((pipes&(1U<<p)) && powered(wells,p)) {
-        const auto conf=io.read(0x70008+0x1000*p),cursor=io.read(0x70080+0x1000*p);
-        const auto trans=io.read(0x60400+0x1000*p);
+        const auto conf=Display13Transcoder::control(io,p,transcoders),cursor=io.read(0x70080+0x1000*p);
+        const auto trans=io.read(transcoders.function(p));
         if(conf==UINT32_MAX || cursor==UINT32_MAX || trans==UINT32_MAX ||
            (conf&0xC0000000) || (cursor&63) || (trans&Enable))return false;
+        if(transcoders.dsi(p)) {
+            const auto normal=io.read(0x60400+0x1000*p);
+            if(normal==UINT32_MAX || (normal&Enable))return false;
+        }
         for(unsigned n=0;n<5;++n) {
             const auto plane=io.read(0x70180+0x1000*p+0x100*n);
             if(plane==UINT32_MAX || (plane&Enable))return false;
@@ -329,7 +371,7 @@ template<class IO> Status parkStoppedPipe(IO &io,State &s,unsigned pipe,unsigned
     if(master==UINT32_MAX)return Status::Readback;
     if((master&Enable) || handlers || softwareHandlers || (queued&pipeEvents(pipe)))return Status::Unavailable;
     if(!powered(io.read(Driver),pipe))return Status::Power;
-    if(!consumersStopped(io,1U<<pipe))return Status::Topology;
+    if(!consumersStopped(io,1U<<pipe,s.transcoders))return Status::Topology;
     const auto iir=PipeIIR(pipe),ier=io.read(iir+4),imr=io.read(iir-4);
     // IMR=all ones is the valid fully masked state, including a re-park.
     if(ier==UINT32_MAX)return Status::Readback;
@@ -344,7 +386,7 @@ template<class IO> Status parkStoppedPipe(IO &io,State &s,unsigned pipe,unsigned
     const auto stale=io.read(iir)&PipeOwned;if(stale)io.write(iir,stale);
     if((io.read(iir+4)&PipeOwned) || (~io.read(iir-4)&PipeOwned))return fail(io,s,Status::Readback);
     for(unsigned d=0;d<3;++d)if(io.read(DSBInterrupt(pipe,d))&0xF0000)return fail(io,s,Status::Readback);
-    if(!consumersStopped(io,1U<<pipe))return fail(io,s,Status::Topology);
+    if(!consumersStopped(io,1U<<pipe,s.transcoders))return fail(io,s,Status::Topology);
     s.active&=~(1U<<pipe);return Status::Complete;
 }
 // Caller has masked the master, drained native handlers and stopped all
@@ -357,7 +399,7 @@ template<class IO> Status hotplugOnly(IO &io,State &s,bool preservePipeStatus=fa
     if(already && (!preservePipeStatus || !s.enabled || s.active))return Status::Unavailable;
     const auto wells=io.read(Driver);
     if(wells==UINT32_MAX || (wells&3)!=3)return Status::Power;
-    if(!consumersStopped(io,7))return Status::Topology;
+    if(!consumersStopped(io,7,s.transcoders))return Status::Topology;
     if((io.read(DDIControl)&ddiMask(s,8))!=ddiMask(s,8) ||
        (io.read(0xC400C)&pchOwned(s))!=pchOwned(s) || (io.read(0xC4004)&pchOwned(s)))return Status::Readback;
     uint32_t ier[3] {},imr[3] {};
@@ -397,7 +439,7 @@ template<class IO> bool quiescentPipes(IO &io,const State &s,uint32_t domains,un
         const auto ddi=io.read(0x64000+port*0x100);
         if(ddi==UINT32_MAX || (ddi&Enable))return false;
     }
-    if(!consumersStopped(io,pipes))return false;
+    if(!consumersStopped(io,pipes,s.transcoders))return false;
     for(unsigned p=0;p<3;++p)if((pipes&(1U<<p)) && powered(wells,p)) {
         // No bank notification is unmasked for a domain about to disappear.
         if(!active && (io.read(PipeIIR(p)+4)&~io.read(PipeIIR(p)-4)))return false;
@@ -426,7 +468,7 @@ template<class IO> Status beginPowerRelease(IO &io,State &s,PowerReleaseScope &g
     if(displayHandlers || softwareHandlers || (queued&events) || auxiliary || (hotplug&hpd))return Status::Unavailable;
     const auto master=io.read(Master),wells=io.read(Driver);
     if(master==UINT32_MAX || wells==UINT32_MAX || bool(master&Enable)!=s.enabled)return Status::Readback;
-    if(!consumersStopped(io,pipes))return Status::Topology;
+    if(!consumersStopped(io,pipes,s.transcoders))return Status::Topology;
     // Preflight every bank before parking any. A never-configured bank must
     // already have all notifications masked; it is not ours to clear.
     for(unsigned p=0;p<3;++p)if(pipes&(1U<<p)) {
@@ -518,7 +560,18 @@ template<class IO> Events collect(IO &io,State &s) {
         if(status)io.write(DDIControl,(ddi&~0x3333U)|status);
         const auto owned=sde&pchOwned(s);if(owned)io.write(0xC4008,owned);
     }
-    constexpr uint32_t supported=(7U<<16)|(1U<<23)|Enable;
+    if(master&(1U<<21)) {
+        const auto status=io.read(HPDBank);
+        const auto pending=status&io.read(HPDBank+4)&~io.read(HPDBank-4);
+        if(status==UINT32_MAX || (pending&~northOwned(s))) {e.status=fail(io,s,Status::ForeignIRQ,HPDBank,pending);return e;}
+        const auto ctl=io.read(NorthControl);
+        if(ctl==UINT32_MAX){e.status=fail(io,s,Status::Readback);return e;}
+        e.aux=nativeDPAlt(pending,ctl);
+        uint32_t ack=0;for(unsigned tc=0;tc<4;++tc)if(pending&(1U<<(16+tc)))ack|=ctl&(3U<<(4*tc));
+        if(ack)io.write(NorthControl,(ctl&~0x333333U)|ack);
+        const auto owned=status&northOwned(s);if(owned)io.write(HPDBank,owned);
+    }
+    const uint32_t supported=(7U<<16)|(1U<<23)|(s.typeC?(1U<<21):0U)|Enable;
     if(master&~supported) {s.foreign|=master&~supported;e.status=fail(io,s,Status::ForeignIRQ);return e;}
     io.write(Master,Enable);e.status=Status::Complete;return e;
 }

@@ -31,6 +31,19 @@ struct IO {
     void delayUs(unsigned us) {delays+=us;}
 };
 int main() {
+    for(unsigned failure=0;failure<5;++failure) {
+        IO io;State state;Display13Transcoder::Bindings dsi;dsi.dsi0Pipe=0;
+        io.r[0x70008]=0;io.r[0x7B008]=0xC0000000;io.r[0x6B400]=0x80030006;
+        assert(begin(io,state,0,dsi)==Status::Complete && !io.writes);
+        assert(begin(io,state)==Status::Topology); // cannot erase the active mapping
+        assert(singlePipeLayout(io,state).active && pipeLayout(io,state,0).active);
+        if(failure==0)assert(stopPipe(io,state,0)==Status::Conflict && state.pipe[0].consumers);
+        if(failure==1)assert(stop(io,state)==Status::Conflict && state.pipe[0].consumers);
+        if(failure==2){io.r[0x6B400]|=5U<<12;assert(singlePipeLayout(io,state).status==Status::Topology);}
+        if(failure==3){io.r[0x7B008]=0x80000000;assert(pipeLayout(io,state,0).status==Status::Conflict);}
+        if(failure==4){io.r[0x7B008]=0;io.r[0x6B400]=0;io.r[0x70180]=0;
+            assert(stopPipe(io,state,0)==Status::Complete && !state.pipe[0].consumers);}
+    }
     // Independent Linux/MBUS examples: absolute ownership and relative plane
     // registers intentionally differ on B, while A remains byte-identical.
     State address;

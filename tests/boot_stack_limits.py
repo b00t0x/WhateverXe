@@ -24,6 +24,7 @@ with tempfile.TemporaryDirectory(prefix='wex-stack-limits-') as tmp:
   '_ZN2XE27wrapAlderLakeNSetupWorkLoopEP9IOServiceP10IOWorkLoop':2440,
   '_ZN12_GLOBAL__N_124display13FBInspectMemoryEP9IOServicebjb':2408,
   '_ZN2XE19wrapDisplay13TCModeEP8OSObjectj':1816,
+  '_ZN2XE20display13WMArmUpdateEP9IOService':3432,
   '_ZL15tglHostCSBFatalPKcPKjPv':6504,
   '_ZN2XE21wrapTGLGuCHeaderPanicEPv':3992,
   '_ZN13Display13Boot9normalizeI_fixture':2328,
@@ -48,4 +49,4 @@ with tempfile.TemporaryDirectory(prefix='wex-stack-limits-') as tmp:
    try:module.stack_files([obj])
    except ValueError:pass
    else:raise AssertionError('missing report for emitted code accepted')
-print('PASS all-TU frame limits: unknown/dynamic frames, 7 old large frames, duplicate bodies, missing records')
+print('PASS all-TU frame limits: unknown/dynamic frames, 8 old large frames, duplicate bodies, missing records')

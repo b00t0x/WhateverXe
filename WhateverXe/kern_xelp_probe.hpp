@@ -43,6 +43,10 @@ template<class IO> uint32_t probeMode(IO &io,const ProbeBinding &b,uintptr_t man
         Display13TC::Port p;
         const bool hdmi=c[1]>=9 && c[1]<=12 && c[2]==2 && c[3]==1 && c[4]==0x800 && (c[5]&0xB)==2;
         const bool dp=c[1]==c[0]+6 && c[2]==1 && c[3]==1 && c[4]==0x400 && c[5]==0x201;
+        if(dp && (b.config.typeC&b.config.legacyBackend&(1U<<c[0])) && Display13TC::Port::resolve(c[0],p)) {
+            if(!io.readable(0xc4000) || !io.readable(0x44470))return 0;
+            return p.altHPD(io.read(0xc4000),io.read(0x44470))?3:0;
+        }
         if(!(b.config.legacy&b.config.legacyBackend&(1U<<c[0])) ||
            !Display13TC::Port::resolve(c[0],p) || (!hdmi && !dp) ||
            !io.readable(0xC4000) || !io.readable(p.ready))return 0;

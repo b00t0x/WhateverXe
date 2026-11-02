@@ -1,4 +1,4 @@
-// Fixed legacy TC lifetime. The host serializes native clients and proves
+// Legacy/DP-alt TC lifetime. The host serializes native clients and proves
 // firmware adoption/quiescence; this core never executes the TGL FIA setter.
 #ifndef KERN_DISPLAY13_TC_MODE_HPP
 #define KERN_DISPLAY13_TC_MODE_HPP
@@ -14,6 +14,7 @@ struct Mode {
     uintptr_t controller {},object {};unsigned ddi {};
     Phase phase {Phase::Idle};bool disconnectPending {};
     Ownership ownership;
+    unsigned selectedMode {};Lanes lanes;
     // ADLP: register/lane access -> ownership -> AUX cold block.
     // DDI IO belongs to the clock lifecycle, after the PLL is running.
     // An already-powered firmware link is not evidence that these scopes can
@@ -25,31 +26,36 @@ struct Mode {
         Port p;return Port::resolve(d,p) ? Display13Power::ddiDomain(d)|
             Display13Power::auxDomain(d)|Display13Power::bit(Display13Power::Domain::PW2) : 0;
     }
-    template<class IO> Change connect(IO &io,uintptr_t owner,uintptr_t identity,unsigned d) {
+    template<class IO> Change connect(IO &io,uintptr_t owner,uintptr_t identity,unsigned d,unsigned wanted=4) {
         Change r;
-        if(!owner || !identity || !domains(d))return r;
+        if(!owner || !identity || !domains(d) || (wanted!=3 && wanted!=4))return r;
         if(controller && (owner!=controller || identity!=object || d!=ddi)){r.status=Status::InUse;return r;}
         if(!io.admissionReady()){r.status=Status::NotReady;return r;}
         if(phase==Phase::Cleanup){r.status=Status::InUse;return r;}
         if(phase==Phase::Active) {
-            if(io.nativeMode()!=4){r.status=Status::Readback;return r;}
-            r.phy=ownership.acquire(io,owner,identity,d);
+            if(wanted!=selectedMode || io.nativeMode()!=selectedMode ||
+               (wanted==3 && !lanes.unchanged(io,ownership.port))){r.status=Status::Readback;return r;}
+            r.phy=ownership.acquire(io,owner,identity,d,false,wanted);
             r.status=r.phy.status;if(r.status==Status::Complete)disconnectPending=false;
             return r;
         }
         if(io.nativeMode()!=0){r.status=Status::NeedsAdoption;return r;}
         // Keep failed acquisitions bound, including their exact power/PHY
         // cleanup obligations. Never replace them with another native object.
-        controller=owner;object=identity;ddi=d;phase=Phase::Cleanup;
+        controller=owner;object=identity;ddi=d;selectedMode=wanted;phase=Phase::Cleanup;
         r.power=io.acquireDomains(accessLease,accessDomains());
         if(r.power.status!=Display13Power::Status::Complete){r.status=Status::NoPower;return r;}
         const bool firmware=io.inheritedVerified(owner,identity,d);
-        r.phy=ownership.acquire(io,owner,identity,d,firmware);
+        r.phy=ownership.acquire(io,owner,identity,d,firmware,wanted);
         if(r.phy.status!=Status::Complete){r.status=r.phy.status;return r;}
         r.power=io.acquireDomains(auxLease,Display13Power::auxDomain(d));
         if(r.power.status!=Display13Power::Status::Complete){r.status=Status::NoPower;return r;}
-        r.native=io.nativeSetMode(4);
-        if(r.native || io.nativeMode()!=4){r.status=Status::Readback;return r;}
+        if(wanted==3) {
+            lanes=Lanes::capture(io,ownership.port);
+            if(!lanes.valid()){r.status=Status::NotReady;return r;}
+        }
+        r.native=io.nativeSetMode(wanted);
+        if(r.native || io.nativeMode()!=wanted){r.status=Status::Readback;return r;}
         phase=Phase::Active;disconnectPending=false;r.status=Status::Complete;return r;
     }
     template<class IO> Change disconnect(IO &io,uintptr_t owner,uintptr_t identity,unsigned d) {
@@ -76,7 +82,7 @@ struct Mode {
             r.power=io.releaseDomains(accessLease);
             if(r.power.status!=Display13Power::Status::Complete){r.status=Status::NoPower;return r;}
         }
-        controller=object=0;ddi=0;phase=Phase::Idle;disconnectPending=false;r.status=Status::Complete;return r;
+        controller=object=0;ddi=selectedMode=0;lanes={};phase=Phase::Idle;disconnectPending=false;r.status=Status::Complete;return r;
     }
 };
 }

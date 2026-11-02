@@ -59,6 +59,22 @@ int main() {
         assert(m.phase==Mode::Phase::Idle && !m.ownership.owner && !m.auxLease.owner && !io.native);
         assert(m.connect(io,1,2,d).status==Status::Complete);assert(m.disconnect(io,1,2,d).status==Status::Complete);
     }
+    // DP-alt cannot reuse legacy native mode or unprotected FIA state.
+    for(unsigned d=3;d<=6;++d)for(unsigned physical:{3U,12U,15U}) {
+        IO io(d);Mode m;auto &p=io.port;
+        io.regs[p.ready]=0x1d;io.regs[0xc4000]=0;io.regs[0x44470]=1U<<(16+p.tc);
+        io.regs[p.laneAssignment()]=physical<<(8*(p.tc&1));
+        io.regs[p.pinAssignment()]=(physical==15?3U:4U)<<(4*(p.tc&1));
+        assert(m.connect(io,1,2,d,3).status==Status::Complete && io.native==3);
+        assert(m.lanes.mask==physical && m.lanes.count()==(physical==15?4:2));
+        assert(m.connect(io,1,2,d,4).status==Status::Readback);
+        auto writes=io.sequence.size();io.regs[0x44470]=0;
+        assert(m.connect(io,1,2,d,3).status==Status::Readback && io.sequence.size()==writes);
+        assert(m.disconnect(io,1,2,d).status==Status::Complete && !m.lanes.mask);
+        io.regs[0x44470]=1U<<(16+p.tc);io.regs[p.laneAssignment()]=0;
+        assert(m.connect(io,1,2,d,3).status==Status::NotReady && !io.native);
+        assert(m.disconnect(io,1,2,d).status==Status::Complete);
+    }
     // Firmware may leave a fixed legacy DP source enabled but unowned (Linux
     // intel_tc_port_init_mode). Transfer only ownership; preserve width/link.
     for(unsigned d=3;d<=6;++d)for(unsigned owned:{0U,64U}) {
