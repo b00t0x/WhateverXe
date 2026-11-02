@@ -21,7 +21,8 @@ SequoiaとTahoeは同じOS系列内の互換性のある更新に対応します
 ### 実機で動作確認済み
 
 - Tiger Lake-U：48 EU・80 EU構成。
-- Alder Lake-N：16 EU・24 EU・32 EU構成。
+- Alder Lake-N：16 EU・24 EU構成。
+- Twin Lake：32 EU（N250）。
 - Alder Lake-H：シングルチャネルを含む96 EU構成。
 - Alder Lake-S：UHD Graphics 770。
 
@@ -30,7 +31,7 @@ OS別の範囲と表示構成は[動作確認済みの機能と既知の問題](
 ### 動作を期待できるが実機未検証
 
 - 96 EUを含む対応IDの他のTiger Lake-U/H35構成と、Tiger Lake-H45。
-- 対応IDの他のAlder Lake-N構成とTwin Lake。
+- 対応IDの他のAlder Lake-N / Twin Lake構成。
 - 対応IDの他のAlder Lake-H/P/U・Raptor Lake-H/P構成。
 - 対応IDの他のAlder Lake-S/HX・Raptor Lake-S/HX構成。
 - Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/Pの内蔵eDPは実装済み・実機未検証です。
@@ -92,7 +93,7 @@ BIOS/UEFIで設定できる場合は、**DVMT Pre-Allocatedを96MB**にします
 | Tiger LakeミニPC | Big Sur〜Tahoe：80 EU、1080p60の2画面、消灯復帰、Safari動画・Widevine |
 | Tiger Lakeラップトップ | Big Sur〜Tahoe：48 EU、内蔵eDPと輝度調整、HDMI/USB-C、最大3画面・消灯復帰 |
 | Alder Lake-NミニPC | Big Sur〜Tahoe：16/24 EU、1080p60のHDMI 2画面・消灯復帰 |
-| Alder Lake-Nラップトップ | MicroPC 2とMiniBook X N100のMIPI DSI。Big Sur：輝度・回転・消灯復帰・外部HDMI/USB-C共存。MicroPC 2はHiDPI・最大3画面も確認。Tahoe：MicroPC 2の内蔵／外部表示・輝度・回転・HiDPI |
+| Alder Lake-N / Twin Lakeラップトップ | MicroPC 2（N250）とMiniBook X N100のMIPI DSI。Big Sur：輝度・回転・消灯復帰・外部HDMI/USB-C共存。MicroPC 2はHiDPI・最大3画面も確認。Tahoe：MicroPC 2の内蔵／外部表示・輝度・回転・HiDPI |
 | Alder Lake-H | Big Sur〜Tahoe：96 EU、HDMIとDP→HDMI変換器による3画面。シングルチャネル構成の`4626`でもBig Surの加速を確認 |
 | Alder Lake-S | Big Sur〜Tahoe：UHD 770、HDMI/DP/USB-C、最大3画面、Safari動画。WidevineはBig Sur/Tahoeで確認 |
 

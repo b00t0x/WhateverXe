@@ -21,7 +21,8 @@ Sequoia and Tahoe accept compatible updates within their OS family. Future Apple
 ### Tested on hardware
 
 - Tiger Lake-U: 48- and 80-EU configurations.
-- Alder Lake-N: 16-, 24- and 32-EU configurations.
+- Alder Lake-N: 16- and 24-EU configurations.
+- Twin Lake: 32 EU (N250).
 - Alder Lake-H: 96-EU configurations, including single-channel operation.
 - Alder Lake-S: UHD Graphics 770.
 
@@ -30,7 +31,7 @@ See [tested features and known issues](#tested-features-and-known-issues) for OS
 ### Expected to work, not yet tested on hardware
 
 - Other supported Tiger Lake-U/H35 configurations, including 96 EU, and Tiger Lake-H45.
-- Other supported Alder Lake-N configurations and Twin Lake.
+- Other supported Alder Lake-N / Twin Lake configurations.
 - Other supported Alder Lake-H/P/U and Raptor Lake-H/P configurations.
 - Other supported Alder Lake-S/HX and Raptor Lake-S/HX configurations.
 - Internal eDP on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P is implemented but has not been tested on hardware.
@@ -92,7 +93,7 @@ The common regression checks cover Metal, OpenGL, OpenCL, hardware H.264 encode/
 | Tiger Lake mini PCs | Big Sur–Tahoe: 80 EU, two 1080p60 displays, display off/on, Safari video and Widevine |
 | Tiger Lake laptops | Big Sur–Tahoe: 48 EU, internal eDP and brightness, HDMI/USB-C, up to three displays and display off/on |
 | Alder Lake-N mini PCs | Big Sur–Tahoe: 16/24 EU, two 1080p60 HDMI displays and display off/on |
-| Alder Lake-N laptops | MIPI DSI on MicroPC 2 and MiniBook X N100. Big Sur: brightness, rotation, display off/on and external HDMI/USB-C coexistence; MicroPC 2 also has HiDPI and up to three displays. Tahoe: MicroPC 2 internal/external displays, brightness, rotation and HiDPI |
+| Alder Lake-N / Twin Lake laptops | MIPI DSI on MicroPC 2 (N250) and MiniBook X N100. Big Sur: brightness, rotation, display off/on and external HDMI/USB-C coexistence; MicroPC 2 also has HiDPI and up to three displays. Tahoe: MicroPC 2 internal/external displays, brightness, rotation and HiDPI |
 | Alder Lake-H | Big Sur–Tahoe: 96 EU, three displays using HDMI and a DP-to-HDMI adapter. Single-channel `4626` graphics acceleration checked on Big Sur |
 | Alder Lake-S | Big Sur–Tahoe: UHD 770, HDMI/DP/USB-C and up to three displays; Safari video, with Widevine checked on Big Sur/Tahoe |
 
