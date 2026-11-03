@@ -86,7 +86,7 @@ struct Shutdown {
 // IO::gpio serializes HPD writes; no delays may run under that IRQ lock.
 // A failed transaction is never retried and must retain all resources.
 template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const Profile &profile,
-                             uint32_t planeControl,uint32_t surface,Result &r,Lifecycle &lifecycle,const Shutdown *shutdown=nullptr,Backlight *backlight=nullptr) {
+                             uint32_t planeControl,uint32_t surface,Result &r,Lifecycle &lifecycle,const Shutdown *shutdown=nullptr,Backlight *backlight=nullptr,bool systemWake=false) {
     Readout current=link;
     if(r.attempted)return;
     r.attempted=true;
@@ -122,11 +122,16 @@ template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const P
     };
     const auto frame=[&]() {
         if(!read(0x70040,r.frameBefore))return false;
+        bool rebased=false;
         for(uint32_t us=0;;us+=1000) {
             if(!read(0x70040,r.frameAfter))return false;
             const auto n=uint32_t(r.frameAfter-r.frameBefore);
             if(n && n<0x80000000U)return true;
-            if(n || us>=3*period+1000){r.error=Error::Timeout;return false;}
+            // The first frame after a system power loss may reload the counter.
+            // Require actual forward progress from the new value as well.
+            if(systemWake && n>=0x80000000U && !rebased){r.frameBefore=r.frameAfter;rebased=true;}
+            else if(n){r.error=Error::Timeout;return false;}
+            if(us>=(systemWake?10:3)*period+1000){r.error=Error::Timeout;return false;}
             io.delayUs(1000);r.waitUs+=1000;
         }
     };

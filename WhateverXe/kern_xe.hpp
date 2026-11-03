@@ -8,6 +8,7 @@
 #ifndef kern_xe_hpp
 #define kern_xe_hpp
 
+#include "kern_dsi_sleep_image.hpp"
 #include "kern_tgl_tc_boot.hpp"
 #include "kern_dsi_boot.hpp"
 #include "kern_dsi_apple_timing.hpp"
@@ -246,6 +247,9 @@ private:
     bool processDSINativeTransactions(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     bool processDSINativeAttributes(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     mach_vm_address_t orgDSIAttributes[4] {};
+    mach_vm_address_t dsiFramebufferEvent {};
+    bool dsiSystemWakeNotify {},dsiPagingLayoutKnown {};
+    void finishDSISystemWake(IOService *);
     static uint32_t wrapDSISetStream(IOService *,IOService *,OSObject *,const void *);
     static uint32_t wrapDSISetAttribute(IOService *,uint32_t,uintptr_t);
     static uint32_t wrapDSISetConnectionAttribute(IOService *,int32_t,uint32_t,uintptr_t);
@@ -265,6 +269,7 @@ private:
     bool dsiHostTest {};
     bool dsiStopTest {};
     bool dsiPowerTest {};
+    XELP::DSI::SystemSleepImage dsiSleepImage;
     struct {
         bool sleeping {},failed {};uint32_t cycles {};
         XELP::DSI::Surface::Plane plane;

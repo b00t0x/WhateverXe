@@ -158,6 +158,13 @@ struct NativeBridge {
         --pgRefs[pg-1]; r.status = Status::Complete;
         return r;
     }
+    // A coalesced native get still has to rearm a retained Type-C leaf
+    // following power loss. Balance the temporary logical reference.
+    template<class IO> Result rearmRetained(IO &io,uint32_t domain) {
+        Lease temporary;
+        auto r=acquire(io,state,temporary,domain);
+        return r.status==Status::Complete ? release(io,state,temporary) : r;
+    }
     template<class IO> Result getDDI(IO &io, unsigned port) {
         Result r;
         if (!begun || state.faulted || state.suspended) return r;
@@ -166,6 +173,10 @@ struct NativeBridge {
         if (!ddiRefs[port]) {
             r = acquire(io,state,ddiLease[port],ddiDomain(port));
             if (r.status != Status::Complete) return r;
+        }
+        if(state.deferredTC & ddiDomain(port)) {
+            r=rearmRetained(io,ddiDomain(port));
+            if(r.status!=Status::Complete)return r;
         }
         ++ddiRefs[port]; r.status = Status::Complete;
         return r;
@@ -194,6 +205,10 @@ struct NativeBridge {
         if (!auxRefs[port]) {
             r = acquire(io,state,auxLease[port],auxDomain(port));
             if (r.status != Status::Complete) return r;
+        }
+        if(state.deferredTC & auxDomain(port)) {
+            r=rearmRetained(io,auxDomain(port));
+            if(r.status!=Status::Complete)return r;
         }
         ++auxRefs[port]; r.status = Status::Complete;
         return r;

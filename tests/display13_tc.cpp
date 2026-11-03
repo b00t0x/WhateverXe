@@ -70,6 +70,14 @@ int main(){
         assert(b.putAUX(io,port).status==Status::Complete && b.state.refs[1]==2);
         assert(suspend(io,b.state).status==Status::Complete);
         assert(restore(io,b.state).status==Status::Complete && io.prepares==2);
+        assert(suspend(io,b.state).status==Status::Complete);
+        const auto priorPW2=b.state.refs[1];
+        assert(restore(io,b.state,true).status==Status::Complete && io.prepares==2);
+        assert(b.state.deferredTC==(auxDomain(port)|ddiDomain(port)));
+        assert(b.getAUX(io,port).status==Status::Complete && io.prepares==3 && b.auxHeld(io,port));
+        assert(b.putAUX(io,port).status==Status::Complete && b.state.refs[1]==priorPW2);
+        assert(b.getDDI(io,port).status==Status::Complete && b.ddiHeld(io,port) && !b.state.deferredTC);
+        assert(b.putDDI(io,port).status==Status::Complete && b.state.refs[1]==priorPW2);
         assert(b.putAUX(io,port).status==Status::Complete && b.state.refs[1]==1 && (io.regs[Driver]&0xC)==0xC);
         assert(b.putDDI(io,port).status==Status::Complete && !b.nativeDDIRefs(port));
         assert((io.regs[0x45404]&0xA80A)==0x802 && (io.regs[0x45454]&0x2AAA)==2);

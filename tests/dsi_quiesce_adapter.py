@@ -9,6 +9,9 @@ body=re.search(r'bool XE::quiesceDSIPath\(.*?\n\}',s,re.S)[0]
 b=(root/'tests/dsi_boot.cpp').read_text();fixture=b[b.index('struct IO {'):b.index('Boot capture(')]
 code=r'''
 #include "kern_dsi_quiesce.hpp"
+#include "kern_dsi_sleep_image.hpp"
+#include "kern_display13_clock.hpp"
+static constexpr auto display13ClockVariant(){return Display13Clock::Variant::RPLU;}
 #include "kern_dsi_clock.hpp"
 #include "kern_dsi_restart.hpp"
 #include "kern_dsi_panel.hpp"
@@ -110,6 +113,7 @@ struct XE {
  struct {unsigned dsi=1;operator unsigned()const{return dsi;}}adlnOutputWiring;void *adlnPlatform=nullptr;
  bool dsiNativeWriterHooksReady=true,dsiResourcesReady=true,dsiStopAttempted=false,dsiIRQParked=false,dsiDDIReleased=false,dsiMemoryReleased=false;
  bool dsiStopTest=false,dsiPowerTest=false;
+ SystemSleepImage dsiSleepImage;
  Panel::Shutdown dsiPanelStop;
  struct {bool sleeping=false,failed=false;unsigned cycles=0;Surface::Plane plane;
  uint32_t cursorControl=0,cursorPosition=0,cursorBase=0;Restart::State host;Panel::Result panel;}dsiRuntimePower;

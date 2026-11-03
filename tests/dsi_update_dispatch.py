@@ -31,6 +31,7 @@ struct OSObject {alignas(8) uint8_t bytes[0x4B90]{};unsigned size=sizeof(bytes);
 using IOService=OSObject;
 struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}
  void setProperty(const char *name,const void *data,unsigned bytes){
+  if(!strcmp(name,"WEXDSISystemWakeEvents")){assert(bytes==8);return;}
   assert(!strcmp(name,"WEXDSIModeRequest") && bytes==64);
   const auto words=static_cast<const uint64_t *>(data);assert(words[0]==1);
  }};
@@ -76,6 +77,8 @@ unsigned streamCalls=0;OSObject *expectedPath=nullptr;
 uint32_t nativeStream(IOService*,IOService*,OSObject*,const void*);
 struct XE {
  struct {unsigned dsi=1;}adlnOutputWiring;bool dsiStopAttempted=false,dsiResourcesReady=true;
+ uintptr_t dsiFramebufferEvent=0;bool dsiSystemWakeNotify=false;
+ void finishDSISystemWake(IOService *fb){using Event=uint32_t(*)(IOService*,int,void*);auto event=reinterpret_cast<Event>(dsiFramebufferEvent);event(fb,4,reinterpret_cast<void*>(1));event(fb,8,nullptr);}
  bool dsiPowerTest=false;struct {bool sleeping=false,failed=false;}dsiRuntimePower;unsigned wakeCalls=0;bool wakeOK=false;
  bool dsiStopTest=false,dsiMemoryReleased=false,dsiDDIReleased=false,stopOK=false;unsigned stopCalls=0;
  struct {bool done=false;bool complete(){return done;}}dsiClockStop;
@@ -209,6 +212,11 @@ struct Case {
  }
  void refuse(){const auto calls=armCalls;XE::wrapDisplay13WMArmUpdate(&fb);assert(calls==armCalls && !fbLock.depth && !owner);}
 };
+static unsigned systemEvents;
+static uint32_t systemEvent(IOService*,int event,void *arg){
+ assert(!fbLock.depth && !owner);
+ assert((event==4 && arg==reinterpret_cast<void *>(1)) || (event==8 && !arg));++systemEvents;return 0;
+}
 int main(){
 
  for(auto message:{kIOMessageSystemWillRestart,kIOMessageSystemWillPowerOff}){Case c;put(&c.fb,0x4284,2U);
@@ -233,9 +241,11 @@ int main(){
    c.refuse();c.refuseCursor();xe.wakeOK=false;
    assert(XE::wrapDSISetAttribute(&c.fb,attr,2)==kIOReturnNotReady);
    assert(Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==0);
+   xe.dsiSystemWakeNotify=true;xe.dsiFramebufferEvent=reinterpret_cast<uintptr_t>(&systemEvent);
+   const auto eventsBefore=systemEvents;
    xe.wakeOK=true;assert(XE::wrapDSISetAttribute(&c.fb,attr,2)==kIOReturnSuccess);
    assert(!xe.dsiRuntimePower.sleeping && !xe.dsiStopAttempted && Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==2);
-   auto wakes=xe.wakeCalls;assert(XE::wrapDSISetAttribute(&c.fb,attr,2)==kIOReturnSuccess && xe.wakeCalls==wakes);
+   auto wakes=xe.wakeCalls;assert(XE::wrapDSISetAttribute(&c.fb,attr,2)==kIOReturnSuccess && xe.wakeCalls==wakes && systemEvents==eventsBefore+2);
   }
   xe.dsiRuntimePower.failed=true;auto calls=xe.stopCalls;
   assert(XE::wrapDSISetAttribute(&c.fb,attr,1)==kIOReturnNotReady && xe.stopCalls==calls);
