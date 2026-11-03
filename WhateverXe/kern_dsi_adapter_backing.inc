@@ -297,13 +297,14 @@ bool XE::switchDSINativeSurface() {
         const Display13WM::Snapshot snapshot{&wm,nullptr,ddb,cursorDDB,static_cast<uint32_t>(o.proof.gpu),0,ipc,hz,false,false,
             Display13WM::pipeLineTime(dsiProfile.mode.htotal(),pixel),pixel,0,c.transcoders};
         Surface::Plane current{dsiBoot.control,io.read(0x701CC),dsiBoot.stride,dsiBoot.size,dsiBoot.surface,0,0};
-        auto next=current;next.control=Display13WM::arbitrationControl((current.control&~(7U<<10))|(4U<<10));
+        auto next=current;next.size=((uint32_t(dsiProfile.mode.height)-1)<<16)|(dsiProfile.mode.width-1);
+        next.control=Display13WM::arbitrationControl((current.control&~(7U<<10))|(4U<<10));
         next.color|=1U<<13;next.stride=static_cast<uint32_t>(o.proof.pitch/128);next.surface=static_cast<uint32_t>(o.proof.gpu);
         Surface::Backing backing{reinterpret_cast<uintptr_t>(o.record),o.proof.gpu,o.proof.bytes,o.proof.pitch};
         Capabilities caps;caps.installed=Capabilities::Adoption;
         if(ddb!=UINT32_MAX && cursorDDB!=UINT32_MAX && Display13DBUF::valid(range) &&
            dsiSession.bind(caps,c.bootDSI,dsiProfile,1,reinterpret_cast<uintptr_t>(path),reinterpret_cast<uintptr_t>(&dsiBoot))) {
-            result=Surface::change(io,dsiSession,c.bootDSI,dsiProfile,current,next,backing,snapshot);
+            result=Surface::change(io,dsiSession,c.bootDSI,dsiProfile,current,next,backing,snapshot,dsiBoot.clipped);
             o.armed=result.writes!=0 || dsiSession.state==SessionState::Switching || dsiSession.state==SessionState::Faulted ||
                 dsiSession.state==SessionState::Streaming;
             if(!o.armed)dsiSession={};

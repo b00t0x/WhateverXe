@@ -280,6 +280,7 @@ bool XE::bindDSIResources(IOService *controller) {
             // The live DSI GOP is linear, so this shared mode can be prepared
             // without disabling its plane. Retain PLL/power on any failure.
             if(XELP::DSI::prepareGGTT(io,dsiBoot,xelpMemory,dsiGGTT)) {
+                c.clippedDSIBootSize=dsiBoot.clipped ? dsiBoot.size : 0;
                 c.bootDSI=dsiBoot.source;c.transcoders.dsi0Pipe=0;
                 irq.state.transcoders=c.transcoders;irq.base=c.map->getVirtualAddress();irq.lock=irqLock;
                 __atomic_store_n(&irq.admittedPipes,1U,__ATOMIC_RELEASE);

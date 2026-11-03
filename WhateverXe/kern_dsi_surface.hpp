@@ -21,14 +21,16 @@ constexpr uint32_t Registers[]={0x70188,0x7018C,0x70190,0x701A4,0x701CC,0x70180,
 inline void values(const Plane &p,uint32_t (&v)[7]) {
     v[0]=p.stride;v[1]=p.position;v[2]=p.size;v[3]=p.offset;v[4]=p.color;v[5]=p.control;v[6]=p.surface;
 }
-inline bool shape(const Plane &p,const Profile &profile) {
+inline bool shape(const Plane &p,const Profile &profile,bool clippedBoot=false) {
     // The existing Display13 WM backend admits linear and uncompressed Y.
     // Keep the P2 fixed RGB8888 geometry; rotation/scaling/color modes are not
     // implicitly implemented by copying the donor's register cache.
     return profile.valid() && profile.mode.valid() && profile.mode.width<=8192 && profile.mode.height<=8192 &&
         Display13WM::supportedRGBControl(p.control) && (p.control&(1U<<31)) &&
         ((p.control>>23)&31)==8 && !(p.control&((3U<<21)|(1U<<9)|(1U<<8))) &&
-        !p.position && !p.offset && p.size==((uint32_t(profile.mode.height)-1)<<16 | (uint32_t(profile.mode.width)-1)) &&
+        !p.position && !p.offset &&
+        (p.size==((uint32_t(profile.mode.height)-1)<<16 | (uint32_t(profile.mode.width)-1)) ||
+         (clippedBoot && !(p.control&(7U<<10)) && (p.size&65535)<profile.mode.width && (p.size>>16)<profile.mode.height)) &&
         p.stride && p.stride<=2047 && !(p.surface&4095);
 }
 inline bool target(const Plane &p,const Profile &profile,const Backing &b) {
@@ -67,10 +69,10 @@ template<class IO> bool source(IO &io,const Readout &link,bool stoppingCursor=fa
 // the lease in Session. This never calls cleanup or reports a successful stop.
 template<class IO> Result change(IO &io,Session &session,const Readout &link,const Profile &profile,
                                 const Plane &current,const Plane &next,const Backing &backing,
-                                const Display13WM::Snapshot &wm) {
+                                const Display13WM::Snapshot &wm,bool clippedBoot=false) {
     Result r;
     if(!io.ready() || !link.matches(profile) || !session.identity.same(link.identity) ||
-       !shape(current,profile) || !target(next,profile,backing) || next.surface==current.surface ||
+       !shape(current,profile,clippedBoot) || !target(next,profile,backing) || next.surface==current.surface ||
        ((next.control^current.control)&~((7U<<28)|(7U<<10))) ||
        (next.color!=current.color && next.color!=(current.color|(1U<<13))) ||
        wm.pipeIndex!=0 || wm.transcoders.dsi0Pipe!=0 || wm.cursorActive || !wm.primary ||

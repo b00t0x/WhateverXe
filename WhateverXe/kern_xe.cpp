@@ -4053,8 +4053,17 @@ void XE::adlnBootstrap(IOPCIDevice *pci) {
         pci->setProperty("WEXDisplay13TCBootPorts",bootTC,sizeof(bootTC));
     }
 
+    bool mirrorPrepared=false,mirrorFailed=false;
+    if(displayRequested && linearTest && board.dsi && result.activePipes) {
+        auto parked=Display13Boot::normalizeDSIMirror(io,result,barReady && reservationReady && xelpMemoryMatches(pci),
+            board,xelpMemory,dsiProfile,snapshot->normalize);
+        pci->setProperty("WEXDSIMirrorNormalize",&parked,sizeof(parked));
+        mirrorPrepared=parked.status==Display13Boot::Status::Complete;
+        mirrorFailed=!mirrorPrepared;
+        AlderLakeN::readDisplay(io,barReady,result);
+    }
     if(displayRequested && board.dsi)
-        XELP::DSI::captureBoot(io,result,dsiProfile,xelpMemory,barReady && reservationReady,dsiBoot);
+        XELP::DSI::captureBoot(io,result,dsiProfile,xelpMemory,barReady && reservationReady && !mirrorFailed,dsiBoot,mirrorPrepared);
 	bool bootstrapReady=!board.dsi || dsiBoot.usable();
 	if(!board.dsi && displayRequested && linearTest && (result.activePipes&(result.activePipes-1))) {
 		auto parked=Display13Boot::normalize(io,result,barReady && Display13FBTopology::multiOutputWiring(board) && xelpMemoryMatches(pci),board,xelpMemory,snapshot->normalize);
@@ -4618,6 +4627,7 @@ struct Display13FBPowerContext {
     // Publish with IRQ state only under a quiesced adoption/retirement boundary.
     // No DSI binding is installed until the complete adoption backend exists.
     Display13Transcoder::Bindings transcoders;
+    uint32_t clippedDSIBootSize {};
     XELP::DSI::Readout bootDSI; // Captured before handoff; not an implicit admission flag.
     OSObject *dsiPort {}; // Retained after source-qualified native mode binding.
     uint32_t dsiNativeWriters {}; // Owner-lock count; cursor bodies may wait without the FB mutex.
@@ -5283,7 +5293,7 @@ static Display13FBMemory::Readout display13FBInspectMemory(IOService *fb,bool bo
 	return Display13FBMemory::inspect(io,controller,controller->getMetaClass()->getClassSize(),
 		fb,fb->getMetaClass()->getClassSize(),aperture->getLength(),xelpMemory,bootScanout,display13FBExpectedOwner(controller),c.bridge.bootPort,
         c.bridge.bootPort>=3 ? &tc : nullptr,dp?&source:nullptr,
-        c.bootPanel,bootScanout && c.transcoders.dsi(0) ? &c.bootDSI : nullptr);
+        c.bootPanel,bootScanout && c.transcoders.dsi(0) ? &c.bootDSI : nullptr,c.clippedDSIBootSize);
 }
 }
 

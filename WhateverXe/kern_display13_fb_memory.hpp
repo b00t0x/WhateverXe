@@ -364,7 +364,7 @@ template<class IO> Readout inspect(IO &io,const void *controller,size_t controll
                                   uint64_t apertureBytes,const XELPMemory::Layout &memory,bool bootScanout=true,uintptr_t expectedOwner=0,
                                   unsigned expectedDDI=1,const Display13TC::Boot *tc=nullptr,
                                   const AlderLakeN::DisplayReadout *dp=nullptr,bool panel=false,
-                                  const XELP::DSI::Readout *dsi=nullptr) {
+                                  const XELP::DSI::Readout *dsi=nullptr,uint32_t clippedBootSize=0) {
     Readout r;
     if (!associations(controller,controllerBytes,framebuffer,framebufferBytes,expectedOwner)) {
         r.status=Status::Association;return r;
@@ -410,12 +410,19 @@ template<class IO> Readout inspect(IO &io,const void *controller,size_t controll
     if(wells==UINT32_MAX || (wells&(bootScanout ? 0x403U : 3U))!=(bootScanout ? 0x403U : 3U)) {r.status=Status::DisplayState;return r;}
     uint32_t dpt=0,trans=0,conf=0,position=0,offset=0;
     const uint32_t transReg=dsi?0x6B400U:0x60400U,confReg=dsi?0x7B008U:0x70008U;
+    const auto clippedCanvas=[&]() {
+        return dsi && clippedBootSize && r.size==clippedBootSize &&
+            io.readable(0x6001C) && io.readable(0x68180) && io.readable(0x68280) &&
+            io.read(0x6001C)==(((dsi->htotal&0x3fff)<<16)|(dsi->vtotal&0x3fff)) &&
+            !(io.read(0x68180)&(1U<<31)) && !(io.read(0x68280)&(1U<<31));
+    };
     if(bootScanout) {
         dpt=io.read(0x42084);trans=io.read(transReg);conf=io.read(confReg);
         position=io.read(0x7018C);offset=io.read(0x701A4);
         r.surface=io.read(0x7019C);r.control=io.read(0x70180);r.stride=io.read(0x70188);r.size=io.read(0x70190);
         const auto geometry=XELPGeometry::linear(r.control,r.stride,r.size,position,offset);
-        const bool source=dsi ? !(io.read(0x60400)&(1U<<31)) && XELPGeometry::timing(geometry,dsi->htotal,dsi->vtotal) :
+        const bool source=dsi ? !(io.read(0x60400)&(1U<<31)) && (XELPGeometry::timing(geometry,dsi->htotal,dsi->vtotal) ||
+            (clippedCanvas() && geometry.width<=(dsi->htotal&0x3fff)+1 && geometry.height<=(dsi->vtotal&0x3fff)+1)) :
             (dpt&(1U<<30)) && ((trans>>27)&15)==expectedDDI+1 &&
             (dp ? ((trans>>24)&7)==2 : ((trans>>24)&7)<=1) && !((trans>>20)&7);
         if (dpt==UINT32_MAX || !source || !(trans&(1U<<31)) || (conf&0xC0000000)!=0xC0000000 ||
@@ -447,7 +454,7 @@ template<class IO> Readout inspect(IO &io,const void *controller,size_t controll
         io.read(0x70180)!=r.control || io.read(0x70188)!=r.stride || io.read(0x70190)!=r.size ||
         (expectedDDI>=3 && !tc->unchanged(io)) ||
         (dp && !AlderLakeN::dpSourceUnchanged(io,*dp,0,expectedDDI,0,tc,panel)) ||
-        (dsi && (!XELP::DSI::sourceUnchanged(io,*dsi) || (io.read(0x60400)&(1U<<31))))))) {
+        (dsi && (!XELP::DSI::sourceUnchanged(io,*dsi) || (io.read(0x60400)&(1U<<31)) || (clippedBootSize && !clippedCanvas())))))) {
         r.status=Status::StateChanged;return r;
     }
     r.status=Status::Complete;return r;

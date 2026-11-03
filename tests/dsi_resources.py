@@ -47,7 +47,7 @@ struct Display13FBBootIO {
 };
 struct {IORecursiveLock *lock;uintptr_t thread=0;XELPComboClock::ClockAllocation allocation;} comboClockTransaction;
 struct {IOLock *lock;IOService *controller;Map *map;Display13Transcoder::Bindings transcoders;
- Readout bootDSI;Display13Power::NativeBridge bridge;
+ uint32_t clippedDSIBootSize {};Readout bootDSI;Display13Power::NativeBridge bridge;
  bool engineEnabled=false,memoryFaulted=false,clockFaulted=false;struct {bool begun=false;} dbuf;} display13FBPower;
 struct {uintptr_t base=0;IOSimpleLock *lock=nullptr;IOService *controller=nullptr;Display13FBIRQ::State state;
  unsigned handlers=0,softwareHandlers=0,admittedPipes=0;bool quiescing=false;} display13FBIRQ;

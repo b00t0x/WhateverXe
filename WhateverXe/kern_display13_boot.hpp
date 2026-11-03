@@ -125,13 +125,14 @@ struct NormalizeScratch {
 };
 template<class IO> Result normalize(IO &io,const AlderLakeN::DisplayReadout &boot,bool admitted,
                                     const Display13HDMIWiring &w,const XELPMemory::Layout &memory,
-                                    NormalizeScratch &scratch) {
+                                    NormalizeScratch &scratch,const XELP::DSI::Readout *dsi=nullptr) {
     Result r;r.before=boot.activePipes;
     if(!admitted || &boot==&scratch.after)return r;
     r.status=Status::Topology;
     const auto active=boot.activePipes;
     if(w.panel || !memory.valid || !Display13FBTopology::multiOutputWiring(w) || boot.status!=AlderLakeN::ReadoutStatus::Complete ||
-       !(active&1) || active==1 || (active&~7U) || (active&~boot.poweredPipes))return r;
+       (dsi ? (w.dsi!=1 || !active || (active&1) || dsi->identity.pipe!=0 || !XELP::DSI::sourceUnchanged(io,*dsi))
+            : (w.dsi || !(active&1) || active==1)) || (active&~7U) || (active&~boot.poweredPipes))return r;
     uint32_t ports[3] {},clocks[3] {},transport[3] {},used=0,dpPipes=0;
     auto &tc=scratch.tc;
     for(auto &port:tc)port={};
@@ -144,7 +145,7 @@ template<class IO> Result normalize(IO &io,const AlderLakeN::DisplayReadout &boo
     for(unsigned p=0;p<3;++p)if(boot.poweredPipes&(1U<<p)) {
         const auto bank=p*0x1000;uint32_t v=0;
         if(!AlderLakeN::value(boot,0x70080+bank,v) || (v&63))return r;
-        for(unsigned n=(active&(1U<<p)) ? 1 : 0;n<5;++n)
+        for(unsigned n=((active&(1U<<p)) || (dsi && !p)) ? 1 : 0;n<(dsi ? 7U : 5U);++n)
             if(!AlderLakeN::value(boot,0x70180+bank+n*0x100,v) || (v&0x80000000))return r;
         for(unsigned d=0;d<3;++d) {
             const auto reg=Display13FBIRQ::DSBControl(p,d);
@@ -157,10 +158,12 @@ template<class IO> Result normalize(IO &io,const AlderLakeN::DisplayReadout &boo
         uint32_t ctl=0,trans=0,surface=0,live=0;
         if(!AlderLakeN::value(boot,0x70180+bank,ctl) || !AlderLakeN::value(boot,0x60400+bank,trans))return r;
         const auto port=Display13FBTopology::bootDDI(w,trans,true);
-        if(port>=7 || (used&(1U<<port)))return r;
+        if(port>=7 || (used&(1U<<port)) || (dsi && (port<3 || !(w.typeC&(1U<<port)))))return r;
         const bool dp=((trans>>24)&7)==2;
         if(port>=3) {
-            tc[p]=Display13TC::Boot::capture(io,true,port,p,dp);
+            const bool alt=dsi && (w.typeC&(1U<<port));
+            if(alt && !dp)return r;
+            tc[p]=Display13TC::Boot::capture(io,true,port,p,dp && !alt,alt ? 3 : 4);
             if(!tc[p].valid() || tc[p].power!=power || tc[p].ddiPower!=ddiPower)return r;
             // A powered AUX controller must be idle before its PHY can be
             // returned. An unpowered controller cannot have an active command.
@@ -200,7 +203,8 @@ template<class IO> Result normalize(IO &io,const AlderLakeN::DisplayReadout &boo
     const auto peer=[&] {
         // These are borrowed firmware requests. Keep them unchanged, including
         // the stopped output's requests; native leases own subsequent changes.
-        if(io.read(0x45404)!=power || io.read(0x45454)!=ddiPower || io.read(0x45444)!=auxPower)return false;
+        if(io.read(0x45404)!=power || io.read(0x45454)!=ddiPower || io.read(0x45444)!=auxPower ||
+           (dsi && !XELP::DSI::sourceUnchanged(io,*dsi)))return false;
         for(unsigned p=0;p<3;++p)if((active&(1U<<p)) && !(parked&(1U<<p)) && p!=current)
             if(io.read(0x46140+4*p)!=clocks[p])return false;
         for(unsigned i=0;i<boot.count;++i) {
@@ -316,7 +320,7 @@ template<class IO> Result normalize(IO &io,const AlderLakeN::DisplayReadout &boo
                 }
             } access{io,tc[p],r,peer,write};
             const auto owner=reinterpret_cast<uintptr_t>(&io),object=reinterpret_cast<uintptr_t>(&tc[p]);
-            if(access.ownership.acquire(access,owner,object,ports[p],true).status!=Display13TC::Status::Complete ||
+            if(access.ownership.acquire(access,owner,object,ports[p],true,tc[p].mode).status!=Display13TC::Status::Complete ||
                !Display13TC::Clock::disable(access,tc[p].port) ||
                access.ownership.release(access,owner,object,ports[p]).status!=Display13TC::Status::Complete) {
                 if(r.status!=Status::PeerChanged)r.status=Status::Readback;return r;
@@ -328,8 +332,72 @@ template<class IO> Result normalize(IO &io,const AlderLakeN::DisplayReadout &boo
     }
     current=UINT32_MAX;
     auto &after=scratch.after;AlderLakeN::readDisplay(io,true,after);r.after=after.activePipes;
-    if(after.status!=AlderLakeN::ReadoutStatus::Complete || after.activePipes!=1 || !peer()) {r.status=Status::PeerChanged;return r;}
+    if(after.status!=AlderLakeN::ReadoutStatus::Complete || after.activePipes!=(dsi?0U:1U) || !peer()) {r.status=Status::PeerChanged;return r;}
     r.stage=7;r.status=Status::Complete;return r;
 }
+// Preserve the DSI link and the firmware allocation. Once the TC peers have
+// drained, remove the primary pipe scaler and present that same (possibly
+// smaller) linear plane on the native canvas until the driver owns a full
+// panel-sized backing. Never enlarge the firmware plane's memory footprint.
+template<class IO> Result normalizeDSIMirror(IO &io,const AlderLakeN::DisplayReadout &boot,
+    bool admitted,const Display13HDMIWiring &w,const XELPMemory::Layout &memory,
+    const XELP::DSI::Profile &profile,NormalizeScratch &scratch) {
+    Result r;r.before=boot.activePipes;
+    if(!admitted || !profile.valid() || !memory.reservationKnown ||
+       boot.status!=AlderLakeN::ReadoutStatus::Complete || !(boot.poweredPipes&1) ||
+       !boot.activePipes || (boot.activePipes&~6U) || w.dsi!=1)return r;
+    r.status=Status::Topology;r.stage=10;
+    const auto get=[&](uint32_t reg){uint32_t v;return AlderLakeN::value(boot,reg,v)?v:UINT32_MAX;};
+    if(!io.readable(0x51004) || !io.readable(0x45404) || io.read(0x45404)!=get(0x45404))return r;
+    const auto ref=io.read(0x51004)>>29;
+    const uint32_t refs[]={24000,19200,38400};if(ref>=3)return r;
+    auto link=XELP::DSI::decodeReadout([&](uint32_t reg,uint32_t &v){
+        if(!io.readable(reg))return false;v=io.read(reg);return true;
+    },refs[ref]);
+    if(link.identity.pipe!=0 || !link.matches(profile) || !XELP::DSI::sourceUnchanged(io,link) ||
+       !io.readable(0x7B808) || (io.read(0x7B808)&0xC0000000U))return r;
+    r.stage=11;
+    const auto control=get(0x70180),surface=get(0x7019C);
+    const auto g=XELPGeometry::linear(control,get(0x70188),get(0x70190),get(0x7018C),get(0x701A4));
+    const auto width=(link.htotal&65535)+1,height=(link.vtotal&65535)+1;
+    if(!AlderLakeN::bootGeometry(boot,0,g,link.htotal,link.vtotal) ||
+       get(0x6001C)!=((g.width-1)<<16|(g.height-1)) || !memory.range(surface,g.bytes,true) ||
+       surface!=get(0x701AC) || (get(0x60400)&(1U<<31)) || (get(0x70008)&0xC0000000U))return r;
+    uint32_t scaler=0;
+    for(unsigned i=0;i<2;++i)if(get(0x68180+i*0x100)&(1U<<31)) {
+        scaler=0x68170+i*0x100;
+        if(g.width==width && g.height==height)return r;
+    }
+    // Reject other consumers on any powered pipe before touching any of them.
+    for(unsigned p=0;p<3;++p)if(boot.poweredPipes&(1U<<p)) {
+        if((get(0x78000+0x200*p)&0xF0300000U) || (get(0x78004+0x200*p)&0x80008000U))return r;
+    }
+    if(!io.readable(0x800000+8*(memory.bytes/4096)-1))return r;
+    for(unsigned i=0;i<memory.bytes/4096;++i)
+        if(io.readPTE(0x800000+8*i)!=memory.pte(uint64_t(i)*4096))return r;
+    r=normalize(io,boot,true,w,memory,scratch,&link);
+    if(r.status!=Status::Complete || !scaler)return r;
+    r.stage=12;r.status=Status::Readback;
+    const auto stable=[&] {return XELP::DSI::sourceUnchanged(io,link);};
+    const auto frames=[&]() {
+        const auto first=io.read(0x70040);
+        return first!=UINT32_MAX && XELPGOP::poll(io,stable,[&](uint32_t v){
+            return uint32_t(v-first)>=2 && uint32_t(v-first)<0x10000000U;
+        },0x70040,r.framesAfter,r.status,Status::PeerChanged,false);
+    };
+    const auto write=[&](uint32_t reg,uint32_t value) {
+        r.lastReg=reg;r.expected=value;io.write(reg,value);++r.writes;
+        r.observed=io.read(reg);return r.observed==value;
+    };
+    if(!stable() || !AlderLakeN::bootGeometryUnchanged(io,boot,0) ||
+       io.read(0x70180)!=control || io.read(0x701AC)!=surface || !frames())return r;
+    if(!write(0x70180,control&~(1U<<31)) || !write(0x7019C,surface) || !frames())return r;
+    if(!write(scaler+0x10,0) || !write(scaler,0) || !write(scaler+4,0) ||
+       !write(0x6001C,((width-1)<<16)|(height-1)) || !frames() ||
+       !write(0x70180,control) || !write(0x7019C,surface) || !frames() ||
+       io.read(0x701AC)!=surface)return r;
+    r.stage=13;r.status=Status::Complete;return r;
+}
+
 }
 #endif

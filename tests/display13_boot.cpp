@@ -1,4 +1,5 @@
 #include "kern_display13_boot.hpp"
+#include "kern_dsi_boot.hpp"
 #include "kern_display13_tc_mode.hpp"
 #include "kern_display13_tc_dp.hpp"
 #include <map>
@@ -350,7 +351,40 @@ static void unusedTCBoot() {
     assert(r.status==Display13Boot::Status::Readback && failed.writes.size()==1);
     puts("PASS unused fixed TC firmware ownership: cold-only release, peers, live-resource refusal and readback");
 }
+static void dsiMirror() {
+    const unsigned ports[]={0,3,4};
+    XELP::DSI::Profile profile;profile.status=XELP::DSI::ProfileStatus::Valid;
+    profile.lanes=4;profile.mode={135255,1080,46,22,2,1920,82,40,2,86,154};
+    for(unsigned count:{2U,3U})for(unsigned fault=0;fault<5;++fault) {
+        IO io;
+        auto w=multiGOP(io,ports,count,count==2 ? 8 : 24);
+        w.hdmi=0;w.ddc[0]=0;w.dsi=1;w.typeC=w.dp;
+        assert(XELPMemory::reservation(io.memory,io.memory.base+io.memory.bytes-0x100000));
+        for(unsigned p=1;p<count;++p)io.regs[0x161500+4*(ports[p]-3)]=0x1d;
+        const AlderLakeN::Register panel[]={{0x60400,0x30000},{0x70008,0},{0x46140,0},
+            {0x7B008,0xC0000000},{0x6B400,0x80030006},{0x6B030,0x20130300},{0x6B094,1},
+            {0x46014,0xCC000000},{0x16428C,0x3001FB},{0x164290,0xE84},{0x6B000,0x04650437},
+            {0x6B008,0x044F044D},{0x6B00C,0x07D1077F},{0x6B014,0x07A907A7},{0x51004,0x40000000},
+            {0x70180,0x94000008},{0x70188,68},{0x70190,0x04370437},{0x6001C,0x04370437},
+            {0x68180,0x80000200},{0x68174,(1080U<<16)|1920}};
+        for(auto pair:panel)io.regs[pair.offset]=pair.value;
+        io.regs[Display13TC::Clock::Gate]=(io.regs[Display13TC::Clock::Gate]&~3U)|1;
+        if(fault==1)io.badPTE=0x800008;
+        if(fault==2)io.regs[0x78000]=1U<<28;
+        if(fault==3)io.regs[0x68174]--;
+        if(fault==4)io.regs[0x161500]=0xc; // not a Type-C DP Alt Mode GOP
+        auto display=AlderLakeN::readDisplay(io,true);Display13Boot::NormalizeScratch scratch;
+        const auto r=Display13Boot::normalizeDSIMirror(io,display,true,w,io.memory,profile,scratch);
+        if(fault){assert(r.status!=Display13Boot::Status::Complete && io.writes.empty());continue;}
+        assert(r.status==Display13Boot::Status::Complete && r.after==0);
+        assert(io.regs[0x70190]==0x04370437 && io.regs[0x6001C]==0x0437077f && !io.regs[0x68180]);
+        auto after=AlderLakeN::readDisplay(io,true);XELP::DSI::Boot boot;
+        XELP::DSI::captureBoot(io,after,profile,io.memory,true,boot,true);
+        io.pteReads=0;assert(boot.clipped && XELP::DSI::verifyBootPrefix(io,boot,io.memory));
+    }
+}
 int main() {
+    dsiMirror();
     // Repeated normalizations must reset old witnesses and read a fresh final
     // snapshot. Aliasing that storage with the live input must fail before IO.
     Display13Boot::NormalizeScratch scratch;
