@@ -145,7 +145,7 @@ private:
     bool display13BootReady {false};
     OSData *dsiFirmware {}; // Private immutable copy backing profile/sequence spans.
     XELP::DSI::Profile dsiProfile;
-    bool dsi60Hz {};
+    uint32_t dsi60HzClockKHz {};
     XELP::DSI::Boot dsiBoot;
     XELP::DSI::GGTTMode dsiGGTT;
     bool prepareDSIFirmware(IOService *);

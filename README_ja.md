@@ -81,7 +81,7 @@ BIOS/UEFIで設定できる場合は、**DVMT Pre-Allocatedを96MB**にします
 ### その他の設定
 
 - 内蔵画面の輝度調整には`SSDT-PNLF`を追加します。
-- MiniBook X U300の検証構成では、内蔵DSIのファームウェア表示を引き継ぐために `-wex-dsi-adopt` を使用します。検証済みのU300とパネルのファームウェアテーブルが一致する場合、`-wex-dsi-60hz` を追加すると60 Hzになります。この引数を削除して再起動すると標準の50 Hzに戻ります。タイミングの出典は [minibookx-ctlの表示ガイド](https://github.com/ishad0w/minibookx-ctl/blob/main/docs/guide/display.md) です。
+- MiniBook X U300の検証構成では、内蔵DSIのファームウェア表示を引き継ぐために `-wex-dsi-adopt` を使用します。対象のMiniBook X U300またはN100のパネルテーブルと一致すると、`-wex-dsi-60hz` で起動時に固定60 Hzを要求します。各パネルのファームウェアが指定するブランキング期間を使い、両機種ともBig Surで実機確認済みです。この引数を削除して再起動すると標準の50 Hzに戻ります。U300のタイミングの出典は [minibookx-ctlの表示ガイド](https://github.com/ishad0w/minibookx-ctl/blob/main/docs/guide/display.md) です。
 - GPUは自動選択するため、通常は`device-id`上書きは不要です。
 - Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/Pではタイル形式を自動選択します。`-yTileDisable`は使わないでください。`AAPL,GfxYTile`は不要です。
 
@@ -94,7 +94,7 @@ BIOS/UEFIで設定できる場合は、**DVMT Pre-Allocatedを96MB**にします
 | Tiger LakeミニPC | Big Sur〜Tahoe：80 EU、1080p60の2画面、消灯復帰、Safari動画・Widevine |
 | Tiger Lakeラップトップ | Big Sur〜Tahoe：48 EU、内蔵eDPと輝度調整、HDMI/USB-C、最大3画面・消灯復帰 |
 | Alder Lake-NミニPC | Big Sur〜Tahoe：16/24 EU、1080p60のHDMI 2画面・消灯復帰 |
-| Alder Lake-N / Twin Lakeラップトップ | MicroPC 2（N250）とMiniBook X N100のMIPI DSI。Big Sur：輝度・回転・消灯復帰・外部HDMI/USB-C共存。MicroPC 2はHiDPI・最大3画面も確認。Tahoe：MicroPC 2の内蔵／外部表示・輝度・回転・HiDPI |
+| Alder Lake-N / Twin Lakeラップトップ | MicroPC 2（N250）とMiniBook X N100のMIPI DSI。Big Sur：輝度・回転・消灯復帰・外部HDMI/USB-C共存。MiniBook X N100は任意設定の60 Hz、MicroPC 2はHiDPI・最大3画面も確認。Tahoe：MicroPC 2の内蔵／外部表示・輝度・回転・HiDPI |
 | Raptor Lake-Uラップトップ | Big Sur：MiniBook X U300の内蔵MIPI DSI 1200×1920・標準50 Hz／任意設定で60 Hz、USB-C外部画面を最大2台接続した起動での加速、Metal計算・描画、OpenGL、H.264ハードウェアencode/decode・HEVC decode |
 | Alder Lake-H | Big Sur〜Tahoe：96 EU、HDMIとDP→HDMI変換器による3画面。シングルチャネル構成の`4626`でもBig Surの加速を確認 |
 | Alder Lake-S | Big Sur〜Tahoe：UHD 770、HDMI/DP/USB-C、最大3画面、Safari動画。WidevineはBig Sur/Tahoeで確認 |

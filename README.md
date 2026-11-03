@@ -81,7 +81,7 @@ These settings are unnecessary at 96MB and do not increase firmware-allocated me
 ### Other settings
 
 - Add `SSDT-PNLF` for internal-display brightness control.
-- The tested MiniBook X U300 setup uses `-wex-dsi-adopt` to adopt the firmware’s internal DSI scanout. On the matching U300 panel firmware, add `-wex-dsi-60hz` for 60 Hz. Remove it and reboot for the default 50 Hz. The timing comes from the [minibookx-ctl display guide](https://github.com/ishad0w/minibookx-ctl/blob/main/docs/guide/display.md).
+- The tested MiniBook X U300 setup uses `-wex-dsi-adopt` to adopt the firmware’s internal DSI scanout. On matching MiniBook X U300 and N100 panel firmware, `-wex-dsi-60hz` requests a fixed 60 Hz mode at boot. Both panels were tested under Big Sur using their respective firmware blanking intervals. Remove the argument and reboot for the default 50 Hz. The U300 timing comes from the [minibookx-ctl display guide](https://github.com/ishad0w/minibookx-ctl/blob/main/docs/guide/display.md).
 - GPU selection is automatic; a `device-id` override is normally unnecessary.
 - Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P select tiling automatically. Do not use `-yTileDisable`; `AAPL,GfxYTile` is unnecessary.
 
@@ -94,7 +94,7 @@ The common regression checks cover Metal, OpenGL, OpenCL, hardware H.264 encode/
 | Tiger Lake mini PCs | Big Sur–Tahoe: 80 EU, two 1080p60 displays, display off/on, Safari video and Widevine |
 | Tiger Lake laptops | Big Sur–Tahoe: 48 EU, internal eDP and brightness, HDMI/USB-C, up to three displays and display off/on |
 | Alder Lake-N mini PCs | Big Sur–Tahoe: 16/24 EU, two 1080p60 HDMI displays and display off/on |
-| Alder Lake-N / Twin Lake laptops | MIPI DSI on MicroPC 2 (N250) and MiniBook X N100. Big Sur: brightness, rotation, display off/on and external HDMI/USB-C coexistence; MicroPC 2 also has HiDPI and up to three displays. Tahoe: MicroPC 2 internal/external displays, brightness, rotation and HiDPI |
+| Alder Lake-N / Twin Lake laptops | MIPI DSI on MicroPC 2 (N250) and MiniBook X N100. Big Sur: brightness, rotation, display off/on and external HDMI/USB-C coexistence; MiniBook X N100 also supports the optional 60 Hz mode. MicroPC 2 also has HiDPI and up to three displays. Tahoe: MicroPC 2 internal/external displays, brightness, rotation and HiDPI |
 | Raptor Lake-U laptop | Big Sur: MiniBook X U300, internal MIPI DSI at 1200×1920 @ 50 Hz or optional 60 Hz, accelerated startup with up to two USB-C displays connected, Metal compute/render, OpenGL, hardware H.264 encode/decode and HEVC decode |
 | Alder Lake-H | Big Sur–Tahoe: 96 EU, three displays using HDMI and a DP-to-HDMI adapter. Single-channel `4626` graphics acceleration checked on Big Sur |
 | Alder Lake-S | Big Sur–Tahoe: UHD 770, HDMI/DP/USB-C and up to three displays; Safari video, with Widevine checked on Big Sur/Tahoe |

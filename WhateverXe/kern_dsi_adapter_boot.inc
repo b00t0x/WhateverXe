@@ -10,17 +10,28 @@ bool XE::prepareDSIFirmware(IOService *provider) {
     if(!copy)return false;
     auto parsed=XELP::DSI::parseProfile({static_cast<const uint8_t *>(copy->getBytesNoCopy()),copy->getLength()},true);
     if(!parsed.valid()){copy->release();return false;}
-    // minibookx-ctl qualifies one U300 VBT. TGLVBT contains the declared
-    // table only; Linux debugfs also includes trailing allocation padding.
-    if(checkKernelArgument("-wex-dsi-60hz") && copy->getLength()==10269 &&
-       parsed.mode.clockKHz==138267 && parsed.mode.htotal()==1272 && parsed.mode.vtotal()==2174) {
-        static const uint8_t known[]={
+    // Explicit override for the captured MiniBook X panel tables. Hash the
+    // declared VBT supplied by the provider, without Linux debugfs padding.
+    if(checkKernelArgument("-wex-dsi-60hz")) {
+        static const uint8_t u300[]={
             0xf3,0x03,0x0f,0xec,0x11,0x17,0x81,0x7b,
             0xf0,0x4d,0xf2,0xfa,0x32,0xa0,0x3b,0xfa,
             0xbd,0x8d,0x8a,0x9b,0x78,0xdf,0x6c,0x44,
             0x30,0x8c,0x79,0x06,0x1c,0x1b,0x06,0xa9};
+        static const uint8_t n100[]={
+            0xe0,0x3d,0x64,0x90,0x5f,0x8d,0x0a,0xc1,
+            0x6c,0x7c,0x80,0x49,0xfc,0x45,0x4a,0x93,
+            0x27,0xb2,0xbd,0xe3,0x6d,0xa2,0x51,0x81,
+            0x3c,0xbd,0x9d,0x78,0x45,0x1d,0x35,0x40};
         auto digest=Crypto::hash(static_cast<const uint8_t *>(copy->getBytesNoCopy()),copy->getLength());
-        if(digest){dsi60Hz=!memcmp(digest,known,sizeof(known));Buffer::deleter(digest);}
+        if(digest) {
+            if(!memcmp(digest,u300,sizeof(u300)) || !memcmp(digest,n100,sizeof(n100))) {
+                // Keep the firmware blanking and use the 10 kHz EDID clock unit.
+                const auto hz=uint64_t(parsed.mode.htotal())*parsed.mode.vtotal()*60;
+                dsi60HzClockKHz=static_cast<uint32_t>((hz+5000)/10000*10);
+            }
+            Buffer::deleter(digest);
+        }
     }
     dsiProfile=parsed;dsiFirmware=copy;return true;
 }
@@ -313,7 +324,7 @@ bool XE::bindDSIResources(IOService *controller) {
     IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
     if(ready)dsiPublishIRQLive();
     if(ready && dsiCommandTest)ready=probeDSICommands(controller);
-    if(ready && (dsiPanelTest || prepareExternalClock || dsi60Hz))ready=probeDSIPanel(controller,prepareExternalClock);
+    if(ready && (dsiPanelTest || prepareExternalClock || dsi60HzClockKHz))ready=probeDSIPanel(controller,prepareExternalClock);
     if(ready) {
         IOLockLock(c.lock);
         using Light=XELP::DSI::Backlight;

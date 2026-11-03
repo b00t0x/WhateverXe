@@ -25,6 +25,7 @@ code=r'''
 #include <vector>
 #include <fstream>
 #include <CommonCrypto/CommonDigest.h>
+#include "kern_dsi_restart.hpp"
 using namespace XELP::DSI;
 FIXTURE
 bool copyOK=true,deviceOK=true,memoryOK=true,auditEnabled=false;unsigned alive=0,releases=0,audits=0,allocations=0;
@@ -62,7 +63,7 @@ void IODelay(unsigned){assert(false && "preserved DSI handoff must not poll or r
 #define SYSLOG(...)
 #define OSDynamicCast(T,p) dynamic_cast<T*>(p)
 struct XE {
- OSData *dsiFirmware=nullptr;Profile dsiProfile;Boot dsiBoot;bool display13BootReady=true,dsi60Hz=false;
+ OSData *dsiFirmware=nullptr;Profile dsiProfile;Boot dsiBoot;bool display13BootReady=true;uint32_t dsi60HzClockKHz=0;
  XELPMemory::Layout xelpMemory;Display13OutputWiring adlnOutputWiring;
  bool xelpDisplay13Device(IOPCIDevice *){return deviceOK;}
  bool xelpMemoryMatches(IOPCIDevice *){return memoryOK;}
@@ -79,15 +80,24 @@ struct IO {
  void word(uint32_t r,uint32_t v){memcpy(map.bytes.data()+r,&v,4);}
 };
 int main(int argc,char **argv){
- if(argc==2){
-  std::ifstream in(argv[1],std::ios::binary);Bytes vbt{std::istreambuf_iterator<char>(in),{}};
-  assert(vbt.size()>=10269);vbt.resize(10269);
+ for(int i=1;i<argc;++i){
+  std::ifstream in(argv[i],std::ios::binary);Bytes vbt{std::istreambuf_iterator<char>(in),{}};
+  assert(vbt.size()>=28);
+  const unsigned declared=profileU16(vbt.data()+24);assert(declared<=vbt.size());vbt.resize(declared);
+  const bool n100=declared==11621;const unsigned clock=n100?164260:165920;
+  assert(n100 || declared==10269);
   for(unsigned scenario=0;scenario<3;++scenario){
    XE x;IOService provider;request60=scenario!=0;
    if(scenario==2){vbt[18]^=1;vbt[26]+=vbt[18]&1?-1:1;} // same panel timing, different table
    provider.property=OSData::withBytes(vbt.data(),vbt.size());
-   assert(x.prepareDSIFirmware(&provider) && x.dsi60Hz==(scenario==1));
-   assert(x.dsiProfile.mode.clockKHz==138267); // firmware handoff remains 50 Hz
+   assert(x.prepareDSIFirmware(&provider) && x.dsi60HzClockKHz==(scenario==1?clock:0));
+   assert(x.dsiProfile.mode.clockKHz==(n100?136887:138267)); // firmware handoff remains 50 Hz
+   if(x.dsi60HzClockKHz){
+    auto target=x.dsiProfile;target.mode.clockKHz=x.dsi60HzClockKHz;
+    const auto plan=Restart::plan(target,38400);
+    assert(plan.valid && plan.link.afeKHz==clock*6);
+    assert(target.mode.htotal()==(n100?1268:1272) && target.mode.vtotal()==(n100?2159:2174));
+   }
    x.dsiFirmware->release();provider.property->release();
   }
  }
@@ -95,7 +105,7 @@ int main(int argc,char **argv){
  XE xe;IOService provider;assert(!xe.prepareDSIFirmware(&provider));
  auto bytes=fixture();provider.property=OSData::withBytes(bytes.data(),bytes.size());
  copyOK=false;assert(!xe.prepareDSIFirmware(&provider) && !xe.dsiFirmware && alive==1);copyOK=true;
- assert(xe.prepareDSIFirmware(&provider) && xe.dsiProfile.valid() && !xe.dsi60Hz && alive==2);
+ assert(xe.prepareDSIFirmware(&provider) && xe.dsiProfile.valid() && !xe.dsi60HzClockKHz && alive==2);
  assert(xe.dsiFirmware!=provider.property && xe.prepareDSIFirmware(&provider) && alive==2);
  auto start=static_cast<const uint8_t*>(xe.dsiFirmware->getBytesNoCopy());
  for(auto span:xe.dsiProfile.sequences.sequence)if(span.data)assert(span.data>=start && span.data+span.size<=start+bytes.size());

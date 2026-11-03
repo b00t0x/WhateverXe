@@ -69,7 +69,7 @@ bool XE::probeDSICommands(IOService *controller) {
 // the optional host trial rebuilds them before panel INIT_OTP. Neither path
 // releases shared resources or enables runtime power transitions.
 bool XE::probeDSIPanel(IOService *controller,bool prepareExternalClock) {
-    const bool restart=dsiHostTest || prepareExternalClock || dsi60Hz;
+    const bool restart=dsiHostTest || prepareExternalClock || dsi60HzClockKHz;
     auto &c=display13FBPower;auto &clock=comboClockTransaction;auto &irq=display13FBIRQ;
     if(!controller || !c.lock || !clock.lock || !irq.lock)return false;
     IORecursiveLockLock(clock.lock);IOLockLock(c.lock);
@@ -116,7 +116,7 @@ bool XE::probeDSIPanel(IOService *controller,bool prepareExternalClock) {
     // Adopt and stop the firmware's original link first. Only the restart
     // uses the new clock; panel commands and blanking stay firmware-derived.
     auto target=dsiProfile;
-    if(dsi60Hz)target.mode.clockKHz=165920;
+    if(dsi60HzClockKHz)target.mode.clockKHz=dsi60HzClockKHz;
     const auto targetPlan=XELP::DSI::Restart::plan(target,dsiBoot.source.referenceKHz);
     struct Lifecycle {
         const XELP::DSI::Restart::Plan &targetPlan;
@@ -189,7 +189,7 @@ bool XE::probeDSIPanel(IOService *controller,bool prepareExternalClock) {
         p.pll.cfg0(),p.pll.cfg1(),p.link.clockTiming,p.link.dataTiming,p.hsTimeout,p.lpTimeout,p.taTimeout,
         record[30],complete};
     uint64_t scan[6] {};
-    if(dsi60Hz && complete && checkKernelArgument("-wex-dsi-audit")) {
+    if(dsi60HzClockKHz && complete && checkKernelArgument("-wex-dsi-audit")) {
         // Count physical pipe-A frame boundaries, even before WindowServer starts.
         scan[0]=1;scan[1]=dsiBoot.source.afeKHz;scan[2]=dsiProfile.mode.clockKHz;
         uint32_t first=io.read(0x70040),edge=first;uint64_t start=0;
