@@ -262,7 +262,15 @@ int main(){
   assert(static_cast<const Timing *>(timing)->horizontalScaled==1280+2*i);
   assert(!XE::wrapDSIGetModeInformation(fb,modes[i],&info) && info.width==1280+2*i && info.height==720+i);}
  many->release();assert(!XE::wrapDSISetDetailedTimings(fb,rotationList));
- rotationData->release();rotationList->release();
+ // A new quarter-turn generation can contain no unrotated wire alias.
+ auto landscape=OSArray::withCapacity(2);auto scaled=rotated;
+ scaled.reservedA[0]=0x80005003;scaled.horizontalScaled=1638;scaled.verticalScaled=1024;
+ auto scaledData=OSData::withBytes(&scaled,sizeof(scaled));landscape->setObject(scaledData);landscape->setObject(rotationData);
+ assert(!XE::wrapDSISetDetailedTimings(fb,landscape) && dsiFixedMode.clientMode==rotated.reservedA[0]);
+ assert(!XE::wrapDSIGetCurrentMode(fb,&current,&depth) && static_cast<uint32_t>(current)==rotated.reservedA[0]);
+ assert(XE::wrapDSIValidateMode(fb,static_cast<int32_t>(offered.reservedA[0]),nullptr,&timing)==kIOReturnBadArgument);
+ assert(!XE::wrapDSISetDetailedTimings(fb,rotationList) && dsiFixedMode.clientMode==offered.reservedA[0]);
+ scaledData->release();landscape->release();rotationData->release();rotationList->release();
  // Legacy UI attributes alone must never fabricate a presentation timing.
  auto orientation=new OSNumber;fb->setProperty("IOFBTransform",orientation);
  for(auto transform:{3ULL,5ULL,0ULL}) {

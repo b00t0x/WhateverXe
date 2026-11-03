@@ -95,7 +95,7 @@ The common regression checks cover Metal, OpenGL, OpenCL, hardware H.264 encode/
 | Tiger Lake laptops | Big Sur–Tahoe: 48 EU, internal eDP and brightness, HDMI/USB-C, up to three displays and display off/on |
 | Alder Lake-N mini PCs | Big Sur–Tahoe: 16/24 EU, two 1080p60 HDMI displays and display off/on |
 | Alder Lake-N / Twin Lake laptops | MIPI DSI on MicroPC 2 (N250) and MiniBook X N100. Big Sur: brightness, rotation, display off/on and external HDMI/USB-C coexistence; MiniBook X N100 also supports the optional 60 Hz mode. MicroPC 2 also has HiDPI and up to three displays. Tahoe: MicroPC 2 internal/external displays, brightness, rotation and HiDPI |
-| Raptor Lake-U laptop | Big Sur: MiniBook X U300, internal MIPI DSI at 1200×1920 @ 50 Hz or optional 60 Hz, accelerated startup with up to two USB-C displays connected, Metal compute/render, OpenGL, hardware H.264 encode/decode and HEVC decode |
+| Raptor Lake-U laptop | Big Sur: MiniBook X U300, internal MIPI DSI at 1200×1920 @ 50 Hz or optional 60 Hz, accelerated startup with up to two USB-C displays connected, Metal compute/render, OpenGL, hardware H.264 encode/decode and HEVC decode. Tahoe: internal 50 Hz display, native landscape and HiDPI modes |
 | Alder Lake-H | Big Sur–Tahoe: 96 EU, three displays using HDMI and a DP-to-HDMI adapter. Single-channel `4626` graphics acceleration checked on Big Sur |
 | Alder Lake-S | Big Sur–Tahoe: UHD 770, HDMI/DP/USB-C and up to three displays; Safari video, with Widevine checked on Big Sur/Tahoe |
 

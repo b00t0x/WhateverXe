@@ -265,7 +265,14 @@ uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
                 IORegistryEntry::getRegistryRoot()->setProperty("WEXDSITimingRejected",bytes);
                 continue;
             }
-            ++count;if(native)client=t.reservedA[0];offer[2]=i;offer[3]=client;offer[4]=t.pixelClock;
+            // A rotated native offer has explicit draw dimensions and a
+            // transform. Keep an exact wire alias first when both are offered.
+            const bool swap=(t.scalerFlags&0x10)!=0;
+            const bool fullSize=!t.horizontalInset && !t.verticalInset &&
+                t.horizontalScaled==(swap?t.verticalActive:t.horizontalActive) &&
+                t.verticalScaled==(swap?t.horizontalActive:t.verticalActive);
+            if(native || (!client && fullSize))client=t.reservedA[0];
+            ++count;offer[2]=i;offer[3]=client;offer[4]=t.pixelClock;
             offer[5]=t.horizontalActive;offer[6]=t.horizontalBlanking;offer[7]=t.horizontalSyncOffset;offer[8]=t.horizontalSyncWidth;
             offer[9]=t.verticalActive;offer[10]=t.verticalBlanking;offer[11]=t.verticalSyncOffset;offer[12]=t.verticalSyncWidth;
             offer[13]=t.scalerFlags;offer[14]=t.horizontalScaled;offer[15]=t.verticalScaled;
@@ -306,7 +313,7 @@ uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
             dsiFixedMode.offerCount=count;
             if(replacement)IORegistryEntry::getRegistryRoot()->setProperty("WEXDSITimingList",replacement);
             else IORegistryEntry::getRegistryRoot()->removeProperty("WEXDSITimingList");
-            if(client)dsiFixedMode.clientMode=client;
+            dsiFixedMode.clientMode=client ? client : XELP::DSI::AppleAdapter::FixedModeID;
             OSSafeReleaseNULL(previous);
         } else {
             OSSafeReleaseNULL(replacement);
