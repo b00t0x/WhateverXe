@@ -184,6 +184,16 @@ template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const P
     // Sequences drain before returning; never enable video over queued data.
     if(port.failed || r.host.pending || !held())return;
     r.stage=Stage::TranscoderOn;
+    if(systemWake) {
+        // After cold link training and INIT_OTP, the video timing bank is
+        // clocked but scanout is still off (icl_dsi.c, pre_enable step 6c).
+        // Reissue the timing writes here even when the shadow reads match.
+        if(!wait(0x7B008,0xC0000000U,0,0) || !wait(0x6B030,1U<<20,1U<<20,0))return;
+        const uint32_t timings[][2]={{0x6B000,current.htotal},{0x6B008,current.hsync},
+            {0x6B00C,current.vtotal},{0x6B014,current.vsync},{0x6B028,0},{0x6B010,current.vtotal}};
+        for(const auto &entry:timings)
+            if(!write(entry[0],entry[1]) || !wait(entry[0],UINT32_MAX,entry[1],0))return;
+    }
     if(!write(0x7B008,link.conf) || !wait(0x7B008,0xC0000000U,0xC0000000U,10000))return;
     if(!sequence(3))return;
     r.stage=Stage::PlaneOn;

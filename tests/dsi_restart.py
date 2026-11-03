@@ -89,7 +89,7 @@ void panelCycle(Fixture &f,bool fail=false){
  assert(f.io.regs[0x70180]==0x94000008 && f.io.regs[0x7B008]==0xC0000000);
  assert(f.allocation.external[0]==1 && f.allocation.binding[0]==2);
 }
-void retainedCycle(Fixture &f,unsigned fault=0){
+void retainedCycle(Fixture &f,unsigned fault=0,bool cold=false){
  f.io.regs[0x7B008]=0xC0000000;f.io.regs[0x70180]=0x94001000;f.io.regs[0x7019C]=f.io.regs[0x701AC]=0x44E00000;
  f.io.regs[0x42084]=1U<<30;f.io.regs[0x6001C]=0x0437077F;f.io.regs[0x6B010]=f.io.regs[0x6B00C];
  f.io.regs[0xC7204]=15;f.io.regs[0xC4030]=0x84;f.source.mux=f.io.regs[0x164280];
@@ -105,7 +105,16 @@ void retainedCycle(Fixture &f,unsigned fault=0){
  assert(Restart::stopQuiesced(f.io,f.source,f.p,stopped,f.allocation,1,f.state));
  assert(f.state.stopped && !f.io.regs[0x46014] && f.allocation.external[0]==1 && f.allocation.binding[0]==2);
  Panel::Result panel;Lifecycle lifecycle{f.allocation,f.state};
- Panel::cycle(f.io,f.source,f.p,0x94001000,0x44E00000,panel,lifecycle,&shutdown);
+ Panel::cycle(f.io,f.source,f.p,0x94001000,0x44E00000,panel,lifecycle,&shutdown,nullptr,cold);
+ if(cold){
+  size_t ready=0,timing=0,video=0;
+  for(size_t i=count;i<f.io.writes.size();++i){
+   if(f.io.writes[i]==0x6B400)ready=i;
+   if(f.io.writes[i]==0x6B00C)timing=i;
+   if(f.io.writes[i]==0x7B008)video=i;
+  }
+  assert(ready<timing && timing<video);
+ }
  if(!panel.complete())fprintf(stderr,"resume stage=%u error=%u reg=%x host=%u restart=%u/%u\n",unsigned(panel.stage),unsigned(panel.error),panel.reg,unsigned(panel.host.error),unsigned(f.state.stage),unsigned(f.state.error));
  assert(panel.complete() && f.state.started && Surface::source(f.io,panel.source));
  assert(f.io.regs[0x70180]==0x94001000 && f.io.regs[0x7019C]==0x44E00000 && f.io.regs[0x701AC]==0x44E00000 && f.io.regs[0x46014]==0xCC000000);
@@ -169,6 +178,7 @@ int main(int argc,char **argv){
   assert(link.matches(f.p)); // program/read back, not just calculate a PLL
  }
  {Fixture f;successful(f);}
+ {Fixture f;retainedCycle(f,0,true);}
  {Fixture f;assert(f.stop());f.io.linkReadyAt=f.io.elapsed+3000;
   assert(f.start() && f.io.elapsed>=f.io.linkReadyAt);}
  for(unsigned fault=0;fault<4;++fault){Fixture f;retainedCycle(f,fault);}
