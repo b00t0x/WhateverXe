@@ -282,6 +282,15 @@ uint32_t XE::wrapDSISetPowerState(IOService *fb,uint32_t state) {
     return result;
 }
 
+bool XE::parkedDSIFramebuffer(IOService *fb) const {
+    return fb && dsiPowerTest && dsiPagingLayoutKnown && adlnOutputWiring.dsi &&
+        !strcmp(fb->getMetaClass()->getClassName(),"AppleIntelFramebuffer") &&
+        fb->getMetaClass()->getClassSize()>=0x4B90 && adlnTopologyController &&
+        Display13FBMemory::field<IOService *>(fb,0x1D0)==adlnTopologyController &&
+        Display13FBMemory::field<uint32_t>(fb,0x1DC)==0 &&
+        !(Display13FBMemory::field<uint8_t>(fb,0x199)&0x20);
+}
+
 bool XE::failedDSIWakeFor(IOService *fb) const {
     if(!__atomic_load_n(&dsiWakeDegraded,__ATOMIC_ACQUIRE) || !fb ||
        strcmp(fb->getMetaClass()->getClassName(),"AppleIntelFramebuffer") ||

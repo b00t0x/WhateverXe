@@ -14,7 +14,7 @@ code=r'''
 #include <vector>
 #include "kern_xelp_platform.hpp"
 using mach_vm_address_t=uintptr_t;
-struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}void setProperty(const char*,bool){}};
+struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}void setProperty(const char*,bool){}void setProperty(const char*,const void*,size_t){}};
 std::vector<int> events;bool publish=true,published=false;uint32_t identity=0x9a498086;uint8_t revision=0;
 struct Object {virtual ~Object()=default;};
 struct OSData:Object {uint32_t value=0;void *getBytesNoCopy(){return &value;}size_t getLength(){return 4;}};
@@ -41,24 +41,27 @@ struct KernelPatcher {
  template<class T>T solveSymbol(size_t,const char*,mach_vm_address_t,size_t){return T{};}
  struct RouteRequest {template<class T>RouteRequest(const char*,T,uintptr_t&) {}};
  bool routeMultiple(size_t,RouteRequest*,unsigned,mach_vm_address_t,size_t){return true;}
+ void routeBlock(uintptr_t,const uint8_t*,size_t){}
  void clearError(){}
 };
 // The optional observer is inactive in this host-publication fixture.
 namespace XeDataAccess {bool processKext(KernelPatcher&,size_t,mach_vm_address_t,size_t){return false;}void processKernel(KernelPatcher &){assert(published);events.push_back(7);}}
 struct Graphics {size_t loadIndex=4;bool off=false;void switchOff(){off=true;}} graphics;
-struct {size_t loadIndex=5;}backlight;
-using IOReturn=int;using IOFramebuffer=IOPCIDevice;
+struct {size_t loadIndex=5;}backlight;struct {size_t loadIndex=7;}accelFamily;
+using IOService=IOPCIDevice;using IOReturn=int;using IOFramebuffer=IOPCIDevice;
 constexpr uint32_t kIOWindowServerActiveAttribute=1,kIOWSAA_StateMask=15,kIOWSAA_Accelerated=1,kIOWSAA_Unaccelerated=0;
 constexpr IOReturn kIOReturnNotReady=-1;
 #define FunctionCast(fn,addr) reinterpret_cast<decltype(&fn)>(addr)
 struct XeHost {
  static XeHost *callbackHost;bool systemWakeRecovery=false;
+ uintptr_t sleepFBCount=0,sleepFBAt=0;uint32_t repeatedSleep=0;static uint32_t pendingSleepDisplays(void*);
  uintptr_t orgWSAAAttribute=0;
  static IOReturn wrapWSAAAttribute(IOFramebuffer*,uint32_t,uint32_t);
  bool active=false,backlightEnabled=false;enum {FB_DETECT,FB_RESET,FB_COPY,FB_ZEROFILL,FB_NONE,FB_TOTAL};uint32_t resetFramebuffer=FB_NONE;
  IOPCIDevice *backlightGPU=nullptr;
  struct vc_info{};vc_info consoleVinfo;bool gotConsoleVinfo=false;
  struct XE {
+ IOService *parked=nullptr;bool parkedDSIFramebuffer(IOService *f)const{return parked && f==parked;}
  IOFramebuffer *degraded=nullptr; bool failedDSIWakeFor(IOFramebuffer *f) const {return f && f==degraded;}
  void processKernel(KernelPatcher &,DeviceInfo *){events.push_back(8);}
  void processKext(KernelPatcher&,size_t index,mach_vm_address_t,size_t){events.push_back(100+index);}
@@ -76,6 +79,17 @@ XeHost exercised;XeHost::callbackHost=&exercised;exercised.orgWSAAAttribute=rein
 assert(XeHost::wrapWSAAAttribute(&gpu,1,1)==42);exercised.xe.degraded=&gpu;
 assert(XeHost::wrapWSAAAttribute(&gpu,1,0x101)==kIOReturnNotReady && XeHost::wrapWSAAAttribute(&gpu,1,0)==kIOReturnNotReady);
 assert(XeHost::wrapWSAAAttribute(&mei,1,1)==42 && XeHost::wrapWSAAAttribute(&gpu,2,1)==42 && XeHost::wrapWSAAAttribute(&gpu,1,3)==42);
+alignas(8) uint8_t accel[0xd00]{},machine[0x140]{};
+*reinterpret_cast<uint8_t **>(accel+0x378)=machine;
+exercised.sleepFBCount=reinterpret_cast<uintptr_t>(+[](void*)->uint32_t{return 3;});
+exercised.sleepFBAt=reinterpret_cast<uintptr_t>(+[](void *m,unsigned i)->IOService*{assert(i==0);return *static_cast<IOService**>(m);});
+*reinterpret_cast<IOService**>(machine)=&gpu;exercised.xe.parked=&gpu;
+for(unsigned asleep:{0U,1U})for(unsigned depth:{0U,2U,3U,9U})for(bool owned:{false,true}){
+ *reinterpret_cast<uint32_t*>(accel+0xc78)=asleep;*reinterpret_cast<uint32_t*>(machine+0x10c)=depth;
+ exercised.xe.parked=owned?&gpu:nullptr;
+ assert(XeHost::pendingSleepDisplays(accel)==(asleep && depth>=3 && owned?0U:3U));
+}
+assert(exercised.repeatedSleep==2);
 const char *names[]={nullptr,"IMEI","HECI","MEI"};
 for(unsigned firmware=0;firmware<2;++firmware)for(unsigned me=0;me<5;++me)for(unsigned test=0;test<6;++test){
  mei.name=names[me%4];mei.renames=0;gpu.name="GFX0";

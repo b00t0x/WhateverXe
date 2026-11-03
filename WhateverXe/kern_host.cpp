@@ -12,6 +12,8 @@ struct FramebufferViewer : public IOFramebuffer {
 };
 static const char *graphicsPath[] { "/System/Library/Extensions/IOGraphicsFamily.kext/IOGraphicsFamily" };
 static KernelPatcher::KextInfo graphics { "com.apple.iokit.IOGraphicsFamily",graphicsPath,arrsize(graphicsPath),{true},{},KernelPatcher::KextInfo::Unloaded };
+static const char *accelPath[] { "/System/Library/Extensions/IOAcceleratorFamily2.kext/Contents/MacOS/IOAcceleratorFamily2" };
+static KernelPatcher::KextInfo accelFamily { "com.apple.iokit.IOAcceleratorFamily2",accelPath,arrsize(accelPath),{true},{},KernelPatcher::KextInfo::Unloaded };
 static const char *backlightPath[] { "/System/Library/Extensions/AppleBacklight.kext/Contents/MacOS/AppleBacklight" };
 static KernelPatcher::KextInfo backlight { "com.apple.driver.AppleBacklight",backlightPath,arrsize(backlightPath),{true},{},KernelPatcher::KextInfo::Unloaded };
 void XeHost::init() {
@@ -21,6 +23,7 @@ void XeHost::init() {
  lilu.onPatcherLoadForce([](void *u,KernelPatcher &p){static_cast<XeHost *>(u)->processKernel(p);},this);
  lilu.onKextLoadForce(nullptr,0,[](void *u,KernelPatcher &p,size_t i,mach_vm_address_t a,size_t s){static_cast<XeHost *>(u)->processKext(p,i,a,s);},this);
  lilu.onKextLoadForce(&graphics);
+ lilu.onKextLoadForce(&accelFamily);
  lilu.onKextLoadForce(&backlight);
  xe.init();
  XeDataAccess::init();
@@ -75,6 +78,36 @@ void XeHost::processKernel(KernelPatcher &patcher) {
 }
 void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
  if(!active)return;
+ if(accelFamily.loadIndex==index) {
+  if(!systemWakeRecovery)return;
+  // Only the first loop of system_will_sleep(false) opens mode changes.
+  // Leave its subsequent orphan cleanup and the hardware sleep phase native.
+  const auto sym=[&](const char *name) {
+   auto v=patcher.solveSymbol<mach_vm_address_t>(index,name,address,size);patcher.clearError();return v;
+  };
+  const uint8_t before[]={0x48,0x8b,0xbb,0x78,3,0,0,0xe8,0xdc,0xcb,0xfc,0xff,0x41,0xb6,1,0x85,0xc0,0x74,0x37};
+  const uint8_t asleep[]={0xf6,0x83,0x78,0x0c,0,0,1};
+  const uint8_t nesting[]={0x8b,0x83,0x0c,1,0,0,0x8d,0x48,1,0x89,0x8b,0x0c,1,0,0};
+  sleepFBCount=sym("__ZNK21IOAccelDisplayMachine19getFramebufferCountEv");
+  sleepFBAt=sym("__ZNK21IOAccelDisplayMachine16getIOFramebufferEj");
+  bool ready=false;
+  if(size>0x412f0 && sleepFBCount==address+0xde8e && sleepFBAt==address+0xdfc0 &&
+     sym("__ZN22IOGraphicsAccelerator217system_will_sleepEib")==address+0x41144 &&
+     !memcmp(reinterpret_cast<void *>(address+0x411bc),asleep,sizeof(asleep)) &&
+     !memcmp(reinterpret_cast<void *>(address+0xe104),nesting,sizeof(nesting)) &&
+     !memcmp(reinterpret_cast<void *>(address+0x412a6),before,sizeof(before))) {
+   // Pass the owning accelerator instead of just the display machine.
+   uint8_t code[]={0x48,0x89,0xdf,0xe8,0,0,0,0,0x90,0x90,0x90,0x90};
+   const auto distance=static_cast<int64_t>(reinterpret_cast<uintptr_t>(pendingSleepDisplays)-(address+0x412ae));
+   if(distance==static_cast<int32_t>(distance)) {
+    const auto rel=static_cast<int32_t>(distance);memcpy(code+4,&rel,4);
+    patcher.routeBlock(address+0x412a6,code,sizeof(code));
+    ready=!memcmp(reinterpret_cast<void *>(address+0x412a6),code,sizeof(code));patcher.clearError();
+   }
+  }
+  IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIDarkWakeReady",ready);
+  return;
+ }
  if(backlight.loadIndex==index) {
   if(backlightEnabled) {
    KernelPatcher::RouteRequest route("__ZN15AppleIntelPanel10setDisplayEP9IODisplay",wrapPanelSetDisplay,orgPanelSetDisplay);
@@ -105,6 +138,23 @@ void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t a
  }
  xe.processKext(patcher,index,address,size);
 }
+uint32_t XeHost::pendingSleepDisplays(void *accelerator) {
+ auto h=callbackHost;
+ auto bytes=static_cast<uint8_t *>(accelerator);
+ auto machine=*reinterpret_cast<uint8_t **>(bytes+0x378);
+ const auto count=reinterpret_cast<uint32_t (*)(void *)>(h->sleepFBCount)(machine);
+ if(!count || !(*reinterpret_cast<volatile uint32_t *>(bytes+0xc78)&1))return count;
+ const auto depth=*reinterpret_cast<volatile uint32_t *>(machine+0x10c);
+ if(depth<count)return count;
+ auto fb=reinterpret_cast<IOService *(*)(void *,unsigned)>(h->sleepFBAt)(machine,0);
+ if(!h->xe.parkedDSIFramebuffer(fb))return count;
+ // Already parked by a full two-phase notification, with no intervening
+ // DidWake. The real resume must close the original scope exactly once.
+ uint32_t record[]={__atomic_add_fetch(&h->repeatedSleep,1,__ATOMIC_RELAXED),count,depth};
+ IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIDarkWakeParked",record,sizeof(record));
+ return 0;
+}
+
 IOReturn XeHost::wrapWSAAAttribute(IOFramebuffer *fb,uint32_t attr,uint32_t value) {
  // IOGraphics sends WillExitDefer under its global gate before calling the
  // vendor attribute setter. Reject a failed scanout before queue-idle can
