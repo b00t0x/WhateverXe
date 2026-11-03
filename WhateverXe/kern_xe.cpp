@@ -18,6 +18,7 @@
 #include "kern_xelp_call_target.hpp"
 #include "kern_xelp_native_placement.hpp"
 #include <Headers/kern_disasm.hpp>
+#include <Headers/kern_crypto.hpp>
 #include "kern_alderlake_n.hpp"
 #include "kern_xelp_device.hpp"
 #include "kern_xelp_memory_layout.hpp"

@@ -256,7 +256,8 @@ uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
         if(array)for(unsigned i=0;i<array->getCount();++i) {
             auto bytes=OSDynamicCast(OSData,array->getObject(i));
             if(!bytes || bytes->getLength()!=sizeof(dsiFixedMode.timing))continue;
-            const auto &t=*static_cast<const XELP::DSI::AppleAdapter::Timing *>(bytes->getBytesNoCopy());
+            const auto t=XELP::DSI::AppleAdapter::panelOffer(
+                *static_cast<const XELP::DSI::AppleAdapter::Timing *>(bytes->getBytesNoCopy()),callbackXE->dsi60Hz);
             const bool native=XELP::DSI::AppleAdapter::clientTiming(dsiFixedMode.timing,t,i);
             if(!native && !XELP::DSI::AppleAdapter::presentationTiming(dsiFixedMode.timing,t,i)) {
                 // Keep the last rejected OS request across later successful
@@ -285,7 +286,8 @@ uint32_t XE::wrapDSISetDetailedTimings(IOService *fb,OSArray *array) {
             for(unsigned i=0;i<array->getCount();++i) {
                 auto bytes=OSDynamicCast(OSData,array->getObject(i));
                 if(!bytes || bytes->getLength()!=sizeof(dsiFixedMode.timing))continue;
-                const auto &t=*static_cast<const XELP::DSI::AppleAdapter::Timing *>(bytes->getBytesNoCopy());
+                const auto t=XELP::DSI::AppleAdapter::panelOffer(
+                    *static_cast<const XELP::DSI::AppleAdapter::Timing *>(bytes->getBytesNoCopy()),callbackXE->dsi60Hz);
                 if(XELP::DSI::AppleAdapter::clientTiming(dsiFixedMode.timing,t,i) ||
                    XELP::DSI::AppleAdapter::presentationTiming(dsiFixedMode.timing,t,i)) {
                     if(!replacement->appendBytes(&t,sizeof(t))) {

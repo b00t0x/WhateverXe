@@ -88,7 +88,7 @@ Binding adlnInspectPathBinding(IOService *,OSObject *path,void *,const Display13
 struct {IOLock *lock;void *controller;Display13Transcoder::Bindings transcoders;XELP::DSI::Readout bootDSI;
  bool memoryFaulted=false;struct {struct {bool faulted=false;} state;} bridge;} display13FBPower;
 struct XE {
- bool dsiPanelOnly=false;bool display13DSIModeHooksReady=true;Display13OutputWiring adlnOutputWiring;void *adlnTopologyController=nullptr;
+ bool dsiPanelOnly=false,dsi60Hz=false;bool display13DSIModeHooksReady=true;Display13OutputWiring adlnOutputWiring;void *adlnTopologyController=nullptr;
  uint8_t adlnPlatform[0x1c0]{};uintptr_t orgDSIMode[9]{};
  static bool updateReady;
  static bool dsiNativeUpdateAllowed(IOService *){return updateReady;}

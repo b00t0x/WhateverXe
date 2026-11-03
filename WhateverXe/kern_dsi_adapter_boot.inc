@@ -10,6 +10,18 @@ bool XE::prepareDSIFirmware(IOService *provider) {
     if(!copy)return false;
     auto parsed=XELP::DSI::parseProfile({static_cast<const uint8_t *>(copy->getBytesNoCopy()),copy->getLength()},true);
     if(!parsed.valid()){copy->release();return false;}
+    // minibookx-ctl qualifies one U300 VBT. TGLVBT contains the declared
+    // table only; Linux debugfs also includes trailing allocation padding.
+    if(checkKernelArgument("-wex-dsi-60hz") && copy->getLength()==10269 &&
+       parsed.mode.clockKHz==138267 && parsed.mode.htotal()==1272 && parsed.mode.vtotal()==2174) {
+        static const uint8_t known[]={
+            0xf3,0x03,0x0f,0xec,0x11,0x17,0x81,0x7b,
+            0xf0,0x4d,0xf2,0xfa,0x32,0xa0,0x3b,0xfa,
+            0xbd,0x8d,0x8a,0x9b,0x78,0xdf,0x6c,0x44,
+            0x30,0x8c,0x79,0x06,0x1c,0x1b,0x06,0xa9};
+        auto digest=Crypto::hash(static_cast<const uint8_t *>(copy->getBytesNoCopy()),copy->getLength());
+        if(digest){dsi60Hz=!memcmp(digest,known,sizeof(known));Buffer::deleter(digest);}
+    }
     dsiProfile=parsed;dsiFirmware=copy;return true;
 }
 
@@ -301,7 +313,7 @@ bool XE::bindDSIResources(IOService *controller) {
     IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
     if(ready)dsiPublishIRQLive();
     if(ready && dsiCommandTest)ready=probeDSICommands(controller);
-    if(ready && (dsiPanelTest || prepareExternalClock))ready=probeDSIPanel(controller,prepareExternalClock);
+    if(ready && (dsiPanelTest || prepareExternalClock || dsi60Hz))ready=probeDSIPanel(controller,prepareExternalClock);
     if(ready) {
         IOLockLock(c.lock);
         using Light=XELP::DSI::Backlight;

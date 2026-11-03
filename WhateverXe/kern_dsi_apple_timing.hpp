@@ -40,6 +40,13 @@ inline bool annotateMode(const Mode &m,ModeInformation &info,bool rotated=false,
     else info.flags&=~0x02000004U; // A scaled source is not the native/default mode.
     return true;
 }
+// At the U300 60 Hz clock CoreDisplay offers both one- and two-link
+// descriptors for the same EDID. Its link count is presentation metadata;
+// this panel has one physical DSI link. Keep every other field for validation.
+inline Timing panelOffer(Timing t,bool u300At60Hz) {
+    if(u300At60Hz && t.numLinks==2 && t.pixelClock==165920000)t.numLinks=1;
+    return t;
+}
 // CoreDisplay can replace the reserved client IDs when rebuilding its mode
 // list. Treat reserved IDs as opaque: the complete
 // timing, not an assumed generation/index bit layout, qualifies this alias.
