@@ -17,10 +17,9 @@ int main() {
     {
         auto fixed=t;fixed.pixelClock=fixed.minPixelClock=fixed.maxPixelClock=165920000;
         auto os=fixed;os.numLinks=2;os.reservedA[0]=0x8000300E;
-        assert(!AppleAdapter::clientTiming(fixed,AppleAdapter::panelOffer(os,false),0));
-        assert(AppleAdapter::clientTiming(fixed,AppleAdapter::panelOffer(os,true),0));
+        assert(AppleAdapter::clientTiming(fixed,AppleAdapter::panelOffer(os,fixed),0));
         os.horizontalBlanking++;
-        assert(!AppleAdapter::clientTiming(fixed,AppleAdapter::panelOffer(os,true),0));
+        assert(!AppleAdapter::clientTiming(fixed,AppleAdapter::panelOffer(os,fixed),0));
     }
     for(unsigned offset=4;offset<sizeof(offered);++offset) {
         auto corrupt=offered;reinterpret_cast<uint8_t*>(&corrupt)[offset]^=0x80;

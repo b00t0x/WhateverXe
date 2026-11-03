@@ -88,7 +88,7 @@ Binding adlnInspectPathBinding(IOService *,OSObject *path,void *,const Display13
 struct {IOLock *lock;void *controller;Display13Transcoder::Bindings transcoders;XELP::DSI::Readout bootDSI;
  bool memoryFaulted=false;struct {struct {bool faulted=false;} state;} bridge;} display13FBPower;
 struct XE {
- bool dsiPanelOnly=false,dsi60Hz=false;bool display13DSIModeHooksReady=true;Display13OutputWiring adlnOutputWiring;void *adlnTopologyController=nullptr;
+ bool dsiPanelOnly=false;bool display13DSIModeHooksReady=true;Display13OutputWiring adlnOutputWiring;void *adlnTopologyController=nullptr;
  uint8_t adlnPlatform[0x1c0]{};uintptr_t orgDSIMode[9]{};
  static bool updateReady;
  static bool dsiNativeUpdateAllowed(IOService *){return updateReady;}
@@ -208,6 +208,7 @@ int main(){
  data->release();replacement->release();
  auto offered=dsiFixedMode.timing;offered.reservedA[0]=0x80001001;offered.signalLevels=1;
  offered.pixelClock=offered.minPixelClock=offered.maxPixelClock=135260000;
+ offered.numLinks=2; // CoreDisplay hint on a verified single-link panel
  auto list=OSArray::withCapacity(1);auto wrong=offered;wrong.horizontalActive=640;
  auto wrongData=OSData::withBytes(&wrong,sizeof(wrong));auto offeredData=OSData::withBytes(&offered,sizeof(offered));
  list->setObject(wrongData);list->setObject(offeredData);
@@ -237,6 +238,7 @@ int main(){
  assert(XE::wrapDSIGetModeCount(fb)==2);int32_t pair[2];assert(!XE::wrapDSIGetModes(fb,pair));
  assert(static_cast<uint32_t>(pair[1])==rotated.reservedA[0]);
  assert(!XE::wrapDSIValidateMode(fb,pair[1],nullptr,&timing));
+ assert(static_cast<const Timing *>(timing)->numLinks==1 && rotated.numLinks==2);
  assert(static_cast<const Timing *>(timing)->scalerFlags==0x30 && !dsiFixedMode.timing.scalerFlags);
  assert(!XE::wrapDSIGetModeInformation(fb,pair[1],&info) && info.width==1920 && info.height==1080);
  // A large OS list with many distinct scaled dimensions must not be
