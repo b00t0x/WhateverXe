@@ -248,7 +248,7 @@ private:
     bool processDSINativeAttributes(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     mach_vm_address_t orgDSIAttributes[4] {};
     mach_vm_address_t dsiFramebufferEvent {};
-    bool dsiSystemWakeNotify {},dsiPagingLayoutKnown {};
+    bool dsiSystemWakeNotify {},dsiPagingLayoutKnown {},dsiFirstWakeLatch {};
     void finishDSISystemWake(IOService *);
     static uint32_t wrapDSISetStream(IOService *,IOService *,OSObject *,const void *);
     static uint32_t wrapDSISetAttribute(IOService *,uint32_t,uintptr_t);

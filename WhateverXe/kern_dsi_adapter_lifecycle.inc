@@ -865,6 +865,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     // A system sleep may clear even PW1. Restore held references before
     // reading powered pipe banks. Display-only wake follows the retained path.
     uint32_t coldStage=0,coldReg=0,coldValue=0;
+    uint32_t dbox[3]={};
     const auto restoreLostDisplay=[&]() {
         if(!dsiSleepImage.captured || !bindingOwned() || !io.readable(Display13Power::Driver) ||
            io.read(Display13Power::Driver)!=0)return true;
@@ -902,6 +903,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         for(unsigned i=0;i<XELP::DSI::SystemSleepImage::fieldCount;++i) {
             const auto &field=XELP::DSI::SystemSleepImage::fields[i];
             const auto before=io.read(field.reg),value=dsiSleepImage.savedFields[i];
+            if(field.reg==0x7003C){dbox[0]=value;dbox[1]=before;}
             if((before&field.mask)!=value) {
                 coldReg=field.reg;
                 *reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+field.reg)=(before&~field.mask)|value;
@@ -912,6 +914,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
             const auto reg=XELP::DSI::SystemSleepImage::config[i],value=dsiSleepImage.regs[i];
             if(io.read(reg)!=value && !store(reg,value))return false;
         }
+        dbox[2]=io.read(0x7003C);
         // Only the internal clock select/gate belongs to this path.
         auto mux=io.read(0x164280);
         if(mux==UINT32_MAX || !store(0x164280,(mux&~0x403U)|0x400U|power.host.pll))return false;
@@ -998,7 +1001,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
             irq.quiescing=false;irq.blockedPipes=0;
             adlnIRQCache(controller,irqIO);IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
             complete=restored && rearmed && cursor && power.panel.complete() && owned();
-            if(complete){power.sleeping=false;++power.cycles;dsiStopAttempted=false;dsiIRQParked=false;}
+            if(complete){power.sleeping=false;++power.cycles;dsiStopAttempted=false;dsiIRQParked=false;dsiFirstWakeLatch=coldStage==5;}
             else{power.failed=true;adlnFault(c.memoryFaulted,__LINE__);}
         }
     }
@@ -1020,7 +1023,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIResumeIRQ",irqReceipt,sizeof(irqReceipt));
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIResumeCommands",commandReceipt,sizeof(commandReceipt));
     if(complete && coldStage==5)dsiSystemWakeNotify=true;
-    uint32_t systemWake[]={coldStage,coldReg,coldValue,dsiSleepImage.captured,domainReady,p.frameBefore,p.frameAfter,p.waitUs,dsiFramebufferEvent!=0};
+    uint32_t systemWake[]={coldStage,coldReg,coldValue,dsiSleepImage.captured,domainReady,p.frameBefore,p.frameAfter,p.waitUs,dsiFramebufferEvent!=0,dbox[0],dbox[1],dbox[2]};
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSISystemWake",systemWake,sizeof(systemWake));
     publishDSIBacklight();
     return complete;

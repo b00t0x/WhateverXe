@@ -17,7 +17,16 @@ static constexpr uint32_t config[] = {
     static constexpr Field fields[]={
         {0x162104,0x00FF00FF},{0x162124,UINT32_MAX},{0x162128,UINT32_MAX},
         {0x162120,1U<<24},{0x162100,1U<<31},{0x162014,1U<<4},
-        {0x42084,1U<<30},{0xC7204,1U<<1}
+        {0x42084,1U<<30},{0xC7204,1U<<1},
+        // ADL-P pipe A pixel fetch credits (skl_watermark.c, intel_mbus_dbox_update).
+        // Restore the working allocation before arming the first plane.
+        {0x7003C,0x01FFDF0F},
+        // Plane and cursor controls encode Display13 arbitration slots.
+        // Select those slots on the pipe before rearming either consumer.
+        {0x70028,1U<<13},
+        // PHY A TX_DW8 stores the source/divider for duty-cycle correction.
+        // Preserve each data lane's other trim fields.
+        {0x1628A0,7U<<29},{0x1629A0,7U<<29},{0x162AA0,7U<<29},{0x162BA0,7U<<29}
     };
     static constexpr unsigned fieldCount=sizeof(fields)/sizeof(fields[0]);
     uint32_t savedFields[fieldCount] {};

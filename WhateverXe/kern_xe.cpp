@@ -9886,6 +9886,17 @@ void XE::display13WMArmUpdate(IOService *fb) {
 		if(retired==Display13DBUF::Status::Complete) {c.pipe[pipe].watermarkClockHz=actualHz;c.pipe[pipe].wmPending=0;}
 		else result.status=Display13WM::Status::Conflict;
 	}
+    // A cold DSI restart can pause the frame counter during the first
+    // native flip. Keep both DDB allocations pinned for the next real flush.
+    // No clock qualification or retirement is granted until a frame advances.
+    if(pipe==0 && callbackXE->dsiFirstWakeLatch && c.transcoders.dsi0Pipe==0) {
+        if(result.status==Display13WM::Status::CommitTimeout &&
+           result.check==Display13WM::LatchCheck::Registers && result.frameAfter==result.frameBefore) {
+            result.status=Display13WM::Status::Unavailable;
+            result.check=Display13WM::LatchCheck::AwaitingFlip;
+            callbackXE->dsiFirstWakeLatch=false;
+        } else if(result.status==Display13WM::Status::Complete)callbackXE->dsiFirstWakeLatch=false;
+    }
 	c.pipe[pipe].wmLatch=result;c.pipe[pipe].wmCommitting=false;
 	if(result.status!=Display13WM::Status::Complete && result.status!=Display13WM::Status::Unavailable)adlnFault(c.watermarkFaulted,__LINE__);
 	record[0]=1;record[1]=static_cast<uint32_t>(result.status);record[2]=pending;record[3]=c.pipe[pipe].wmPending;
