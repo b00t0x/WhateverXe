@@ -875,14 +875,29 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     // A system sleep may clear even PW1. Restore held references before
     // reading powered pipe banks. Display-only wake follows the retained path.
     uint32_t coldStage=0,coldReg=0,coldValue=0;
-    uint32_t dbox[3]={};
+    uint32_t dbox[3]={},phyPower[4]={};
     const auto restoreLostDisplay=[&]() {
         if(!dsiSleepImage.captured || !bindingOwned() || !io.readable(Display13Power::Driver) ||
            io.read(Display13Power::Driver)!=0)return true;
         coldStage=1;
         Display13FBPowerIO wells{c.map};
         c.bridge.state.suspended=true;
-        const auto restoredPower=Display13Power::restore(wells,c.bridge.state,true);
+        // Intel DSI_IO_MODECTL must select MIPI before the Combo PHY
+        // power request. PW1 and the pipe are already accessible here.
+        const auto selectDSI=[&](uint32_t ddi) {
+            constexpr uint32_t mode=0x6B094;
+            phyPower[0]=1;phyPower[1]=ddi;
+            if(!io.readable(mode))return false;
+            phyPower[2]=io.read(mode);
+            if(phyPower[2]==UINT32_MAX)return false;
+            if(!(phyPower[2]&1)) {
+                if(ddi&3)return false;
+                io.write(mode,phyPower[2]|1);
+            }
+            phyPower[3]=io.read(mode);
+            return phyPower[3]!=UINT32_MAX && (phyPower[3]&1);
+        };
+        const auto restoredPower=Display13Power::restore(wells,c.bridge.state,true,selectDSI);
         coldValue=static_cast<uint32_t>(restoredPower.status);coldReg=restoredPower.domain;
         if(restoredPower.status!=Display13Power::Status::Complete || !owned())return false;
         coldStage=2;
@@ -932,6 +947,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         return true;
     };
     const bool domainReady=restoreLostDisplay();
+    if(coldStage)IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIWakePHYPower",phyPower,sizeof(phyPower));
     receipt[5]=domainReady && owned() && power.host.stopped && !power.host.started && !power.panel.attempted &&
         power.host.error==XELP::DSI::Restart::Error::None && XELP::DSI::Surface::matches(io,stoppedPlane,false);
     if(receipt[5] && adlnIRQOwner(controller) && irq.lock && irq.lock==Display13FBMemory::field<IOSimpleLock *>(controller,0x90) &&
@@ -956,13 +972,13 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
         if(canStart) {
             struct Lifecycle {
-                XELPComboClock::ClockAllocation &allocation;uintptr_t owner;XELP::DSI::Restart::State &state;
+                XELPComboClock::ClockAllocation &allocation;uintptr_t owner;XELP::DSI::Restart::State &state;bool modeSelected;
                 bool stop(IO &,const XELP::DSI::Readout &,const XELP::DSI::Profile &){return false;}
                 bool start(IO &io,XELP::DSI::Readout &source) {
-                    if(!XELP::DSI::Restart::start(io,allocation,owner,state))return false;
+                    if(!XELP::DSI::Restart::start(io,allocation,owner,state,modeSelected))return false;
                     source=XELP::DSI::Restart::expected(source,state);return source.complete();
                 }
-            } lifecycle{clock.allocation,reinterpret_cast<uintptr_t>(controller),power.host};
+            } lifecycle{clock.allocation,reinterpret_cast<uintptr_t>(controller),power.host,phyPower[0]!=0};
             XELP::DSI::Panel::cycle(io,c.bootDSI,dsiProfile,power.plane.control,power.plane.surface,power.panel,lifecycle,&dsiPanelStop,
                 dsiBacklight.initialized?&dsiBacklight:nullptr,coldStage==5);
             if(power.panel.complete() && owned() && XELP::DSI::Surface::matches(io,power.plane,true)) {

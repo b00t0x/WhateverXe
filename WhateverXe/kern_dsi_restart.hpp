@@ -197,14 +197,15 @@ template<class IO> bool retainedStopped(IO &io,const Readout &source,
 // transport derive from the profile; no firmware PLL/PHY register dump replay.
 // Leaves pixel transfer off, ready for command sequence initialization. The
 // caller must enable video/plane, validate and publish the new source identity.
-template<class IO> bool start(IO &io,XELPComboClock::ClockAllocation &allocation,uintptr_t owner,State &s) {
+template<class IO> bool start(IO &io,XELPComboClock::ClockAllocation &allocation,uintptr_t owner,State &s,bool modeSelected=false) {
     if(!s.stopped || s.started || s.stage!=Stage::Stopped || s.error!=Error::None || !s.config.valid)return false;
     Access<IO> a{io,allocation,owner,s};XELPComboClock::PLL pll;
     if(!XELPComboClock::PLL::resolve(s.pll,pll) || !a.held())return false;
     if(!a.wait(pll.enable,0xCC000000U,0,0) || !a.wait(0x6B400,1U<<31,0,0) ||
        !a.wait(0x64000,0x80000080U,0x80,0) || !a.wait(0x164280,0x403,0x400|s.pll,0))return false;
     const auto &p=s.config;
-    s.stage=Stage::ModeOn;if(!a.rmw(0x6B094,0,1))return false;
+    s.stage=Stage::ModeOn;
+    if(!(modeSelected ? a.wait(0x6B094,1,1,0) : a.rmw(0x6B094,0,1)))return false;
     s.stage=Stage::Escape;
     if(!a.set(0x6B090,p.link.escapeDivider,0x1FF) || !a.set(0x162190,p.link.escapeDivider,0x1FF) ||
        // Linux ADL_MIPIO_DW8 writes zero (unshifted divider & shifted mask),

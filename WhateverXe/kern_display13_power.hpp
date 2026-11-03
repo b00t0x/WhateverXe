@@ -287,7 +287,7 @@ template<class IO> Result suspend(IO &io,State &s) {
 // Restore the current held scopes, in dependency order, without duplicate
 // gets. A request lost during power collapse is acquired anew and becomes
 // ours; a surviving borrowed request is never adopted merely by this call.
-template<class IO> Result restore(IO &io,State &s,bool deferTC=false) {
+template<class IO,class PrepareDDIA> Result restore(IO &io,State &s,bool deferTC,PrepareDDIA prepareDDIA) {
     Result r;
     if(!s.ready || s.faulted)return r;
     uint32_t value;
@@ -313,6 +313,7 @@ template<class IO> Result restore(IO &io,State &s,bool deferTC=false) {
         if(!d)r.status=wait(io,Fuses,1U<<27,FuseTimeoutUs);
         if(r.status!=Status::Complete)break;
         if(!valid(io,control(d),value)) {r.status=Status::Unavailable;break;}
+        if(d==unsigned(Domain::DDIA) && !prepareDDIA(value)) {r.status=Status::Unavailable;break;}
         if(tcAux(d)) {r.status=enableTCAux(io,d);if(r.status!=Status::Complete)break;}
         if(!(value&request(d))) {
             if(!s.suspended) {r.status=Status::RequestLost;break;}
@@ -329,6 +330,9 @@ template<class IO> Result restore(IO &io,State &s,bool deferTC=false) {
     if(r.status==Status::Complete) {s.suspended=false;r.domain=Count;}
     else s.faulted=true; // Keep partial restoration and its prerequisites.
     return r;
+}
+template<class IO> Result restore(IO &io,State &s,bool deferTC=false) {
+    return restore(io,s,deferTC,[](uint32_t){return true;});
 }
 }
 #endif

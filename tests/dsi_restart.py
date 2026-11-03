@@ -137,6 +137,11 @@ void successful(Fixture &f){
  assert(rebuilt.matches(f.p) && rebuilt.afeKHz==811529);
 }
 int main(int argc,char **argv){
+ for(unsigned selected=0;selected<2;++selected) {
+  Fixture f;assert(f.stop());f.io.regs[0x6B094]=selected;f.io.writes.clear();
+  assert(Restart::start(f.io,f.allocation,1,f.state,true)==bool(selected));
+  for(auto reg:f.io.writes)assert(reg!=0x6B094);
+ }
  for(unsigned fault=0;fault<7;++fault){Fixture f;
   assert(!Restart::retainedStopped(f.io,f.source,f.allocation,1,f.state));
   assert(f.stop());const auto count=f.io.writes.size();const auto state=f.state;
