@@ -73,6 +73,7 @@ public:
 	 *  @return true if patched anything
 	 */
 	bool processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size);
+    bool failedDSIWakeFor(IOService *fb) const;
 
 private:
     bool adlpLoadOnly {};
@@ -248,6 +249,7 @@ private:
     bool processDSINativeAttributes(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     mach_vm_address_t orgDSIAttributes[4] {};
     mach_vm_address_t dsiFramebufferEvent {};
+    uint32_t dsiWakeDegraded {},dsiWakeRejections {};
     bool dsiSystemWakeNotify {},dsiPagingLayoutKnown {},dsiFirstWakeLatch {};
     void finishDSISystemWake(IOService *);
     static uint32_t wrapDSISetStream(IOService *,IOService *,OSObject *,const void *);

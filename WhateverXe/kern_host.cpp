@@ -20,7 +20,7 @@ void XeHost::init() {
  if(resetFramebuffer>=FB_TOTAL)resetFramebuffer=FB_DETECT;
  lilu.onPatcherLoadForce([](void *u,KernelPatcher &p){static_cast<XeHost *>(u)->processKernel(p);},this);
  lilu.onKextLoadForce(nullptr,0,[](void *u,KernelPatcher &p,size_t i,mach_vm_address_t a,size_t s){static_cast<XeHost *>(u)->processKext(p,i,a,s);},this);
- if(resetFramebuffer!=FB_NONE)lilu.onKextLoadForce(&graphics);
+ lilu.onKextLoadForce(&graphics);
  lilu.onKextLoadForce(&backlight);
  xe.init();
  XeDataAccess::init();
@@ -34,6 +34,7 @@ void XeHost::processKernel(KernelPatcher &patcher) {
  // The host must dispatch framebuffer patches and accelerator rejection
  // hooks even when the selected profile deliberately has no Render backend.
  active=profile.displayAdmitted();
+ systemWakeRecovery=active && !profile.overridden() && profile.identity==0xA7A98086;
  const auto display=XELP::displayAdapter(profile.family);
  backlightEnabled=active && (display==XELP::DisplayAdapter::TGL || display==XELP::DisplayAdapter::ADLS ||
   display==XELP::DisplayAdapter::ADLP || display==XELP::DisplayAdapter::ADLN) &&
@@ -69,7 +70,7 @@ void XeHost::processKernel(KernelPatcher &patcher) {
    if(v){consoleVinfo=*v;gotConsoleVinfo=true;}else patcher.clearError();
   }
  }
- if(!active || resetFramebuffer==FB_DETECT){resetFramebuffer=FB_NONE;graphics.switchOff();}
+ if(!active || resetFramebuffer==FB_DETECT){resetFramebuffer=FB_NONE;if(!systemWakeRecovery)graphics.switchOff();}
  DeviceInfo::deleter(info);
 }
 void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
@@ -85,12 +86,36 @@ void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t a
  }
  if(XeDataAccess::processKext(patcher,index,address,size))return;
  if(graphics.loadIndex==index) {
+  if(systemWakeRecovery) {
+   const char *sym="__ZN13IOFramebuffer16setWSAAAttributeEjj";
+   const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,sym,address,size);
+   patcher.clearError();
+   const uint8_t prologue[]={0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xec,0x68};
+   bool ready=false;
+   if(size>=0x1cd64+sizeof(prologue) && fn==address+0x1cd64 && !memcmp(reinterpret_cast<void *>(fn),prologue,sizeof(prologue))) {
+    KernelPatcher::RouteRequest route(sym,wrapWSAAAttribute,orgWSAAAttribute);
+    ready=patcher.routeMultiple(index,&route,1,address,size);patcher.clearError();
+   }
+   IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIWakeRecoveryReady",ready);
+  }
+  if(resetFramebuffer==FB_NONE)return;
   gIOFBVerboseBootPtr=patcher.solveSymbol<uint8_t *>(index,"__ZL16gIOFBVerboseBoot",address,size);
   if(gIOFBVerboseBootPtr){KernelPatcher::RouteRequest route("__ZN13IOFramebuffer6initFBEv",wrapFramebufferInit,orgFramebufferInit);patcher.routeMultiple(index,&route,1,address,size);}
   patcher.clearError();return;
  }
  xe.processKext(patcher,index,address,size);
 }
+IOReturn XeHost::wrapWSAAAttribute(IOFramebuffer *fb,uint32_t attr,uint32_t value) {
+ // IOGraphics sends WillExitDefer under its global gate before calling the
+ // vendor attribute setter. Reject a failed scanout before queue-idle can
+ // sleep in that gate. No flip is acknowledged or GPU allocation released.
+ const auto state=value&kIOWSAA_StateMask;
+ if(attr==kIOWindowServerActiveAttribute &&
+    (state==kIOWSAA_Accelerated || state==kIOWSAA_Unaccelerated) &&
+    callbackHost->xe.failedDSIWakeFor(fb))return kIOReturnNotReady;
+ return FunctionCast(wrapWSAAAttribute,callbackHost->orgWSAAAttribute)(fb,attr,value);
+}
+
 bool XeHost::wrapPanelSetDisplay(IOService *panel,IOService *display) {
  // Add only the missing UID-19 profile for an actual internal 16-bit PWM
  // display. Keep Apple's/custom profiles and the native selection algorithm.

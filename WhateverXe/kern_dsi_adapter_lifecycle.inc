@@ -282,6 +282,16 @@ uint32_t XE::wrapDSISetPowerState(IOService *fb,uint32_t state) {
     return result;
 }
 
+bool XE::failedDSIWakeFor(IOService *fb) const {
+    if(!__atomic_load_n(&dsiWakeDegraded,__ATOMIC_ACQUIRE) || !fb ||
+       strcmp(fb->getMetaClass()->getClassName(),"AppleIntelFramebuffer") ||
+       fb->getMetaClass()->getClassSize()<0x4B90 ||
+       Display13FBMemory::field<IOService *>(fb,0x1D0)!=adlnTopologyController)return false;
+    if(__atomic_add_fetch(&callbackXE->dsiWakeRejections,1,__ATOMIC_RELAXED)==1)
+        IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIWakeRecoveryRejected",true);
+    return true;
+}
+
 // IOGraphics parks every published framebuffer before system sleep, including
 // offline connectors. Each has a distinct accelerator notification subscriber.
 void XE::finishDSISystemWake(IOService *internal) {
@@ -1005,6 +1015,26 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
             else{power.failed=true;adlnFault(c.memoryFaulted,__LINE__);}
         }
     }
+    uint64_t cadence[6]={};
+    if(complete && coldStage==5) {
+        // Sample while this FB still owns the restored modeset. Distinguish
+        // an actual slow port from a sticky PIPESTATUS bit or sample jitter.
+        const auto &mode=dsiProfile.mode;
+        const uint64_t period=(uint64_t(mode.htotal())*mode.vtotal()*1000+mode.clockKHz-1)/mode.clockKHz;
+        if(period>=1000 && period<=100000) {
+            const auto first=io.read(0x70040);
+            const auto t=mach_absolute_time();
+            IOSleep(static_cast<unsigned>((period*8+999)/1000));
+            const auto last=io.read(0x70040),port=io.read(0x70058);
+            uint64_t ns=0;absolutetime_to_nanoseconds(mach_absolute_time()-t,&ns);
+            cadence[0]=period;cadence[1]=ns/1000;cadence[2]=first;cadence[3]=last;cadence[4]=port;
+            const bool bad=first!=UINT32_MAX && last!=UINT32_MAX && port!=UINT32_MAX &&
+                (port&(1U<<26)) && cadence[1]>=period*6 &&
+                uint64_t(uint32_t(last-first)+1)*period*2<cadence[1];
+            cadence[5]=bad;
+            __atomic_store_n(&dsiWakeDegraded,bad?1U:0U,__ATOMIC_RELEASE);
+        }
+    }
     const auto &h=power.host;const auto &p=power.panel;
     receipt[2]=complete;receipt[3]=power.cycles;receipt[4]=power.sleeping;
     receipt[6]=power.plane.control;receipt[7]=power.plane.surface;receipt[8]=power.cursorControl;receipt[9]=power.cursorBase;
@@ -1022,7 +1052,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIRuntimePower",receipt,sizeof(receipt));
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIResumeIRQ",irqReceipt,sizeof(irqReceipt));
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIResumeCommands",commandReceipt,sizeof(commandReceipt));
-    if(complete && coldStage==5)dsiSystemWakeNotify=true;
+    if(complete && coldStage==5){dsiSystemWakeNotify=true;IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIWakeCadence",cadence,sizeof(cadence));}
     uint32_t systemWake[]={coldStage,coldReg,coldValue,dsiSleepImage.captured,domainReady,p.frameBefore,p.frameAfter,p.waitUs,dsiFramebufferEvent!=0,dbox[0],dbox[1],dbox[2]};
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSISystemWake",systemWake,sizeof(systemWake));
     publishDSIBacklight();

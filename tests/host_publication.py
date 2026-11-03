@@ -38,7 +38,7 @@ namespace WIOKit {bool awaitPublishing(IOPCIDevice *){events.push_back(1);publis
 struct KernelPatcher {
  static constexpr int KernelID=0;
  uintptr_t solveSymbol(int,const char *){return 0;}
- template<class T>T solveSymbol(size_t,const char*,mach_vm_address_t,size_t){return nullptr;}
+ template<class T>T solveSymbol(size_t,const char*,mach_vm_address_t,size_t){return T{};}
  struct RouteRequest {template<class T>RouteRequest(const char*,T,uintptr_t&) {}};
  bool routeMultiple(size_t,RouteRequest*,unsigned,mach_vm_address_t,size_t){return true;}
  void clearError(){}
@@ -47,11 +47,19 @@ struct KernelPatcher {
 namespace XeDataAccess {bool processKext(KernelPatcher&,size_t,mach_vm_address_t,size_t){return false;}void processKernel(KernelPatcher &){assert(published);events.push_back(7);}}
 struct Graphics {size_t loadIndex=4;bool off=false;void switchOff(){off=true;}} graphics;
 struct {size_t loadIndex=5;}backlight;
+using IOReturn=int;using IOFramebuffer=IOPCIDevice;
+constexpr uint32_t kIOWindowServerActiveAttribute=1,kIOWSAA_StateMask=15,kIOWSAA_Accelerated=1,kIOWSAA_Unaccelerated=0;
+constexpr IOReturn kIOReturnNotReady=-1;
+#define FunctionCast(fn,addr) reinterpret_cast<decltype(&fn)>(addr)
 struct XeHost {
+ static XeHost *callbackHost;bool systemWakeRecovery=false;
+ uintptr_t orgWSAAAttribute=0;
+ static IOReturn wrapWSAAAttribute(IOFramebuffer*,uint32_t,uint32_t);
  bool active=false,backlightEnabled=false;enum {FB_DETECT,FB_RESET,FB_COPY,FB_ZEROFILL,FB_NONE,FB_TOTAL};uint32_t resetFramebuffer=FB_NONE;
  IOPCIDevice *backlightGPU=nullptr;
  struct vc_info{};vc_info consoleVinfo;bool gotConsoleVinfo=false;
  struct XE {
+ IOFramebuffer *degraded=nullptr; bool failedDSIWakeFor(IOFramebuffer *f) const {return f && f==degraded;}
  void processKernel(KernelPatcher &,DeviceInfo *){events.push_back(8);}
  void processKext(KernelPatcher&,size_t index,mach_vm_address_t,size_t){events.push_back(100+index);}
  } xe;
@@ -61,7 +69,13 @@ struct XeHost {
  uintptr_t orgPanelSetDisplay=0,orgFramebufferInit=0;uint8_t *gIOFBVerboseBootPtr=nullptr;
 };
 '''.replace('// DEVICE_ADAPTER',adapter)+body+r'''
+XeHost *XeHost::callbackHost;
+static IOReturn vendor(IOFramebuffer*,uint32_t,uint32_t){return 42;}
 int main(){KernelPatcher patcher;IOPCIDevice gpu,mei;
+XeHost exercised;XeHost::callbackHost=&exercised;exercised.orgWSAAAttribute=reinterpret_cast<uintptr_t>(&vendor);
+assert(XeHost::wrapWSAAAttribute(&gpu,1,1)==42);exercised.xe.degraded=&gpu;
+assert(XeHost::wrapWSAAAttribute(&gpu,1,0x101)==kIOReturnNotReady && XeHost::wrapWSAAAttribute(&gpu,1,0)==kIOReturnNotReady);
+assert(XeHost::wrapWSAAAttribute(&mei,1,1)==42 && XeHost::wrapWSAAAttribute(&gpu,2,1)==42 && XeHost::wrapWSAAAttribute(&gpu,1,3)==42);
 const char *names[]={nullptr,"IMEI","HECI","MEI"};
 for(unsigned firmware=0;firmware<2;++firmware)for(unsigned me=0;me<5;++me)for(unsigned test=0;test<6;++test){
  mei.name=names[me%4];mei.renames=0;gpu.name="GFX0";

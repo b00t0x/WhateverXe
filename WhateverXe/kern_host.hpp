@@ -8,7 +8,9 @@ public:
 private:
  static XeHost *callbackHost;
  XE xe;
- bool active {};
+ bool active {},systemWakeRecovery {};
+ mach_vm_address_t orgWSAAAttribute {};
+ static IOReturn wrapWSAAAttribute(IOFramebuffer *,uint32_t,uint32_t);
  bool backlightEnabled {};
  IOPCIDevice *backlightGPU {};
  mach_vm_address_t orgPanelSetDisplay {};
