@@ -81,7 +81,7 @@ BIOS/UEFIで設定できる場合は、**DVMT Pre-Allocatedを96MB**にします
 ### その他の設定
 
 - 内蔵画面の輝度調整には`SSDT-PNLF`を追加します。
-- MiniBook X U300の検証構成では、内蔵DSIのファームウェア表示を引き継ぐために `-wex-dsi-adopt` を使用します。対象のMiniBook X U300またはN100のパネルテーブルと一致すると、`-wex-dsi-60hz` で起動時に固定60 Hzを要求します。各パネルのファームウェアが指定するブランキング期間を使い、両機種ともBig Surで実機確認済みです。この引数を削除して再起動すると標準の50 Hzに戻ります。U300のタイミングの出典は [minibookx-ctlの表示ガイド](https://github.com/ishad0w/minibookx-ctl/blob/main/docs/guide/display.md) です。
+- MiniBook X U300の検証構成では、内蔵DSIのファームウェア表示を引き継ぐために `-wex-dsi-adopt` を使用します。対象のMiniBook X U300またはN100のパネルテーブルと一致すると、`-wex-dsi-60hz` で起動時に固定60 Hzを要求します。各パネルのファームウェアが指定するブランキング期間を使い、両機種ともBig Surで実機確認済みです。N100はTahoeでも確認しました。この引数を削除して再起動すると標準の50 Hzに戻ります。U300のタイミングの出典は [minibookx-ctlの表示ガイド](https://github.com/ishad0w/minibookx-ctl/blob/main/docs/guide/display.md) です。
 - GPUは自動選択するため、通常は`device-id`上書きは不要です。
 - Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/Pではタイル形式を自動選択します。`-yTileDisable`は使わないでください。`AAPL,GfxYTile`は不要です。
 
