@@ -263,6 +263,18 @@ template<class IO> Status enable(IO &io,State &s,uint32_t excludedPCH=0,uint32_t
     if(!(io.read(Master)&Enable) || !(io.read(GfxMaster)&Enable))return fail(io,s,Status::Readback);
     s.enabled=true;return Status::Complete;
 }
+// Caller has proved total display power loss and restored its power/clock
+// dependencies. Cached armed banks no longer describe hardware. Reinstall
+// both pipe interrupts and connector detection, not just the live DSI bank.
+template<class IO> Status restoreAfterPowerLoss(IO &io,State &s,uint32_t allowed) {
+    if(!s.begun || s.faulted)return Status::Unavailable;
+    const auto actual=readActivePipes(io,allowed,s.transcoders);
+    if(actual.status!=Status::Complete)return actual.status;
+    io.write(Master,0);
+    if(io.read(Master)&Enable)return fail(io,s,Status::Readback);
+    s.enabled=false;s.active=0;
+    return enable(io,s,s.excludedPCH,NativeGT,actual.active,s.ports,s.typeC);
+}
 template<class IO> Status disable(IO &io,State &s) {
     if(!s.begun || !io.readable(Master))return Status::Unavailable;
     io.write(Master,0);s.enabled=false;

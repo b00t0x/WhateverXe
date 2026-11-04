@@ -2,7 +2,7 @@
 #include <stdint.h>
 namespace XELP { namespace DSI {
 struct SystemSleepImage {
-// Explicit writable configuration of a parked internal-only pipe. DDB and WM
+// Explicit writable configuration owned by the parked DSI pipe. DDB and WM
 // precede plane arming. No interrupt identity, status or frame counters.
 static constexpr uint32_t config[] = {
     0x6001C,0x45270,0x7027C,0x7017C,

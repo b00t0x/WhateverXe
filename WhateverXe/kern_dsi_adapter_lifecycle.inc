@@ -307,6 +307,24 @@ void XE::finishDSISystemWake(IOService *internal) {
     if(!dsiFramebufferEvent)return;
     auto controller=Display13FBMemory::field<IOService *>(internal,0x1D0);
     if(!controller || controller!=adlnTopologyController || controller->getMetaClass()->getClassSize()<0x1C20)return;
+    // The DSI primary restored the common wells. Reclaim existing TC modes
+    // before releasing parked display clients; new/disconnected ports still
+    // follow the normal probe and native modeset path. Enter the mode adapter
+    // without the FB/shared locks; it owns its existing handshake locking.
+    auto &c=display13FBPower;
+    uint32_t ports[9]={1};
+    for(unsigned tc=0;c.lock && tc<4;++tc) {
+        IOLockLock(c.lock);
+        auto port=c.controller==controller && c.tcMode[tc].restorePending ? c.tcObject[tc] : nullptr;
+        const auto wanted=c.tcMode[tc].selectedMode;
+        if(port)port->retain();
+        IOLockUnlock(c.lock);
+        if(port) {
+            ports[1+2*tc]=wanted;ports[2+2*tc]=wrapDisplay13TCMode(port,wanted);
+            port->release();
+        }
+    }
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIResumeTC",ports,sizeof(ports));
     using Event=uint32_t (*)(IOService *,int,void *);
     const auto event=reinterpret_cast<Event>(dsiFramebufferEvent);
     uint32_t events[12]={1,dsiPagingLayoutKnown};
@@ -787,8 +805,10 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path,bool 
         dsiArmedBackingOwned(fb,path) && !c.memoryFaulted && !c.dbuf.faulted) : (stoppedPath && dsiMemoryReleased);
     if(retain && complete) {
         power.sleeping=true;
+        // These are pipe A / DSI-owned registers. A peer may still be on at
+        // this point: its later power callback must not veto our snapshot.
         dsiSleepImage.captured=display13ClockVariant()==Display13Clock::Variant::RPLU &&
-            c.dbuf.selected==1 && !irq.state.active;
+            (c.dbuf.selected&1) && !(irq.state.active&1);
         if(dsiSleepImage.captured) {
             for(unsigned i=0;i<XELP::DSI::SystemSleepImage::count;++i)
                 dsiSleepImage.regs[i]=io.read(XELP::DSI::SystemSleepImage::config[i]);
@@ -828,7 +848,8 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path,bool 
 }
 
 // Runtime display wake keeps the native scanout allocation and every display
-// lease from the matching off transaction. System power loss is not covered.
+// lease from the matching off transaction. A captured system-sleep image also
+// restores collapsed shared power before native peer mode-setting resumes.
 bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     auto &c=display13FBPower;auto &clock=comboClockTransaction;auto &irq=display13FBIRQ;auto &power=dsiRuntimePower;
     if(!c.lock || !clock.lock || !controller || controller->getMetaClass()->getClassSize()<0x1C20 ||
@@ -889,6 +910,10 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         if(!dsiSleepImage.captured || !bindingOwned() || !io.readable(Display13Power::Driver) ||
            io.read(Display13Power::Driver)!=0)return true;
         coldStage=1;
+        for(unsigned tc=0;tc<4;++tc) {
+            c.tcMode[tc].notePowerLoss();
+            c.tcSignalReady[tc]=false;c.tcDPLink[tc]={};
+        }
         Display13FBPowerIO wells{c.map};
         c.bridge.state.suspended=true;
         // Intel DSI_IO_MODECTL must select MIPI before the Combo PHY
@@ -1025,7 +1050,9 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
                         irqReceipt[7+3*p]=irqIO.read(Display13FBIRQ::PipeIIR(p)+4);
                         irqReceipt[8+3*p]=irqIO.read(Display13FBIRQ::PipeIIR(p)-4);
                     }
-                    const auto status=Display13FBIRQ::extendActivePipes(irqIO,irq.state,irq.admittedPipes);
+                    const auto status=coldStage==5 ?
+                        Display13FBIRQ::restoreAfterPowerLoss(irqIO,irq.state,irq.admittedPipes) :
+                        Display13FBIRQ::extendActivePipes(irqIO,irq.state,irq.admittedPipes);
                     irqReceipt[15]=static_cast<uint32_t>(status);irqReceipt[16]=irq.state.active;
                     irqReceipt[17]=static_cast<uint32_t>(irq.state.firstFailure);
                     irqReceipt[18]=irq.state.failureRegister;irqReceipt[19]=irq.state.failureBits;

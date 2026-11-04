@@ -84,7 +84,8 @@ void adlnFault(bool &fault,unsigned){assert(locks==std::vector<unsigned>({1,2,3}
 struct {bool ready=true;}dsiFixedMode;
  #ifndef DSI_SURFACE_REPLAY
 struct {NativeBacking::Record *record=nullptr;bool modeReady=false;} dsiPendingBacking;
-bool dsiPublishedTarget(IOService *){return false;} // This fixture retires backing; it does not retain it for wake.
+bool sleepPublished=false;
+bool dsiPublishedTarget(IOService *fb){return sleepPublished && fb==pendingFB;}
 #endif
 bool dsiModeTarget(IOService *fb){return fb==display13FBPower.pipe[0].memoryFramebuffer;}
 bool mappingBound=true,failDDIPut=false,failMemoryFree=false,lieMemoryFree=false,loseDBUF=false,loseIRQRestore=false,losePowerFree=false;unsigned memoryFrees=0;
@@ -193,6 +194,20 @@ struct Case {
  }
 };
 int main(){
+ // The DSI snapshot must survive either peer's still-active stop ordering.
+ for(unsigned peer:{0U,2U,4U,6U}) {Case c;
+  static const uint8_t end[]={0};c.xe.dsiProfile.sequences.status=SequenceStatus::Valid;
+  for(unsigned id:{1U,2U,4U,5U,6U,7U,10U,11U})c.xe.dsiProfile.sequences.sequence[id]={end,sizeof(end)};
+  pendingFB=&c.fb;armedOwner=true;sleepPublished=true;dsiPendingBacking.modeReady=true;
+  display13FBPower.dbuf.selected=1|peer;
+  display13FBIRQ.state.active=1|peer;
+  const auto peerPlane=c.map.reg(0x71180);
+  assert(c.xe.quiesceDSIPath(&c.controller,&c.fb,&c.path,true));
+  assert(c.xe.dsiRuntimePower.sleeping && c.xe.dsiSleepImage.captured);
+  assert(display13FBIRQ.state.active==peer && c.map.reg(0x71180)==peerPlane);
+  assert(!memoryFrees && pendingFB==&c.fb && locks.empty());
+  pendingFB=nullptr;armedOwner=sleepPublished=false;dsiPendingBacking.modeReady=false;
+ }
  {Case c;pendingFB=&c.fb;armedOwner=true;nativeRetires=0;
   assert(c.run() && nativeRetires==1 && !pendingFB && memoryFrees==1);armedOwner=false;}
  {Case c;pendingFB=&c.fb;armedOwner=true;failNativeRetire=true;nativeRetires=0;
