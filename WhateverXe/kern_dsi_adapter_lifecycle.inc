@@ -74,9 +74,11 @@ int XE::beginDSIFramebufferWriter(IOService *fb) {
 }
 
 uint32_t XE::wrapDSIFlipTransaction(IOService *fb,void *transaction,uint64_t options,void *params) {
-    const int token=beginDSIFramebufferWriter(fb);if(token<0)return kIOReturnNotReady;
+    const int token=beginDSIFramebufferWriter(fb);if(token<0) {recordDSIClient(fb,13,options,kIOReturnNotReady);return kIOReturnNotReady;}
     const auto result=FunctionCast(wrapDSIFlipTransaction,callbackXE->orgDSITransaction[0])(fb,transaction,options,params);
-    endDSINativeWriter(token);return result;
+    endDSINativeWriter(token);
+    const uint64_t flags=params ? Display13FBMemory::field<uint32_t>(params,0x34) : 0;
+    recordDSIClient(fb,13,(options&UINT32_MAX)|(flags<<32),result);return result;
 }
 
 uint32_t XE::wrapDSIGammaTransaction(IOService *fb,void *transaction,void *params) {
