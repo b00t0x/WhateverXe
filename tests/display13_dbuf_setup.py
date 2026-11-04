@@ -36,13 +36,14 @@ int main(){
  using namespace Display13DBUF;
  for(unsigned pipe=0;pipe<3;++pipe){
   IOMemoryMap map;Display13FBDBUFIO io{&map};State s;
-  s.begun=true;s.selected=s.restorePending=1U<<pipe;s.capacity=7;s.mbus=0x1C000700;
+  s.begun=true;s.selected=1U<<pipe;s.capacity=7;s.mbus=0x1C000700;
   const auto plan=plannedLayout(7,pipe);
   s.pipe[pipe].primary=plan.primary;s.pipe[pipe].cursor=plan.cursor;
   map.reg(0x45404)=0xFC0F;map.reg(0x4438C)=s.mbus;
   const auto creditReg=0x7003C+0x1000*pipe;
   map.reg(creditReg)=0xB1038C04;
   assert(captureCredits(io,s)==Status::Complete && s.creditSaved==(1U<<pipe));
+  s.restorePending=1U<<pipe;
   map.reg(creditReg)=0xD1038804; // Lost writable allocation; preserve unrelated high fields.
   assert(restoreAllocation(io,s,pipe)==Status::Complete && !s.restorePending);
   assert(map.reg(creditReg)==0xD1038C04);

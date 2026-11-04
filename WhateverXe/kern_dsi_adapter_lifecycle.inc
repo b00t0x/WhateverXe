@@ -121,13 +121,13 @@ uint32_t XE::wrapDSISetAttribute(IOService *fb,uint32_t attribute,uintptr_t valu
                     // The power wrapper takes its own FB lock. Release ours so
                     // restored framebuffer clients can re-enter after notification.
                     IORecursiveLockUnlock(scope.lock);scope.lock=nullptr;
-                    return wrapDSISetPowerState(fb,static_cast<uint32_t>(value));
+                    return wrapDisplay13SetPowerState(fb,static_cast<uint32_t>(value));
                 }
                 // IOGraphics sends spwr before restart or power-off. Park the adopted
                 // panel through its own power path while display resources are live.
                 if(attribute==kIOSystemPowerAttribute && callbackXE->dsiPowerTest && dsiModeTarget(fb) &&
                    (value==kIOMessageSystemWillRestart || value==kIOMessageSystemWillPowerOff))
-                    return wrapDSISetPowerState(fb,0);
+                    return wrapDisplay13SetPowerState(fb,0);
                 if(attribute==0x626B7376)return callbackXE->saveDSIBrightness(fb,value);
                 if(XELP::DSI::AppleAdapter::transportAttribute(attribute))return kIOReturnUnsupported;
                 token=beginDSIFramebufferWriter(fb);if(token<0)return kIOReturnNotReady;
@@ -237,61 +237,7 @@ uint32_t XE::wrapDSISetConnectionAttribute(IOService *fb,int32_t connection,uint
     return result;
 }
 
-uint32_t XE::wrapDSISetPowerState(IOService *fb,uint32_t state) {
-    bool notifyWake=false;
-    recordDSIClient(fb,9,state,UINT32_MAX);
-    const auto result=[&]() -> uint32_t {
-        if(callbackXE->adlnOutputWiring.dsi) {
-            if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
-            DSIModeScope scope(fb);if(!scope.lock)return kIOReturnNotReady;
-            if(dsiLifecycleTarget(fb,Display13FBMemory::singlePath<OSObject *>(fb))) {
-                if(callbackXE->dsiPowerTest && state<=2 && dsiModeTarget(fb)) {
-                    auto controller=Display13FBMemory::field<IOService *>(fb,0x1D0);
-                    auto path=Display13FBMemory::singlePath<OSObject *>(fb);
-                    auto &power=callbackXE->dsiRuntimePower;
-                    const bool ready=!power.failed && (state==2 ? (power.sleeping ? callbackXE->resumeDSIPath(controller,fb,path) : dsiNativeUpdateAllowed(fb)) :
-                        (power.sleeping ? true : (dsiNativeUpdateAllowed(fb) && callbackXE->quiesceDSIPath(controller,fb,path,true))));
-                    if(!ready)return kIOReturnNotReady;
-                    if(state==2 && callbackXE->dsiSystemWakeNotify) {
-                        notifyWake=true;callbackXE->dsiSystemWakeNotify=false;
-                    }
-                    *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(fb)+0x4284)=state;
-                    return kIOReturnSuccess;
-                }
-                // One-way runtime stop experiment through the real power callback.
-                // Recovery is a reboot; state 2 never replays the donor's DDI path.
-                if(callbackXE->dsiStopTest && state<2 && dsiModeTarget(fb)) {
-                    const bool stopped=callbackXE->dsiMemoryReleased && callbackXE->dsiDDIReleased &&
-                        callbackXE->dsiClockStop.complete() && callbackXE->dsiPanelStop.complete;
-                    if(stopped)return kIOReturnSuccess;
-                    if(!callbackXE->dsiNativeWriterHooksReady || !dsiNativeUpdateAllowed(fb))return kIOReturnNotReady;
-                    auto controller=Display13FBMemory::field<IOService *>(fb,0x1D0);
-                    auto path=Display13FBMemory::singlePath<OSObject *>(fb);
-                    if(!callbackXE->quiesceDSIPath(controller,fb,path))return kIOReturnNotReady;
-                    *reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(fb)+0x4284)=state;
-                    return kIOReturnSuccess;
-                }
-                // Match only the donor's already-Wake no-op. Do not publish a new
-                // native power state without executing a DSI power transaction.
-                if(state!=2 || Display13FBMemory::field<uint32_t>(fb,0x4284)!=2)return kIOReturnUnsupported;
-                return callbackXE->dsiNativeWriterHooksReady && dsiNativeUpdateAllowed(fb) ? kIOReturnSuccess : kIOReturnNotReady;
-            }
-        }
-        return FunctionCast(wrapDSISetPowerState,callbackXE->orgDSIAttributes[2])(fb,state);
-    }();
-    if(notifyWake)callbackXE->finishDSISystemWake(fb);
-    recordDSIClient(fb,9,state,result);
-    return result;
-}
 
-bool XE::parkedDSIFramebuffer(IOService *fb) const {
-    return fb && dsiPowerTest && dsiPagingLayoutKnown && adlnOutputWiring.dsi &&
-        !strcmp(fb->getMetaClass()->getClassName(),"AppleIntelFramebuffer") &&
-        fb->getMetaClass()->getClassSize()>=0x4B90 && adlnTopologyController &&
-        Display13FBMemory::field<IOService *>(fb,0x1D0)==adlnTopologyController &&
-        Display13FBMemory::field<uint32_t>(fb,0x1DC)==0 &&
-        !(Display13FBMemory::field<uint8_t>(fb,0x199)&0x20);
-}
 
 bool XE::failedDSIWakeFor(IOService *fb) const {
     if(!__atomic_load_n(&dsiWakeDegraded,__ATOMIC_ACQUIRE) || !fb ||
@@ -303,50 +249,6 @@ bool XE::failedDSIWakeFor(IOService *fb) const {
     return true;
 }
 
-// IOGraphics parks every published framebuffer before system sleep, including
-// offline connectors. Each has a distinct accelerator notification subscriber.
-void XE::finishDSISystemWake(IOService *internal) {
-    if(!dsiFramebufferEvent)return;
-    auto controller=Display13FBMemory::field<IOService *>(internal,0x1D0);
-    if(!controller || controller!=adlnTopologyController || controller->getMetaClass()->getClassSize()<0x1C20)return;
-    // The DSI primary restored the common wells. Reclaim existing TC modes
-    // before releasing parked display clients; new/disconnected ports still
-    // follow the normal probe and native modeset path. Enter the mode adapter
-    // without the FB/shared locks; it owns its existing handshake locking.
-    auto &c=display13FBPower;
-    uint32_t ports[9]={1};
-    for(unsigned tc=0;c.lock && tc<4;++tc) {
-        IOLockLock(c.lock);
-        auto port=c.controller==controller && c.tcMode[tc].restorePending ? c.tcObject[tc] : nullptr;
-        const auto wanted=c.tcMode[tc].selectedMode;
-        if(port)port->retain();
-        IOLockUnlock(c.lock);
-        if(port) {
-            ports[1+2*tc]=wanted;ports[2+2*tc]=wrapDisplay13TCMode(port,wanted);
-            port->release();
-        }
-    }
-    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIResumeTC",ports,sizeof(ports));
-    using Event=uint32_t (*)(IOService *,int,void *);
-    const auto event=reinterpret_cast<Event>(dsiFramebufferEvent);
-    uint32_t events[12]={1,dsiPagingLayoutKnown};
-    for(unsigned index=0;index<3;++index) {
-        auto fb=Display13FBMemory::field<IOService *>(controller,0xD60+8*index);
-        if(!fb || fb->getMetaClass()->getClassSize()<0x4B90 ||
-           Display13FBMemory::field<IOService *>(fb,0x1D0)!=controller ||
-           Display13FBMemory::field<uint32_t>(fb,0x1DC)!=index || (index==0 && fb!=internal))continue;
-        fb->retain();
-        const bool pending=dsiPagingLayoutKnown && !(Display13FBMemory::field<uint8_t>(fb,0x199)&0x20);
-        if(pending || fb==internal) {
-            events[2]|=1U<<index;
-            events[4+2*index]=event(fb,4,reinterpret_cast<void *>(1));
-            events[5+2*index]=event(fb,8,nullptr);
-        }
-        if(dsiPagingLayoutKnown && (Display13FBMemory::field<uint8_t>(fb,0x199)&0x20))events[3]|=1U<<index;
-        fb->release();
-    }
-    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSISystemWakeEvents",events,sizeof(events));
-}
 
 uint32_t XE::wrapDSISetStream(IOService *controller,IOService *fb,OSObject *path,const void *timing) {
     if(callbackXE->adlnOutputWiring.dsi) {
@@ -357,58 +259,6 @@ uint32_t XE::wrapDSISetStream(IOService *controller,IOService *fb,OSObject *path
     return FunctionCast(wrapDSISetStream,callbackXE->orgDSIAttributes[3])(controller,fb,path,timing);
 }
 
-bool XE::processDSINativeAttributes(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
-    const char *symbols[]={
-        "__ZN21AppleIntelFramebuffer12setAttributeEjm",
-        "__ZN21AppleIntelFramebuffer25setAttributeForConnectionEijm",
-        "__ZN21AppleIntelFramebuffer24setFramebufferPowerStateEj",
-        "__ZN31AppleIntelFramebufferController11hwSetStreamEP21AppleIntelFramebufferP21AppleIntelDisplayPathPK29IODetailedTimingInformationV2"};
-    const uint32_t offsets[]={0x3331E,0x352D4,0x24DE8,0x50DB0};
-    const uint8_t entries[][20]={
-        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x18,0x48,0xFF,0x05},
-        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x18,0x48,0xFF,0x05},
-        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x53,0x50,0x41,0x89,0xF6,0x49,0x89,0xFF,0x48,0xFF,0x05,0xF1},
-        {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC,0x68,0x01,0x00,0x00}};
-    if(!display13FramebufferRequested || size<0x50DC4)return false;
-    for(unsigned i=0;i<4;++i) {
-        const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,symbols[i],address,size);patcher.clearError();
-        if(fn!=address+offsets[i] || memcmp(reinterpret_cast<void *>(fn),entries[i],20))return false;
-    }
-    // Native prepareToExitSleep / prepareToEnterWake call the same imported
-    // IOFramebuffer::handleEvent with DidWake(true) and DidPowerOn(nullptr).
-    // Resolve the linked call from the identified donor without an extra kext dependency.
-    if(size>0x26F1C) {
-        const uint8_t wake[]={0xBA,1,0,0,0,0x4C,0x89,0xF7,0xBE,4,0,0,0,0xE8};
-        const uint8_t on[]={0x4C,0x89,0xEF,0xBE,8,0,0,0,0x31,0xD2,0xE8};
-        if(!memcmp(reinterpret_cast<const void *>(address+0x26F0A),wake,sizeof(wake)) &&
-           !memcmp(reinterpret_cast<const void *>(address+0x26809),on,sizeof(on))) {
-            int32_t wd,od;
-            memcpy(&wd,reinterpret_cast<const void *>(address+0x26F18),sizeof(wd));
-            memcpy(&od,reinterpret_cast<const void *>(address+0x26814),sizeof(od));
-            if(wd && od && address+0x26F1C+wd==address+0x26818+od)
-                dsiFramebufferEvent=address+0x26F1C+wd;
-            if(dsiFramebufferEvent) {
-                // Accept the pagingState field only when the linked handleEvent
-                // sets precisely this bit in both DidWake and DidPowerOn.
-                auto fn=reinterpret_cast<const uint8_t *>(dsiFramebufferEvent);
-                if(fn[0]==0xFF && fn[1]==0x25) {
-                    const auto slot=XELPCall::relativeTarget(fn+2,reinterpret_cast<uintptr_t>(fn)+6);
-                    memcpy(&fn,reinterpret_cast<const void *>(slot),sizeof(fn));
-                }
-                const uint8_t setPaging[]={0x41,0x80,0x8D,0x99,0x01,0x00,0x00,0x20};
-                dsiPagingLayoutKnown=fn && fn[0]==0x55 && !memcmp(fn+0x100,setPaging,sizeof(setPaging)) &&
-                    !memcmp(fn+0x1A8,setPaging,sizeof(setPaging));
-            }
-        }
-    }
-    // Standard routes copy 17/17/16/20-byte prologues, before RIP counters.
-    KernelPatcher::RouteRequest routes[]={
-        {symbols[0],wrapDSISetAttribute,orgDSIAttributes[0]},
-        {symbols[1],wrapDSISetConnectionAttribute,orgDSIAttributes[1]},
-        {symbols[2],wrapDSISetPowerState,orgDSIAttributes[2]},
-        {symbols[3],wrapDSISetStream,orgDSIAttributes[3]}};
-    const bool ready=patcher.routeMultiple(index,routes,arrsize(routes),address,size);patcher.clearError();return ready;
-}
 
 bool XE::processDSINativeTransactions(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
     const char *symbols[]={
@@ -806,11 +656,10 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path,bool 
         power.host.error==XELP::DSI::Restart::Error::None && dsiPanelStop.complete && qualified() &&
         dsiArmedBackingOwned(fb,path) && !c.memoryFaulted && !c.dbuf.faulted) : (stoppedPath && dsiMemoryReleased);
     if(retain && complete) {
-        power.sleeping=true;dsiSharedPowerRestored=false;
+        power.sleeping=true;
         // These are pipe A / DSI-owned registers. A peer may still be on at
         // this point: its later power callback must not veto our snapshot.
-        dsiSleepImage.captured=display13ClockVariant()==Display13Clock::Variant::RPLU &&
-            (c.dbuf.selected&1) && !(irq.state.active&1);
+        dsiSleepImage.captured=(c.dbuf.selected&1) && !(irq.state.active&1);
         if(dsiSleepImage.captured) {
             Display13FBDBUFIO dbuf{c.map};
             dsiSleepImage.captured=Display13DBUF::captureCredits(dbuf,c.dbuf)==Display13DBUF::Status::Complete;
@@ -874,7 +723,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
            Display13FBMemory::field<IOWorkLoop *>(controller,0xE00)!=loop || adlnOutputWiring.dsi!=1 ||
            c.pipe[0].memoryFramebuffer!=fb || Display13FBMemory::singlePath<OSObject *>(fb)!=path ||
            c.transcoders.dsi0Pipe!=0 || c.dsiNativeWriters || c.memoryFaulted || c.clockFaulted || c.watermarkFaulted ||
-           c.bridge.state.faulted || c.bridge.state.suspended || c.dbuf.faulted || c.dbuf.updating ||
+           c.bridge.state.faulted || c.dbuf.faulted || c.dbuf.updating ||
            c.pipe[0].destroyingPath || c.pipe[0].wmProgramming || c.pipe[0].wmCommitting ||
            !c.dsiPort || Display13FBMemory::field<OSObject *>(path,0x3648)!=c.dsiPort ||
            Display13FBMemory::field<uint32_t>(c.dsiPort,0x550)!=1 || Display13FBMemory::field<uint32_t>(path,0x3644)!=2 ||
@@ -911,88 +760,22 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     uint32_t coldStage=0,coldReg=0,coldValue=0;
     uint32_t dbox[3]={},phyPower[4]={};
     const auto restoreLostDisplay=[&]() {
-        if(!dsiSleepImage.captured || !bindingOwned() || !io.readable(Display13Power::Driver) ||
-           (io.read(Display13Power::Driver)!=0 && !dsiSharedPowerRestored))return true;
+        if(!bindingOwned())return false;
+        if(!restoreDisplay13ResourcesLocked(c.power,true))return false;
+        if(c.restoreEpoch==dsiRestoredEpoch)return true;
+        if(!dsiSleepImage.captured)return false;
         auto store=[&](uint32_t reg,uint32_t v) {
             coldReg=reg;
             *reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+reg)=v;
             coldValue=io.read(reg);return coldValue==v;
         };
-        if(!dsiSharedPowerRestored) {
-            coldStage=1;
-            c.dbuf.restorePending|=c.dbuf.selected;
-            for(unsigned tc=0;tc<4;++tc) {
-                c.tcMode[tc].notePowerLoss();
-                c.tcSignalReady[tc]=false;c.tcDPLink[tc]={};
-            }
-            Display13FBPowerIO wells{c.map};
-            c.bridge.state.suspended=true;
-            // Intel DSI_IO_MODECTL must select MIPI before the Combo PHY
-            // power request. PW1 and the pipe are already accessible here.
-            const auto selectDSI=[&](uint32_t ddi) {
-                constexpr uint32_t mode=0x6B094;
-                phyPower[0]=1;phyPower[1]=ddi;
-                if(!io.readable(mode))return false;
-                phyPower[2]=io.read(mode);
-                if(phyPower[2]==UINT32_MAX)return false;
-                if(!(phyPower[2]&1)) {
-                    if(ddi&3)return false;
-                    io.write(mode,phyPower[2]|1);
-                }
-                phyPower[3]=io.read(mode);
-                return phyPower[3]!=UINT32_MAX && (phyPower[3]&1);
-            };
-            const auto restoredPower=Display13Power::restore(wells,c.bridge.state,true,selectDSI);
-            coldValue=static_cast<uint32_t>(restoredPower.status);coldReg=restoredPower.domain;
-            if(restoredPower.status!=Display13Power::Status::Complete || !owned())return false;
-            coldStage=2;
-            if(io.read(0x7B008)&0xC0000000U || io.read(0x70008)&0xC0000000U ||
-               io.read(0x71008)&0xC0000000U || io.read(0x72008)&0xC0000000U ||
-               io.read(0x70180)&(1U<<31))return false;
-            Display13FBClockIO cdclk{c.map};
-            const auto hz=c.clock.nativeHz();
-            if(!hz)return false;
-            const auto change=Display13Clock::set(cdclk,hz,{true,true,0},display13ClockVariant());
-            coldValue=static_cast<uint32_t>(change.status);
-            if(change.status!=Display13Clock::ChangeStatus::Complete)return false;
-            coldStage=3;
-            if(io.read(0x4438C)!=c.dbuf.mbus && !store(0x4438C,c.dbuf.mbus))return false;
-            Display13FBDBUFIO dbuf{c.map};
-            for(unsigned i=0;i<4;++i)if(!(dbuf.read(Display13DBUF::regs[i])&Display13DBUF::Request))
-                c.dbuf.owned&=~(1U<<i);
-            const auto slices=Display13DBUF::power(dbuf,c.dbuf,c.dbuf.requested,c.dbuf.consumers);
-            coldValue=static_cast<uint32_t>(slices);
-            if(slices!=Display13DBUF::Status::Complete)return false;
-            if(Display13DBUF::tracker(dbuf,c.dbuf)!=Display13DBUF::Status::Complete)return false;
-            // A peer's logical DDB ownership survives sleep, but its shadow
-            // registers do not. Restore those stopped banks before the native
-            // default/optimized allocation checks compare them with the owner.
-            uint32_t allocations[13]={1,c.dbuf.selected,c.dbuf.restorePending};
-            bool allocationsRestored=true;
-            for(unsigned pipe=0;pipe<3;++pipe)if(c.dbuf.restorePending&(1U<<pipe)) {
-                if(!Display13FBIRQ::powered(dbuf.read(Display13Power::Driver),pipe))continue;
-                const auto base=0x1000*pipe;
-                allocations[3+3*pipe]=dbuf.read(0x7027C+base);
-                allocations[4+3*pipe]=dbuf.read(0x7017C+base);
-                const auto status=Display13DBUF::restoreAllocation(dbuf,c.dbuf,pipe);
-                allocations[5+3*pipe]=static_cast<uint32_t>(status);
-                if(status!=Display13DBUF::Status::Complete){allocationsRestored=false;break;}
-            }
-            allocations[12]=c.dbuf.restorePending;
-            IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIWakeDBUF",allocations,sizeof(allocations));
-            if(!allocationsRestored)return false;
-        } else {
-            // Native global wake already restored clocks, DBUF and power.
-            // Peers may now be active: restore only the stopped DSI bank.
-            if(!owned() || !c.engineEnabled || c.clockStopped)return false;
-            phyPower[0]=1;phyPower[3]=io.read(0x6B094);
-            if(phyPower[3]==UINT32_MAX || !(phyPower[3]&1))return false;
-        }
-        coldStage=4;
+        if(!owned() || !c.engineEnabled || c.clockStopped)return false;
+        phyPower[0]=1;phyPower[3]=io.read(0x6B094);
+        if(phyPower[3]==UINT32_MAX || !(phyPower[3]&1))return false;
+        coldStage=4;dbox[0]=c.dbuf.credit[0];dbox[1]=io.read(0x7003C);
         for(unsigned i=0;i<XELP::DSI::SystemSleepImage::fieldCount;++i) {
             const auto &field=XELP::DSI::SystemSleepImage::fields[i];
             const auto before=io.read(field.reg),value=dsiSleepImage.savedFields[i];
-            if(field.reg==0x7003C){dbox[0]=value;dbox[1]=before;}
             if((before&field.mask)!=value) {
                 coldReg=field.reg;
                 *reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+field.reg)=(before&~field.mask)|value;
@@ -1080,9 +863,10 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
                         irqReceipt[7+3*p]=irqIO.read(Display13FBIRQ::PipeIIR(p)+4);
                         irqReceipt[8+3*p]=irqIO.read(Display13FBIRQ::PipeIIR(p)-4);
                     }
-                    const auto status=coldStage==5 ?
+                    const auto status=irq.powerLost ?
                         Display13FBIRQ::restoreAfterPowerLoss(irqIO,irq.state,irq.admittedPipes) :
                         Display13FBIRQ::extendActivePipes(irqIO,irq.state,irq.admittedPipes);
+                    if(status==Display13FBIRQ::Status::Complete)irq.powerLost=false;
                     irqReceipt[15]=static_cast<uint32_t>(status);irqReceipt[16]=irq.state.active;
                     irqReceipt[17]=static_cast<uint32_t>(irq.state.firstFailure);
                     irqReceipt[18]=irq.state.failureRegister;irqReceipt[19]=irq.state.failureBits;
@@ -1093,7 +877,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
             irq.quiescing=false;irq.blockedPipes=0;
             adlnIRQCache(controller,irqIO);IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
             complete=restored && rearmed && cursor && power.panel.complete() && owned();
-            if(complete){power.sleeping=false;++power.cycles;dsiStopAttempted=false;dsiIRQParked=false;dsiFirstWakeLatch=coldStage==5;dsiSharedPowerRestored=false;}
+            if(complete){power.sleeping=false;++power.cycles;dsiStopAttempted=false;dsiIRQParked=false;dsiFirstWakeLatch=coldStage==5;dsiRestoredEpoch=c.restoreEpoch;}
             else{power.failed=true;adlnFault(c.memoryFaulted,__LINE__);}
         }
     }
@@ -1135,7 +919,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIResumeIRQ",irqReceipt,sizeof(irqReceipt));
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIResumeCommands",commandReceipt,sizeof(commandReceipt));
     if(complete && coldStage==5){dsiSystemWakeNotify=true;IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIWakeCadence",cadence,sizeof(cadence));}
-    uint32_t systemWake[]={coldStage,coldReg,coldValue,dsiSleepImage.captured,domainReady,p.frameBefore,p.frameAfter,p.waitUs,dsiFramebufferEvent!=0,dbox[0],dbox[1],dbox[2]};
+    uint32_t systemWake[]={coldStage,coldReg,coldValue,dsiSleepImage.captured,domainReady,p.frameBefore,p.frameAfter,p.waitUs,display13FramebufferEvent!=0,dbox[0],dbox[1],dbox[2]};
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSISystemWake",systemWake,sizeof(systemWake));
     publishDSIBacklight();
     return complete;

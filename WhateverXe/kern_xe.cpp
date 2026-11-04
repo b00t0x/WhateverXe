@@ -4652,6 +4652,9 @@ struct Display13FBPowerContext {
     Display13WM::Latency latency;
     bool watermarkFaulted {};
     bool engineEnabled {};
+    // Shared reset generation; output callbacks consume it independently.
+    uint32_t restoreEpoch {};
+    bool restorePending {};
     volatile uintptr_t arbitrationWriterBase {}; // Qualified in sleepable engine context.
     IOLock *lock {};
     // Borrow only while lock is held, and finish consuming the snapshot
@@ -4739,7 +4742,7 @@ struct Display13FBIRQContext {
 	IOSimpleLock *lock {};
 	IOService *controller {};
 	Display13FBIRQ::State state;
-	unsigned handlers {},softwareHandlers {};bool quiescing {};uint32_t blockedPipes {};
+	unsigned handlers {},softwareHandlers {};bool quiescing {},powerLost {};uint32_t blockedPipes {};
 	uintptr_t softwareThread {};
 	Display13FBIRQ::HandlerScopes scopes;
 	volatile uint32_t admittedPipes {}; // Release-published after actual path/backing proof.
@@ -5526,8 +5529,9 @@ bool XE::processDisplay13Framebuffer(KernelPatcher &patcher,size_t index,mach_vm
 	IORegistryEntry::getRegistryRoot()->setProperty("N97FBGTTHooksReady",display13FBGTTHooksReady);
 	display13FBTopologyHooksReady=processDisplay13FramebufferTopology(patcher,index,address,size);
     display13DSIModeHooksReady=processDisplay13DSIModes(patcher,index,address,size);
-    dsiNativeWriterHooksReady=!adlnOutputWiring.dsi || (processDSINativeWriters(patcher,index,address,size) &&
-        processDSINativeTransactions(patcher,index,address,size) && processDSINativeAttributes(patcher,index,address,size));
+    const bool displayPowerHooks=processDisplay13NativeAttributes(patcher,index,address,size);
+    dsiNativeWriterHooksReady=displayPowerHooks && (!adlnOutputWiring.dsi || (processDSINativeWriters(patcher,index,address,size) &&
+        processDSINativeTransactions(patcher,index,address,size)));
     dsiBootProbeReady=processDisplay13DSIBoot(patcher,index,address,size);
     dsiCacheHooksReady=processDisplay13DSICache(patcher,index,address,size);
 	IORegistryEntry::getRegistryRoot()->setProperty("N97FBTopologyHooksReady",display13FBTopologyHooksReady);
@@ -6056,8 +6060,11 @@ IOReturn XE::wrapDisplay13FBEnableIRQ(IOService *controller) {
 	check[17]=io.read(0xC400C);check[18]=io.read(0xC4004);
 	constexpr uint32_t otherBanks[] {0x44448,0x44468,0x44478,0x44488};
 	for(unsigned i=0;i<4;++i)check[19+i]=io.read(otherBanks[i]+4)&~io.read(otherBanks[i]-4);
-	if(Display13FBTopology::multiOutputWiring(callbackXE->adlnOutputWiring)) {
-		const auto admitted=__atomic_load_n(&c.admittedPipes,__ATOMIC_ACQUIRE);
+    if(c.powerLost && !c.quiescing) {
+        c.status=Display13FBIRQ::restoreAfterPowerLoss(io,c.state,c.admittedPipes);
+        if(c.status==Display13FBIRQ::Status::Complete)c.powerLost=false;
+    } else if(Display13FBTopology::multiOutputWiring(callbackXE->adlnOutputWiring)) {
+        const auto admitted=__atomic_load_n(&c.admittedPipes,__ATOMIC_ACQUIRE);
 		const auto actual=Display13FBIRQ::readActivePipes(io,admitted,c.state.transcoders);
 		c.status=c.quiescing ? Display13FBIRQ::Status::Power : actual.status;
 		if(c.status==Display13FBIRQ::Status::Complete)c.status=c.state.begun && c.state.enabled ?
@@ -9978,10 +9985,10 @@ void XE::display13WMArmUpdate(IOService *fb) {
 	snprintf(property,sizeof(property),"N97FBPipe%uWMLatch",pipe);root->setProperty(property,record,sizeof(record));
 }
 
-void XE::wrapAlderLakeNEngineEnable(void *power) {
+bool XE::enableDisplay13EngineLocked(void *power) {
 	auto &c=display13FBPower;
-	if(!c.lock || power!=c.power || !c.controller)return;
-	uint64_t record[32] {};IOLockLock(c.lock);
+	if(!c.lock || power!=c.power || !c.controller)return false;
+	uint64_t record[32] {};
 	Display13Power::Result acquired;
 	if(callbackXE->display13FBEngineEnableHookReady && c.bridge.begun && !c.bridge.state.faulted &&
 		!c.bridge.state.suspended && !c.clockFaulted && Display13Power::objectAssociations(power,0x80,c.controller,0x1C20)) {
@@ -9990,22 +9997,23 @@ void XE::wrapAlderLakeNEngineEnable(void *power) {
 	}
 	c.writes+=acquired.writes;
 	Display13FBClockIO clockIO {c.map};auto clock=Display13Clock::read(clockIO,display13ClockVariant());
-	if(clock.status==Display13Clock::Status::Disabled && c.clockStopped && c.resumeClockHz &&
+    bool clockReady=!c.restorePending;
+	if((c.restorePending || (clock.status==Display13Clock::Status::Disabled && c.clockStopped)) && c.resumeClockHz &&
 		!c.bridge.state.faulted && !c.bridge.state.suspended && !c.clockFaulted && !c.dbuf.updating &&
 		!Display13WM::busyPipes(c.pipe)) {
 		Display13FBClockGuard guard;
 		if(adlnBeginClockGuard(guard)) {
 			const auto changed=Display13Clock::set(clockIO,c.resumeClockHz,{true,true,0},display13ClockVariant());
 			if(changed.status==Display13Clock::ChangeStatus::Complete) {
-				clock=changed.after;c.clockStopped=false;adlnInvalidateWM();
+				clock=changed.after;clockReady=true;c.clockStopped=false;adlnInvalidateWM();
 				*reinterpret_cast<uint64_t *>(reinterpret_cast<uint8_t *>(c.controller)+0xE98)=clock.nativeHz();
-			} else adlnFault(c.clockFaulted,__LINE__);
+			} else if(changed.writes)adlnFault(c.clockFaulted,__LINE__);
 			adlnEndClockGuard(guard,changed.status==Display13Clock::ChangeStatus::Complete || !changed.writes);
-		} else adlnFault(c.clockFaulted,__LINE__);
+		}
 	}
 	Display13DBUF::Status status=Display13DBUF::Status::Unavailable;
 	if(callbackXE->display13FBEngineEnableHookReady && c.bridge.begun && !c.bridge.state.faulted &&
-		!c.bridge.state.suspended && acquired.status==Display13Power::Status::Complete && !c.clockFaulted && clock.status==Display13Clock::Status::Complete &&
+		!c.bridge.state.suspended && acquired.status==Display13Power::Status::Complete && clockReady && !c.clockFaulted && clock.status==Display13Clock::Status::Complete &&
 		Display13Power::objectAssociations(power,0x80,c.controller,0x1C20)) {
 		Display13FBDBUFIO io {c.map};
 		status=Display13DBUF::begin(io,c.dbuf,__builtin_popcount(callbackXE->adlnOutputWiring.selected())>=3 ? 7U : 0U,c.transcoders);
@@ -10020,8 +10028,8 @@ void XE::wrapAlderLakeNEngineEnable(void *power) {
     // binding here, then publish only the native VA for the nonblocking writer.
     const auto writerBase=c.engineEnabled && adlnWriterMappingBound() ? Display13FBMemory::field<uintptr_t>(c.access,0x50) : 0;
     __atomic_store_n(&c.arbitrationWriterBase,writerBase,__ATOMIC_RELEASE);
-	if(c.engineEnabled) {c.clock=clock;c.resumeClockHz=clock.nativeHz();}
-	if(!c.engineEnabled)adlnFault(c.bridge.state.faulted,__LINE__);
+	if(c.engineEnabled) {c.clock=clock;c.resumeClockHz=clock.nativeHz();c.clockStopped=false;}
+	if(!c.engineEnabled && (c.clockFaulted || c.dbuf.faulted))adlnFault(c.bridge.state.faulted,__LINE__);
 	auto &d=c.dbuf;
 	record[0]=1;record[1]=static_cast<uint32_t>(status);record[2]=c.engineEnabled;record[3]=c.engine.domains;
 	record[4]=clock.nativeHz();record[5]=d.begun;record[6]=d.faulted;record[7]=d.mbus;record[8]=d.joined;
@@ -10030,13 +10038,22 @@ void XE::wrapAlderLakeNEngineEnable(void *power) {
 	for(unsigned i=0;i<4;++i) {record[17+i]=d.initial[i];record[21+i]=d.raw[i];}
     record[25]=writerBase!=0;
 	record[26]=d.selected;record[27]=static_cast<uint32_t>(acquired.status);record[28]=static_cast<uint32_t>(clock.status);
-	IOLockUnlock(c.lock);
 	auto root=IORegistryEntry::getRegistryRoot();root->setProperty("N97FBEngine",record,sizeof(record));
 	if(!record[26] && !root->getProperty("N97FBEngineFirstEmptyResume"))
 		root->setProperty("N97FBEngineFirstEmptyResume",record,sizeof(record));
+	return c.engineEnabled;
+}
+
+void XE::wrapAlderLakeNEngineEnable(void *power) {
+	auto &c=display13FBPower;if(!c.lock)return;
+	IOLockLock(c.lock);enableDisplay13EngineLocked(power);IOLockUnlock(c.lock);
 }
 
 void XE::wrapAlderLakeNEngineDisable(void *power) {
+    stopDisplay13Engine(power,false);
+}
+
+void XE::stopDisplay13Engine(void *power,bool systemSuspend) {
 	auto &c=display13FBPower;if(!c.lock || power!=c.power || !c.controller)return;
 	uint64_t record[12] {},hotplug[16] {},irqRelease[12] {};Display13Power::Result released;Display13Clock::Change clock;
 	IOWorkLoop *acquiredGate=nullptr;bool gateAttempted=false,gateReady=false;uint64_t gateEvidence[8] {};
@@ -10124,7 +10141,7 @@ void XE::wrapAlderLakeNEngineDisable(void *power) {
 					}
 				}
                 if(status==Display13DBUF::Status::Complete)c.engineEnabled=false;
-                if(status==Display13DBUF::Status::Complete && c.bridge.bootAdopted && (c.bridge.state.borrowed&1) &&
+                if(!systemSuspend && status==Display13DBUF::Status::Complete && c.bridge.bootAdopted && (c.bridge.state.borrowed&1) &&
                     (dual || (c.pipe[0].memoryFramebuffer && !Display13FBMemory::field<uint8_t>(c.pipe[0].memoryFramebuffer,0x1E0))))restoreHPD();
 
 				adlnEndClockGuard(guard,status!=Display13DBUF::Status::Complete && !clock.writes && !c.clockStopped);
@@ -10133,11 +10150,11 @@ void XE::wrapAlderLakeNEngineDisable(void *power) {
 	}
     // A repeated native IRQ disable can precede an idempotent engine stop.
     // Revalidate/re-arm HPD even when no shared resource mutation was needed.
-    if(dual && status==Display13DBUF::Status::Complete && !hotplug[0] && !c.bridge.state.suspended &&
+    if(!systemSuspend && dual && status==Display13DBUF::Status::Complete && !hotplug[0] && !c.bridge.state.suspended &&
        c.bridge.bootAdopted && (c.bridge.state.borrowed&1) && c.clockStopped && !c.engine.domains)restoreHPD();
 
 	if(status==Display13DBUF::Status::Complete)c.engineEnabled=false;
-	else adlnFault(c.bridge.state.faulted,__LINE__);
+	else if(c.dbuf.faulted || c.clockFaulted || released.writes || clock.writes)adlnFault(c.bridge.state.faulted,__LINE__);
 	c.writes+=released.writes;
 	record[0]=1;record[1]=static_cast<uint32_t>(status);record[2]=c.engineEnabled;record[3]=c.engine.domains;
 	record[4]=static_cast<uint32_t>(clock.status);record[5]=c.clockStopped;record[6]=c.resumeClockHz;
@@ -10160,7 +10177,7 @@ void XE::wrapAlderLakeNPowerOverride(void *power,bool enable) {
 		finishDisplay13TCShutdown(c.controller);
 	// override(true) is only reached by the donor's simulator backend; our
 	// physical object has simulator=0. Do not force unrelated DDI/AUX domains.
-	if(!enable)wrapAlderLakeNEngineDisable(power);
+	if(!enable)stopDisplay13Engine(power,true);
 	uint64_t record[32] {},suspendIRQ[24] {};Display13Power::Result result;
 	IOWorkLoop *acquiredGate=nullptr;IOLockLock(c.lock);
 	if(callbackXE->display13FBLifecycleHooksReady && !enable && c.bridge.begun && !c.bridge.state.faulted &&
@@ -10214,70 +10231,154 @@ void XE::wrapAlderLakeNPowerOverride(void *power,bool enable) {
 			suspendIRQ[22]=static_cast<uint32_t>(result.status);suspendIRQ[23]=c.bridge.state.suspended;
 		}
 	}
-	if(result.status!=Display13Power::Status::Complete)adlnFault(c.bridge.state.faulted,__LINE__);
+	if(result.status!=Display13Power::Status::Complete && result.writes)adlnFault(c.bridge.state.faulted,__LINE__);
 	display13FBPowerRecord(record,8,enable,result);IOLockUnlock(c.lock);
 	if(acquiredGate)reinterpret_cast<void (*)(IOWorkLoop *)>(callbackXE->adlnWorkLoopOpen)(acquiredGate);
 	if(suspendIRQ[0])IORegistryEntry::getRegistryRoot()->setProperty("N97FBSuspendIRQ",suspendIRQ,sizeof(suspendIRQ));
 	adlnPublishPowerRecord("N97FBPowerOverride",record);
 }
 
+// Called with the display owner lock. No framebuffer or connector owns this
+// transition. Native global wake and a transport that bypasses native wake
+// both enter here; a second caller must not reset an already running peer.
+bool XE::restoreDisplay13ResourcesLocked(void *power,bool waking) {
+    auto &c=display13FBPower;
+    uint64_t record[32] {},cold[12] {};Display13Power::Result result;
+    if(power!=c.power || !c.controller || !callbackXE->display13FBLifecycleHooksReady ||
+       !c.bridge.begun || c.bridge.state.faulted || c.clockFaulted ||
+       !Display13Power::objectAssociations(power,0x80,c.controller,0x1C20))return false;
+    // Serialize against hotplug/port work. Try-close while holding the owner
+    // lock: another native callback may own the gate and be waiting for us.
+    auto loop=c.workLoop;
+    if(!loop || Display13FBMemory::field<IOWorkLoop *>(c.controller,0xE00)!=loop ||
+       !callbackXE->adlnWorkLoopInGate || !callbackXE->adlnWorkLoopTryClose || !callbackXE->adlnWorkLoopOpen)return false;
+    struct Gate {
+        IOWorkLoop *loop;mach_vm_address_t open;bool acquired;
+        ~Gate(){if(acquired)reinterpret_cast<void (*)(IOWorkLoop *)>(open)(loop);}
+    } gate{loop,callbackXE->adlnWorkLoopOpen,false};
+    if(!reinterpret_cast<bool (*)(const IOWorkLoop *)>(callbackXE->adlnWorkLoopInGate)(loop)) {
+        gate.acquired=reinterpret_cast<bool (*)(IOWorkLoop *)>(callbackXE->adlnWorkLoopTryClose)(loop);
+        if(!gate.acquired)return false;
+    }
+    Display13FBBootIO io{c.map};
+    const auto driver=io.read(Display13Power::Driver);
+    if(driver==UINT32_MAX)return false;
+    // The donor also restores from its low-power exit with waking=false.
+    // Hardware state, not that hint, determines whether shared state was lost.
+    const bool lost=!(driver&3) || c.bridge.state.suspended;
+    if(!lost && !c.restorePending && !c.bridge.state.suspended && c.engineEnabled && !c.clockStopped)return true;
+    if(lost && !c.restorePending) {
+        ++c.restoreEpoch;c.restorePending=true;
+        c.dbuf.restorePending|=c.dbuf.selected;
+        for(unsigned tc=0;tc<4;++tc) {
+            c.tcMode[tc].notePowerLoss();c.tcSignalReady[tc]=false;c.tcDPLink[tc]={};
+        }
+        c.bridge.state.suspended=true;
+        c.engineEnabled=false;c.clockStopped=true;
+        if(!c.resumeClockHz)c.resumeClockHz=c.clock.nativeHz();
+        auto &irq=display13FBIRQ;
+        const auto saved=IOSimpleLockLockDisableInterrupt(irq.lock);
+        irq.powerLost=true;
+        IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
+    }
+    cold[0]=c.restorePending;cold[1]=c.restoreEpoch;
+    // This is a PHY/protocol prerequisite, not a condition for shared wake.
+    // Combo HDMI/DP/eDP and TC legacy/DP-alt outputs use the same shared path.
+    const auto selectDSI=[&](uint32_t ddi) {
+        if(!c.restorePending || c.transcoders.dsi0Pipe>=3)return true;
+        constexpr uint32_t reg=0x6B094;
+        const auto before=io.read(reg);cold[2]=before;
+        if(before==UINT32_MAX)return false;
+        if(!(before&1)) {
+            if(ddi&3)return false;
+            *reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+reg)=before|1;
+        }
+        cold[3]=io.read(reg);return cold[3]!=UINT32_MAX && (cold[3]&1);
+    };
+    result=Display13Power::restore(io,c.bridge.state,c.restorePending,selectDSI);
+    if(result.status==Display13Power::Status::Complete && c.restorePending) {
+        // No clock/MBUS writes after any output starts scanning out.
+        if(!Display13FBIRQ::consumersStopped(io,7,c.transcoders))result.status=Display13Power::Status::NotReady;
+        else {
+            cold[4]=io.read(0x4438C);
+            if(cold[4]!=c.dbuf.mbus)
+                *reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+0x4438C)=c.dbuf.mbus;
+            cold[5]=io.read(0x4438C);
+            if(cold[5]!=c.dbuf.mbus)result.status=Display13Power::Status::NotReady;
+            else for(unsigned i=0;i<4;++i)
+                if(!(io.read(Display13DBUF::regs[i])&Display13DBUF::Request))c.dbuf.owned&=~(1U<<i);
+        }
+    }
+    if(result.status==Display13Power::Status::Complete &&
+       !Display13Power::publishObject(c.bridge,power,0x80,c.controller,0x1C20))result.status=Display13Power::Status::NotReady;
+    cold[6]=static_cast<uint32_t>(result.status);cold[7]=c.bridge.state.deferredTC;
+    const bool ready=result.status==Display13Power::Status::Complete &&
+        ((c.engineEnabled && !c.restorePending && !c.clockStopped) || enableDisplay13EngineLocked(power));
+    if(ready)c.restorePending=false;
+    else if(result.status==Display13Power::Status::Complete)result.status=Display13Power::Status::NotReady;
+    // A read/preflight rejection retains the pending generation. Partial
+    // hardware failures are already latched by the resource that owns them.
+    cold[8]=c.engineEnabled;cold[9]=c.clockStopped;cold[10]=c.dbuf.restorePending;cold[11]=c.bridge.state.faulted;
+    display13FBPowerRecord(record,9,waking,result);
+    adlnPublishPowerRecord("N97FBPowerRestore",record);
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13SharedResume",cold,sizeof(cold));
+    return ready;
+}
+
+bool XE::restoreDisplay13Ports(IOService *controller,unsigned onlyDDI) {
+    auto &c=display13FBPower;bool ready=true;uint32_t ports[10]={1};
+    for(unsigned tc=0;c.lock && tc<4;++tc) {
+        if(onlyDDI!=UINT32_MAX && tc+3!=onlyDDI)continue;
+        IOLockLock(c.lock);
+        const bool pending=c.controller==controller && c.tcMode[tc].restorePending;
+        auto port=pending ? c.tcObject[tc] : nullptr;
+        const auto mode=c.tcMode[tc].selectedMode;
+        if(port)port->retain();
+        IOLockUnlock(c.lock);
+        if(pending && !port)ready=false;
+        if(port) {
+            ports[1+2*tc]=mode;ports[2+2*tc]=wrapDisplay13TCMode(port,mode);
+            if(ports[2+2*tc]!=kIOReturnSuccess)ready=false;
+            port->release();
+        }
+    }
+    ports[9]=ready;IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13ResumePorts",ports,sizeof(ports));
+    return ready;
+}
+
+// prepareToExitSleep invokes a void restorePowerWellsState and otherwise
+// continues on failure. Intercept at the enclosing status-returning FB entry
+// so a busy/partial shared transition cannot fall through into native writers.
+bool XE::prepareDisplay13Wake(IOService *fb) {
+    auto &c=display13FBPower;
+    if(!c.lock || !fb || fb->getMetaClass()->getClassSize()<0x4B90)return true;
+    auto controller=Display13FBMemory::field<IOService *>(fb,0x1D0);
+    IOLockLock(c.lock);
+    if(controller!=c.controller || !c.bridge.begun){IOLockUnlock(c.lock);return true;}
+    Display13FBBootIO io{c.map};const auto driver=io.read(Display13Power::Driver);
+    const bool needed=c.restorePending || c.bridge.state.suspended || !(driver&3);
+    const bool ready=driver!=UINT32_MAX && (!needed || restoreDisplay13ResourcesLocked(c.power,true));
+    unsigned ddi=UINT32_MAX;bool connected=false;
+    const auto pipe=Display13FBMemory::boundPipe(c.pipe,fb);
+    if(ready && pipe<3 && c.pipe[pipe].powerPath.binding.status==TGLFBBinding::Status::Complete) {
+        ddi=c.pipe[pipe].powerPath.binding.ddi;
+        Display13TC::Port port;
+        if(Display13TC::Port::resolve(ddi,port) && c.tcMode[ddi-3].restorePending) {
+            const auto sde=io.read(0xC4000),north=io.read(0x44470);
+            connected=sde==UINT32_MAX || north==UINT32_MAX || port.legacyHPD(sde) || port.altHPD(sde,north);
+        }
+    }
+    IOLockUnlock(c.lock);
+    // A disconnected peer must reach native probing/teardown, not prevent
+    // every other FB from waking. Only this output's live TC link is required.
+    return ready && (!connected || restoreDisplay13Ports(controller,ddi));
+}
+
 void XE::wrapAlderLakeNPowerRestore(void *power,bool waking) {
-	auto &c=display13FBPower;if(!c.lock || power!=c.power || !c.controller)return;
-	uint64_t record[32] {},cold[12] {};Display13Power::Result result;IOLockLock(c.lock);
-	if(callbackXE->display13FBLifecycleHooksReady && c.bridge.begun && !c.bridge.state.faulted && !c.clockFaulted &&
-		Display13Power::objectAssociations(power,0x80,c.controller,0x1C20)) {
-		Display13FBBootIO io {c.map};
-		const bool lost=waking && callbackXE->dsiSleepImage.captured && callbackXE->dsiRuntimePower.sleeping &&
-			display13ClockVariant()==Display13Clock::Variant::RPLU && c.transcoders.dsi0Pipe==0 &&
-			io.read(Display13Power::Driver)==0;
-		if(lost) {
-			cold[0]=1;cold[1]=c.dbuf.selected;
-			c.dbuf.restorePending|=c.dbuf.selected;
-			for(unsigned tc=0;tc<4;++tc) {
-				c.tcMode[tc].notePowerLoss();c.tcSignalReady[tc]=false;c.tcDPLink[tc]={};
-			}
-			c.bridge.state.suspended=true;
-		}
-		const auto selectDSI=[&](uint32_t ddi) {
-			if(!lost)return true;
-			constexpr uint32_t reg=0x6B094;
-			const auto before=io.read(reg);cold[2]=before;
-			if(before==UINT32_MAX)return false;
-			if(!(before&1)) {
-				if(ddi&3)return false;
-				*reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+reg)=before|1;
-			}
-			cold[3]=io.read(reg);return cold[3]!=UINT32_MAX && (cold[3]&1);
-		};
-		// Retained TC leases cannot enable AUX before the port mode handshake.
-		// The DSI wake completion reclaims those modes before peer notifications.
-		result=Display13Power::restore(io,c.bridge.state,lost,selectDSI);
-		if(lost && result.status==Display13Power::Status::Complete) {
-			cold[4]=io.read(0x4438C);
-			if(!Display13FBIRQ::consumersStopped(io,7,c.transcoders))result.status=Display13Power::Status::NotReady;
-			else {
-				if(cold[4]!=c.dbuf.mbus)
-					*reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+0x4438C)=c.dbuf.mbus;
-				cold[5]=io.read(0x4438C);
-				if(cold[5]!=c.dbuf.mbus)result.status=Display13Power::Status::NotReady;
-				else {
-					for(unsigned i=0;i<4;++i)if(!(io.read(Display13DBUF::regs[i])&Display13DBUF::Request))c.dbuf.owned&=~(1U<<i);
-					callbackXE->dsiSharedPowerRestored=true;
-				}
-			}
-		}
-		cold[6]=static_cast<uint32_t>(result.status);cold[7]=c.bridge.state.deferredTC;
-		if(result.status==Display13Power::Status::Complete &&
-			!Display13Power::publishObject(c.bridge,power,0x80,c.controller,0x1C20))result.status=Display13Power::Status::NotReady;
-	}
-	if(result.status!=Display13Power::Status::Complete)adlnFault(c.bridge.state.faulted,__LINE__);
-	display13FBPowerRecord(record,9,waking,result);IOLockUnlock(c.lock);
-	adlnPublishPowerRecord("N97FBPowerRestore",record);
-	if(result.status==Display13Power::Status::Complete)wrapAlderLakeNEngineEnable(power);
-	if(cold[0]) {
-		IOLockLock(c.lock);cold[8]=c.engineEnabled;cold[9]=c.clockStopped;cold[10]=c.dbuf.restorePending;cold[11]=c.bridge.state.faulted;IOLockUnlock(c.lock);
-		IORegistryEntry::getRegistryRoot()->setProperty("N97FBNativeColdRestore",cold,sizeof(cold));
-	}
+    auto &c=display13FBPower;if(!c.lock || power!=c.power || !c.controller)return;
+    IOLockLock(c.lock);const bool ready=restoreDisplay13ResourcesLocked(power,waking);
+    auto controller=static_cast<IOService *>(c.controller);IOLockUnlock(c.lock);
+    if(ready)restoreDisplay13Ports(controller);
 }
 
 void XE::wrapAlderLakeNPrimaryDBUF(OSObject *plane,uint32_t start,uint32_t end,bool wait) {
@@ -10697,6 +10798,14 @@ bool XE::adlnPowerReference(void *power,uint32_t operation,uint32_t domain) {
 				++h[13+(h[7]&3)+((h[7]&8)?4:0)];
 			} else {++h[21];h[8]=h[9]=h[10]=h[11]=h[12]=0;}
 		}
+        // A bank may be off by the time global STOP runs. Capture it before
+        // its last native PG put; retain snapshots of already parked peers.
+        if(operation==2 && c.dbuf.begun) {
+            Display13FBDBUFIO snapshot{c.map};
+            if(Display13DBUF::captureCredits(snapshot,c.dbuf)!=Display13DBUF::Status::Complete) {
+                IOLockUnlock(c.lock);return false;
+            }
+        }
 		Display13FBPowerIO io {c.map};
 		uint32_t released=0;
 		if(operation==2 && domain>=1 && domain<=4 && c.bridge.pgRefs[domain-1]==1)
@@ -10798,7 +10907,7 @@ bool XE::adlnPowerReference(void *power,uint32_t operation,uint32_t domain) {
 		}
 		if(result.status==Display13Power::Status::Complete && !Display13Power::publishObject(c.bridge,power,0x80,c.controller,0xC60))
 			result.status=Display13Power::Status::NotReady;
-		if(result.status!=Display13Power::Status::Complete)adlnFault(c.bridge.state.faulted,__LINE__);
+		if(result.status!=Display13Power::Status::Complete && (releaseAllowed || display13FBIRQ.state.faulted))adlnFault(c.bridge.state.faulted,__LINE__);
 		disableEngine=operation==2 && result.status==Display13Power::Status::Complete &&
 			!c.bridge.nativeRefs(1) && c.engineEnabled;
 	} else if(power==c.power && c.controller)adlnFault(c.bridge.state.faulted,__LINE__);
@@ -20208,4 +20317,5 @@ void XE::wrapTGLWriteDekel(void *port, uint32_t index, uint32_t value) {
 #include "kern_dsi_adapter_backing.inc"
 #include "kern_dsi_adapter_modes.inc"
 #include "kern_dsi_adapter_lifecycle.inc"
+#include "kern_display13_framebuffer_power.inc"
 #include "kern_dsi_adapter_diagnostics.inc"

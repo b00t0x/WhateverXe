@@ -61,7 +61,7 @@ struct XeHost {
  IOPCIDevice *backlightGPU=nullptr;
  struct vc_info{};vc_info consoleVinfo;bool gotConsoleVinfo=false;
  struct XE {
- IOService *parked=nullptr;bool parkedDSIFramebuffer(IOService *f)const{return parked && f==parked;}
+ IOService *parked=nullptr;bool parkedDisplay13Framebuffer(IOService *f)const{return parked && f==parked;}
  IOFramebuffer *degraded=nullptr; bool failedDSIWakeFor(IOFramebuffer *f) const {return f && f==degraded;}
  void processKernel(KernelPatcher &,DeviceInfo *){events.push_back(8);}
  void processKext(KernelPatcher&,size_t index,mach_vm_address_t,size_t){events.push_back(100+index);}
@@ -82,12 +82,19 @@ assert(XeHost::wrapWSAAAttribute(&mei,1,1)==42 && XeHost::wrapWSAAAttribute(&gpu
 alignas(8) uint8_t accel[0xd00]{},machine[0x140]{};
 *reinterpret_cast<uint8_t **>(accel+0x378)=machine;
 exercised.sleepFBCount=reinterpret_cast<uintptr_t>(+[](void*)->uint32_t{return 3;});
-exercised.sleepFBAt=reinterpret_cast<uintptr_t>(+[](void *m,unsigned i)->IOService*{assert(i==0);return *static_cast<IOService**>(m);});
-*reinterpret_cast<IOService**>(machine)=&gpu;exercised.xe.parked=&gpu;
+exercised.sleepFBAt=reinterpret_cast<uintptr_t>(+[](void *m,unsigned i)->IOService*{assert(i<3);return static_cast<IOService**>(m)[i];});
+for(unsigned i=0;i<3;++i)reinterpret_cast<IOService**>(machine)[i]=&gpu;exercised.xe.parked=&gpu;
 for(unsigned asleep:{0U,1U})for(unsigned depth:{0U,2U,3U,9U})for(bool owned:{false,true}){
  *reinterpret_cast<uint32_t*>(accel+0xc78)=asleep;*reinterpret_cast<uint32_t*>(machine+0x10c)=depth;
  exercised.xe.parked=owned?&gpu:nullptr;
  assert(XeHost::pendingSleepDisplays(accel)==(asleep && depth>=3 && owned?0U:3U));
+}
+assert(exercised.repeatedSleep==2);
+// FB0 parked cannot hide a newly awake or foreign peer at any index.
+for(unsigned i=0;i<3;++i){
+ reinterpret_cast<IOService**>(machine)[i]=&mei;
+ assert(XeHost::pendingSleepDisplays(accel)==3);
+ reinterpret_cast<IOService**>(machine)[i]=&gpu;
 }
 assert(exercised.repeatedSleep==2);
 const char *names[]={nullptr,"IMEI","HECI","MEI"};

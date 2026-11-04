@@ -3,9 +3,10 @@
 namespace XELP { namespace DSI {
 struct SystemSleepImage {
 // Explicit writable configuration owned by the parked DSI pipe. DDB and WM
-// precede plane arming. No interrupt identity, status or frame counters.
+// precede plane arming. Shared DBUF owns DDB/MBUS credits independently.
+// No interrupt identity, status or frame counters.
 static constexpr uint32_t config[] = {
-    0x6001C,0x45270,0x7027C,0x7017C,
+    0x6001C,0x45270,
     0x70240,0x70244,0x70248,0x7024C,0x70250,0x70254,0x70258,0x7025C,0x70268,
     0x70140,0x70144,0x70148,0x7014C,0x70150,0x70154,0x70158,0x7015C,0x70168,
     0x70188,0x7018C,0x70190,0x701A4,0x701CC,0x70180,0x7019C,
@@ -18,9 +19,6 @@ static constexpr uint32_t config[] = {
         {0x162104,0x00FF00FF},{0x162124,UINT32_MAX},{0x162128,UINT32_MAX},
         {0x162120,1U<<24},{0x162100,1U<<31},{0x162014,1U<<4},
         {0x42084,1U<<30},{0xC7204,1U<<1},
-        // ADL-P pipe A pixel fetch credits (skl_watermark.c, intel_mbus_dbox_update).
-        // Restore the working allocation before arming the first plane.
-        {0x7003C,0x01FFDF0F},
         // Plane and cursor controls encode Display13 arbitration slots.
         // Select those slots on the pipe before rearming either consumer.
         {0x70028,1U<<13},

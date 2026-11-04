@@ -37,8 +37,9 @@ void XeHost::processKernel(KernelPatcher &patcher) {
  // The host must dispatch framebuffer patches and accelerator rejection
  // hooks even when the selected profile deliberately has no Render backend.
  active=profile.displayAdmitted();
- systemWakeRecovery=active && !profile.overridden() && profile.identity==0xA7A98086;
+
  const auto display=XELP::displayAdapter(profile.family);
+ systemWakeRecovery=active && (display==XELP::DisplayAdapter::ADLP || display==XELP::DisplayAdapter::ADLN);
  backlightEnabled=active && (display==XELP::DisplayAdapter::TGL || display==XELP::DisplayAdapter::ADLS ||
   display==XELP::DisplayAdapter::ADLP || display==XELP::DisplayAdapter::ADLN) &&
   info->firmwareVendor!=DeviceInfo::FirmwareVendor::Apple;
@@ -146,8 +147,12 @@ uint32_t XeHost::pendingSleepDisplays(void *accelerator) {
  if(!count || !(*reinterpret_cast<volatile uint32_t *>(bytes+0xc78)&1))return count;
  const auto depth=*reinterpret_cast<volatile uint32_t *>(machine+0x10c);
  if(depth<count)return count;
- auto fb=reinterpret_cast<IOService *(*)(void *,unsigned)>(h->sleepFBAt)(machine,0);
- if(!h->xe.parkedDSIFramebuffer(fb))return count;
+ // Every subscriber in this machine must be parked. FB0 alone cannot
+ // establish whether an external display acquired a new wake scope.
+ for(unsigned i=0;i<count;++i) {
+  auto fb=reinterpret_cast<IOService *(*)(void *,unsigned)>(h->sleepFBAt)(machine,i);
+  if(!h->xe.parkedDisplay13Framebuffer(fb))return count;
+ }
  // Already parked by a full two-phase notification, with no intervening
  // DidWake. The real resume must close the original scope exactly once.
  uint32_t record[]={__atomic_add_fetch(&h->repeatedSleep,1,__ATOMIC_RELAXED),count,depth};

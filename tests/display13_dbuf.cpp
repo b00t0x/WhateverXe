@@ -18,6 +18,7 @@ struct IO {
             r[0x60400+pipe*0x1000]=0;
             if(pipe)r[0x7027C+pipe*0x1000]=r[0x7017C+pipe*0x1000]=0;
             r[0x70080+pipe*0x1000]=0;
+            r[0x7003C+pipe*0x1000]=0;
             for(unsigned d=0;d<3;++d)r[0x70B08+pipe*0x1000+d*0x100]=0;
             for(unsigned plane=pipe ? 0 : 1;plane<5;++plane)r[0x70180+pipe*0x1000+plane*0x100]=0;
         }
@@ -31,6 +32,18 @@ struct IO {
     void delayUs(unsigned us) {delays+=us;}
 };
 int main() {
+    // Port probing may briefly power a reset bank before the next modeset.
+    // A snapshot during that get/put must preserve the pre-sleep credits.
+    {
+        IO io;State s;assert(begin(io,s,7)==Status::Complete);
+        io.r[0x7003C]=0x01A50A05;
+        assert(captureCredits(io,s)==Status::Complete);
+        const auto saved=s.credit[0];assert(saved);
+        s.restorePending=1;io.r[0x7003C]=0;
+        assert(captureCredits(io,s)==Status::Complete && s.credit[0]==saved);
+        io.r[0x45404]&=~(3U<<10);
+        assert(captureCredits(io,s)==Status::Complete && (s.creditSaved&1) && s.credit[0]==saved);
+    }
     // Reproduce system sleep with a retained external allocation but zeroed
     // DDB shadows. Do not invent new ownership or drop pending retirements.
     for(unsigned p:{1U,2U})for(unsigned variant=0;variant<8;++variant) {

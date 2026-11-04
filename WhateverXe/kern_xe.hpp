@@ -73,7 +73,7 @@ public:
 	 *  @return true if patched anything
 	 */
 	bool processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size);
-    bool parkedDSIFramebuffer(IOService *fb) const;
+    bool parkedDisplay13Framebuffer(IOService *fb) const;
     bool failedDSIWakeFor(IOService *fb) const;
 
 private:
@@ -247,17 +247,19 @@ private:
     static bool dsiSharedWriterStopped(IOService *,unsigned);
     bool processDSINativeWriters(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     bool processDSINativeTransactions(KernelPatcher &,size_t,mach_vm_address_t,size_t);
-    bool processDSINativeAttributes(KernelPatcher &,size_t,mach_vm_address_t,size_t);
+    bool processDisplay13NativeAttributes(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     mach_vm_address_t orgDSIAttributes[4] {};
-    mach_vm_address_t dsiFramebufferEvent {};
+    mach_vm_address_t display13FramebufferEvent {};
     uint32_t dsiWakeDegraded {},dsiWakeRejections {};
-    bool dsiSystemWakeNotify {},dsiPagingLayoutKnown {},dsiFirstWakeLatch {};
-    bool dsiSharedPowerRestored {}; // Native global wake preceded the DSI power callback.
-    void finishDSISystemWake(IOService *);
+    bool dsiSystemWakeNotify {},display13PagingLayoutKnown {},dsiFirstWakeLatch {};
+    uint32_t dsiRestoredEpoch {}; // Last shared reset consumed by this transport.
+    bool finishDisplay13SystemWake(IOService *);
+    uint32_t displayWakeEventEpoch {},displayWakeEventBusy {},displayWakeEventErrors {};
+    uint8_t displayWakeEventPhase[3] {};
     static uint32_t wrapDSISetStream(IOService *,IOService *,OSObject *,const void *);
     static uint32_t wrapDSISetAttribute(IOService *,uint32_t,uintptr_t);
     static uint32_t wrapDSISetConnectionAttribute(IOService *,int32_t,uint32_t,uintptr_t);
-    static uint32_t wrapDSISetPowerState(IOService *,uint32_t);
+    static uint32_t wrapDisplay13SetPowerState(IOService *,uint32_t);
     mach_vm_address_t orgDSITransaction[5] {};
     static int beginDSIFramebufferWriter(IOService *);
     static uint32_t wrapDSIFlipTransaction(IOService *,void *,uint64_t,void *);
@@ -406,6 +408,11 @@ private:
 	static void wrapAlderLakeNPowerInit(void *power, void *controller);
 	static void wrapAlderLakeNEngineEnable(void *power);
 	static void wrapAlderLakeNEngineDisable(void *power);
+    static void stopDisplay13Engine(void *power,bool systemSuspend);
+    static bool enableDisplay13EngineLocked(void *power);
+    static bool restoreDisplay13ResourcesLocked(void *power,bool waking);
+    static bool restoreDisplay13Ports(IOService *controller,unsigned onlyDDI=UINT32_MAX);
+    static bool prepareDisplay13Wake(IOService *fb);
 	static void wrapAlderLakeNPowerOverride(void *power,bool enable);
 	static void wrapAlderLakeNPowerRestore(void *power,bool waking);
 	__attribute__((noinline)) bool processDisplay13FramebufferLifecycle(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size);

@@ -305,10 +305,12 @@ constexpr uint32_t CreditMask=0x01FFDF0F;
 template<class IO> Status captureCredits(IO &io,State &s) {
     if(s.faulted)return Status::Faulted;
     if(!s.begun)return Status::Unavailable;
-    s.creditSaved=0;
+    s.creditSaved&=s.selected; // Keep banks already powered down by earlier callbacks.
+    // A probe may get/put PG before native allocation restore. Its reset bank
+    // is not a new snapshot and must not replace the retained credits.
     const auto wells=io.read(0x45404);
     if(wells==UINT32_MAX)return fail(s,Status::Power);
-    for(unsigned p=0;p<3;++p)if((s.selected&(1U<<p)) && Display13FBIRQ::powered(wells,p)) {
+    for(unsigned p=0;p<3;++p)if((s.selected&(1U<<p)) && !(s.restorePending&(1U<<p)) && Display13FBIRQ::powered(wells,p)) {
         const auto value=io.read(0x7003C+0x1000*p);
         if(value==UINT32_MAX)return fail(s,Status::Readback);
         s.credit[p]=value&CreditMask;s.creditSaved|=1U<<p;
@@ -500,6 +502,7 @@ template<class IO> Status stop(IO &io,State &s) {
             if(ctl==UINT32_MAX || (ctl&(Request|1)))return fail(s,Status::Conflict);
         }
     }
+    const auto captured=captureCredits(io,s);if(captured!=Status::Complete)return captured;
     PipeAllocation old[3];
     for(unsigned p=0;p<3;++p) {old[p]=s.pipe[p];s.pipe[p].consumers=s.pipe[p].unretired=0;s.pipe[p].heldPrimary=s.pipe[p].heldCursor={};}
     syncMasks(s);const auto result=power(io,s,0,0);
