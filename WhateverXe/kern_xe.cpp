@@ -10223,10 +10223,50 @@ void XE::wrapAlderLakeNPowerOverride(void *power,bool enable) {
 
 void XE::wrapAlderLakeNPowerRestore(void *power,bool waking) {
 	auto &c=display13FBPower;if(!c.lock || power!=c.power || !c.controller)return;
-	uint64_t record[32] {};Display13Power::Result result;IOLockLock(c.lock);
+	uint64_t record[32] {},cold[12] {};Display13Power::Result result;IOLockLock(c.lock);
 	if(callbackXE->display13FBLifecycleHooksReady && c.bridge.begun && !c.bridge.state.faulted && !c.clockFaulted &&
 		Display13Power::objectAssociations(power,0x80,c.controller,0x1C20)) {
-		Display13FBPowerIO io {c.map};result=Display13Power::restore(io,c.bridge.state);
+		Display13FBBootIO io {c.map};
+		const bool lost=waking && callbackXE->dsiSleepImage.captured && callbackXE->dsiRuntimePower.sleeping &&
+			display13ClockVariant()==Display13Clock::Variant::RPLU && c.transcoders.dsi0Pipe==0 &&
+			io.read(Display13Power::Driver)==0;
+		if(lost) {
+			cold[0]=1;cold[1]=c.dbuf.selected;
+			c.dbuf.restorePending|=c.dbuf.selected;
+			for(unsigned tc=0;tc<4;++tc) {
+				c.tcMode[tc].notePowerLoss();c.tcSignalReady[tc]=false;c.tcDPLink[tc]={};
+			}
+			c.bridge.state.suspended=true;
+		}
+		const auto selectDSI=[&](uint32_t ddi) {
+			if(!lost)return true;
+			constexpr uint32_t reg=0x6B094;
+			const auto before=io.read(reg);cold[2]=before;
+			if(before==UINT32_MAX)return false;
+			if(!(before&1)) {
+				if(ddi&3)return false;
+				*reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+reg)=before|1;
+			}
+			cold[3]=io.read(reg);return cold[3]!=UINT32_MAX && (cold[3]&1);
+		};
+		// Retained TC leases cannot enable AUX before the port mode handshake.
+		// The DSI wake completion reclaims those modes before peer notifications.
+		result=Display13Power::restore(io,c.bridge.state,lost,selectDSI);
+		if(lost && result.status==Display13Power::Status::Complete) {
+			cold[4]=io.read(0x4438C);
+			if(!Display13FBIRQ::consumersStopped(io,7,c.transcoders))result.status=Display13Power::Status::NotReady;
+			else {
+				if(cold[4]!=c.dbuf.mbus)
+					*reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+0x4438C)=c.dbuf.mbus;
+				cold[5]=io.read(0x4438C);
+				if(cold[5]!=c.dbuf.mbus)result.status=Display13Power::Status::NotReady;
+				else {
+					for(unsigned i=0;i<4;++i)if(!(io.read(Display13DBUF::regs[i])&Display13DBUF::Request))c.dbuf.owned&=~(1U<<i);
+					callbackXE->dsiSharedPowerRestored=true;
+				}
+			}
+		}
+		cold[6]=static_cast<uint32_t>(result.status);cold[7]=c.bridge.state.deferredTC;
 		if(result.status==Display13Power::Status::Complete &&
 			!Display13Power::publishObject(c.bridge,power,0x80,c.controller,0x1C20))result.status=Display13Power::Status::NotReady;
 	}
@@ -10234,6 +10274,10 @@ void XE::wrapAlderLakeNPowerRestore(void *power,bool waking) {
 	display13FBPowerRecord(record,9,waking,result);IOLockUnlock(c.lock);
 	adlnPublishPowerRecord("N97FBPowerRestore",record);
 	if(result.status==Display13Power::Status::Complete)wrapAlderLakeNEngineEnable(power);
+	if(cold[0]) {
+		IOLockLock(c.lock);cold[8]=c.engineEnabled;cold[9]=c.clockStopped;cold[10]=c.dbuf.restorePending;cold[11]=c.bridge.state.faulted;IOLockUnlock(c.lock);
+		IORegistryEntry::getRegistryRoot()->setProperty("N97FBNativeColdRestore",cold,sizeof(cold));
+	}
 }
 
 void XE::wrapAlderLakeNPrimaryDBUF(OSObject *plane,uint32_t start,uint32_t end,bool wait) {

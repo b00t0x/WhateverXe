@@ -806,7 +806,7 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path,bool 
         power.host.error==XELP::DSI::Restart::Error::None && dsiPanelStop.complete && qualified() &&
         dsiArmedBackingOwned(fb,path) && !c.memoryFaulted && !c.dbuf.faulted) : (stoppedPath && dsiMemoryReleased);
     if(retain && complete) {
-        power.sleeping=true;
+        power.sleeping=true;dsiSharedPowerRestored=false;
         // These are pipe A / DSI-owned registers. A peer may still be on at
         // this point: its later power callback must not veto our snapshot.
         dsiSleepImage.captured=display13ClockVariant()==Display13Clock::Variant::RPLU &&
@@ -912,74 +912,82 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
     uint32_t dbox[3]={},phyPower[4]={};
     const auto restoreLostDisplay=[&]() {
         if(!dsiSleepImage.captured || !bindingOwned() || !io.readable(Display13Power::Driver) ||
-           io.read(Display13Power::Driver)!=0)return true;
-        coldStage=1;
-        c.dbuf.restorePending|=c.dbuf.selected;
-        for(unsigned tc=0;tc<4;++tc) {
-            c.tcMode[tc].notePowerLoss();
-            c.tcSignalReady[tc]=false;c.tcDPLink[tc]={};
-        }
-        Display13FBPowerIO wells{c.map};
-        c.bridge.state.suspended=true;
-        // Intel DSI_IO_MODECTL must select MIPI before the Combo PHY
-        // power request. PW1 and the pipe are already accessible here.
-        const auto selectDSI=[&](uint32_t ddi) {
-            constexpr uint32_t mode=0x6B094;
-            phyPower[0]=1;phyPower[1]=ddi;
-            if(!io.readable(mode))return false;
-            phyPower[2]=io.read(mode);
-            if(phyPower[2]==UINT32_MAX)return false;
-            if(!(phyPower[2]&1)) {
-                if(ddi&3)return false;
-                io.write(mode,phyPower[2]|1);
-            }
-            phyPower[3]=io.read(mode);
-            return phyPower[3]!=UINT32_MAX && (phyPower[3]&1);
-        };
-        const auto restoredPower=Display13Power::restore(wells,c.bridge.state,true,selectDSI);
-        coldValue=static_cast<uint32_t>(restoredPower.status);coldReg=restoredPower.domain;
-        if(restoredPower.status!=Display13Power::Status::Complete || !owned())return false;
-        coldStage=2;
-        if(io.read(0x7B008)&0xC0000000U || io.read(0x70008)&0xC0000000U ||
-           io.read(0x71008)&0xC0000000U || io.read(0x72008)&0xC0000000U ||
-           io.read(0x70180)&(1U<<31))return false;
-        Display13FBClockIO cdclk{c.map};
-        const auto hz=c.clock.nativeHz();
-        if(!hz)return false;
-        const auto change=Display13Clock::set(cdclk,hz,{true,true,0},display13ClockVariant());
-        coldValue=static_cast<uint32_t>(change.status);
-        if(change.status!=Display13Clock::ChangeStatus::Complete)return false;
-        coldStage=3;
+           (io.read(Display13Power::Driver)!=0 && !dsiSharedPowerRestored))return true;
         auto store=[&](uint32_t reg,uint32_t v) {
             coldReg=reg;
             *reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+reg)=v;
             coldValue=io.read(reg);return coldValue==v;
         };
-        if(io.read(0x4438C)!=c.dbuf.mbus && !store(0x4438C,c.dbuf.mbus))return false;
-        Display13FBDBUFIO dbuf{c.map};
-        for(unsigned i=0;i<4;++i)if(!(dbuf.read(Display13DBUF::regs[i])&Display13DBUF::Request))
-            c.dbuf.owned&=~(1U<<i);
-        const auto slices=Display13DBUF::power(dbuf,c.dbuf,c.dbuf.requested,c.dbuf.consumers);
-        coldValue=static_cast<uint32_t>(slices);
-        if(slices!=Display13DBUF::Status::Complete)return false;
-        if(Display13DBUF::tracker(dbuf,c.dbuf)!=Display13DBUF::Status::Complete)return false;
-        // A peer's logical DDB ownership survives sleep, but its shadow
-        // registers do not. Restore those stopped banks before the native
-        // default/optimized allocation checks compare them with the owner.
-        uint32_t allocations[13]={1,c.dbuf.selected,c.dbuf.restorePending};
-        bool allocationsRestored=true;
-        for(unsigned pipe=0;pipe<3;++pipe)if(c.dbuf.restorePending&(1U<<pipe)) {
-            if(!Display13FBIRQ::powered(dbuf.read(Display13Power::Driver),pipe))continue;
-            const auto base=0x1000*pipe;
-            allocations[3+3*pipe]=dbuf.read(0x7027C+base);
-            allocations[4+3*pipe]=dbuf.read(0x7017C+base);
-            const auto status=Display13DBUF::restoreAllocation(dbuf,c.dbuf,pipe);
-            allocations[5+3*pipe]=static_cast<uint32_t>(status);
-            if(status!=Display13DBUF::Status::Complete){allocationsRestored=false;break;}
+        if(!dsiSharedPowerRestored) {
+            coldStage=1;
+            c.dbuf.restorePending|=c.dbuf.selected;
+            for(unsigned tc=0;tc<4;++tc) {
+                c.tcMode[tc].notePowerLoss();
+                c.tcSignalReady[tc]=false;c.tcDPLink[tc]={};
+            }
+            Display13FBPowerIO wells{c.map};
+            c.bridge.state.suspended=true;
+            // Intel DSI_IO_MODECTL must select MIPI before the Combo PHY
+            // power request. PW1 and the pipe are already accessible here.
+            const auto selectDSI=[&](uint32_t ddi) {
+                constexpr uint32_t mode=0x6B094;
+                phyPower[0]=1;phyPower[1]=ddi;
+                if(!io.readable(mode))return false;
+                phyPower[2]=io.read(mode);
+                if(phyPower[2]==UINT32_MAX)return false;
+                if(!(phyPower[2]&1)) {
+                    if(ddi&3)return false;
+                    io.write(mode,phyPower[2]|1);
+                }
+                phyPower[3]=io.read(mode);
+                return phyPower[3]!=UINT32_MAX && (phyPower[3]&1);
+            };
+            const auto restoredPower=Display13Power::restore(wells,c.bridge.state,true,selectDSI);
+            coldValue=static_cast<uint32_t>(restoredPower.status);coldReg=restoredPower.domain;
+            if(restoredPower.status!=Display13Power::Status::Complete || !owned())return false;
+            coldStage=2;
+            if(io.read(0x7B008)&0xC0000000U || io.read(0x70008)&0xC0000000U ||
+               io.read(0x71008)&0xC0000000U || io.read(0x72008)&0xC0000000U ||
+               io.read(0x70180)&(1U<<31))return false;
+            Display13FBClockIO cdclk{c.map};
+            const auto hz=c.clock.nativeHz();
+            if(!hz)return false;
+            const auto change=Display13Clock::set(cdclk,hz,{true,true,0},display13ClockVariant());
+            coldValue=static_cast<uint32_t>(change.status);
+            if(change.status!=Display13Clock::ChangeStatus::Complete)return false;
+            coldStage=3;
+            if(io.read(0x4438C)!=c.dbuf.mbus && !store(0x4438C,c.dbuf.mbus))return false;
+            Display13FBDBUFIO dbuf{c.map};
+            for(unsigned i=0;i<4;++i)if(!(dbuf.read(Display13DBUF::regs[i])&Display13DBUF::Request))
+                c.dbuf.owned&=~(1U<<i);
+            const auto slices=Display13DBUF::power(dbuf,c.dbuf,c.dbuf.requested,c.dbuf.consumers);
+            coldValue=static_cast<uint32_t>(slices);
+            if(slices!=Display13DBUF::Status::Complete)return false;
+            if(Display13DBUF::tracker(dbuf,c.dbuf)!=Display13DBUF::Status::Complete)return false;
+            // A peer's logical DDB ownership survives sleep, but its shadow
+            // registers do not. Restore those stopped banks before the native
+            // default/optimized allocation checks compare them with the owner.
+            uint32_t allocations[13]={1,c.dbuf.selected,c.dbuf.restorePending};
+            bool allocationsRestored=true;
+            for(unsigned pipe=0;pipe<3;++pipe)if(c.dbuf.restorePending&(1U<<pipe)) {
+                if(!Display13FBIRQ::powered(dbuf.read(Display13Power::Driver),pipe))continue;
+                const auto base=0x1000*pipe;
+                allocations[3+3*pipe]=dbuf.read(0x7027C+base);
+                allocations[4+3*pipe]=dbuf.read(0x7017C+base);
+                const auto status=Display13DBUF::restoreAllocation(dbuf,c.dbuf,pipe);
+                allocations[5+3*pipe]=static_cast<uint32_t>(status);
+                if(status!=Display13DBUF::Status::Complete){allocationsRestored=false;break;}
+            }
+            allocations[12]=c.dbuf.restorePending;
+            IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIWakeDBUF",allocations,sizeof(allocations));
+            if(!allocationsRestored)return false;
+        } else {
+            // Native global wake already restored clocks, DBUF and power.
+            // Peers may now be active: restore only the stopped DSI bank.
+            if(!owned() || !c.engineEnabled || c.clockStopped)return false;
+            phyPower[0]=1;phyPower[3]=io.read(0x6B094);
+            if(phyPower[3]==UINT32_MAX || !(phyPower[3]&1))return false;
         }
-        allocations[12]=c.dbuf.restorePending;
-        IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIWakeDBUF",allocations,sizeof(allocations));
-        if(!allocationsRestored)return false;
         coldStage=4;
         for(unsigned i=0;i<XELP::DSI::SystemSleepImage::fieldCount;++i) {
             const auto &field=XELP::DSI::SystemSleepImage::fields[i];
@@ -1015,7 +1023,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         master=irqIO.read(Display13FBIRQ::Master);
         const bool quiet=irq.scopes.total==irq.handlers && !irq.scopes.display && !irq.softwareHandlers &&
             !(queued(0xE08)&Display13FBIRQ::pipeEvents(0)) && !queued(0xE0C) && !(queued(0xE10)&3);
-        if(quiet && !irq.quiescing && !irq.blockedPipes && !irq.state.faulted && irq.state.begun && irq.state.enabled &&
+        if(quiet && !irq.quiescing && !irq.blockedPipes && !irq.state.faulted && irq.state.begun && (irq.state.enabled || coldStage==5) &&
            !(irq.state.active&1) && (irq.state.configured&1) && (irq.admittedPipes&1) && irq.state.transcoders.dsi0Pipe==0 &&
            master!=UINT32_MAX && ((master&Display13FBIRQ::Enable) || coldStage==5)) {
             if(coldStage==5)master|=Display13FBIRQ::Enable;
@@ -1085,7 +1093,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
             irq.quiescing=false;irq.blockedPipes=0;
             adlnIRQCache(controller,irqIO);IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
             complete=restored && rearmed && cursor && power.panel.complete() && owned();
-            if(complete){power.sleeping=false;++power.cycles;dsiStopAttempted=false;dsiIRQParked=false;dsiFirstWakeLatch=coldStage==5;}
+            if(complete){power.sleeping=false;++power.cycles;dsiStopAttempted=false;dsiIRQParked=false;dsiFirstWakeLatch=coldStage==5;dsiSharedPowerRestored=false;}
             else{power.failed=true;adlnFault(c.memoryFaulted,__LINE__);}
         }
     }

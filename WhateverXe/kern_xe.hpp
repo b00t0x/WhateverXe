@@ -252,6 +252,7 @@ private:
     mach_vm_address_t dsiFramebufferEvent {};
     uint32_t dsiWakeDegraded {},dsiWakeRejections {};
     bool dsiSystemWakeNotify {},dsiPagingLayoutKnown {},dsiFirstWakeLatch {};
+    bool dsiSharedPowerRestored {}; // Native global wake preceded the DSI power callback.
     void finishDSISystemWake(IOService *);
     static uint32_t wrapDSISetStream(IOService *,IOService *,OSObject *,const void *);
     static uint32_t wrapDSISetAttribute(IOService *,uint32_t,uintptr_t);
