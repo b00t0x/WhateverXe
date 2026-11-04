@@ -910,6 +910,7 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         if(!dsiSleepImage.captured || !bindingOwned() || !io.readable(Display13Power::Driver) ||
            io.read(Display13Power::Driver)!=0)return true;
         coldStage=1;
+        c.dbuf.restorePending|=c.dbuf.selected;
         for(unsigned tc=0;tc<4;++tc) {
             c.tcMode[tc].notePowerLoss();
             c.tcSignalReady[tc]=false;c.tcDPLink[tc]={};
@@ -958,6 +959,23 @@ bool XE::resumeDSIPath(IOService *controller,IOService *fb,OSObject *path) {
         coldValue=static_cast<uint32_t>(slices);
         if(slices!=Display13DBUF::Status::Complete)return false;
         if(Display13DBUF::tracker(dbuf,c.dbuf)!=Display13DBUF::Status::Complete)return false;
+        // A peer's logical DDB ownership survives sleep, but its shadow
+        // registers do not. Restore those stopped banks before the native
+        // default/optimized allocation checks compare them with the owner.
+        uint32_t allocations[13]={1,c.dbuf.selected,c.dbuf.restorePending};
+        bool allocationsRestored=true;
+        for(unsigned pipe=0;pipe<3;++pipe)if(c.dbuf.restorePending&(1U<<pipe)) {
+            if(!Display13FBIRQ::powered(dbuf.read(Display13Power::Driver),pipe))continue;
+            const auto base=0x1000*pipe;
+            allocations[3+3*pipe]=dbuf.read(0x7027C+base);
+            allocations[4+3*pipe]=dbuf.read(0x7017C+base);
+            const auto status=Display13DBUF::restoreAllocation(dbuf,c.dbuf,pipe);
+            allocations[5+3*pipe]=static_cast<uint32_t>(status);
+            if(status!=Display13DBUF::Status::Complete){allocationsRestored=false;break;}
+        }
+        allocations[12]=c.dbuf.restorePending;
+        IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIWakeDBUF",allocations,sizeof(allocations));
+        if(!allocationsRestored)return false;
         coldStage=4;
         for(unsigned i=0;i<XELP::DSI::SystemSleepImage::fieldCount;++i) {
             const auto &field=XELP::DSI::SystemSleepImage::fields[i];
