@@ -134,7 +134,7 @@ bool XE::finishDisplay13SystemWake(IOService *caller) {
     }
     using Event=uint32_t (*)(IOService *,int,void *);
     const auto event=reinterpret_cast<Event>(display13FramebufferEvent);
-    uint32_t events[14]={3,display13PagingLayoutKnown};bool complete=true;
+    uint32_t events[18]={4,display13PagingLayoutKnown};bool complete=true;
     for(unsigned index=0;index<3;++index) {
         IOLockLock(c.lock);
         auto fb=Display13FBMemory::field<IOService *>(controller,0xD60+8*index);
@@ -149,6 +149,15 @@ bool XE::finishDisplay13SystemWake(IOService *caller) {
         // Native peers already notified themselves if paging is active. The
         // DSI adapter bypassed those native calls and owns its own pair.
         const bool internal=adlnOutputWiring.dsi && index==0;
+        const auto nativePower=Display13FBMemory::field<uint32_t>(fb,0x4284);
+        events[14+index]=nativePower;
+        // Native Sleep(0)->Doze/Wake runs prepareToExitSleep, which owns
+        // DidWake(true/false). Do not preempt that callback merely because
+        // its paging bit is still clear while another FB has already resumed.
+        // Doze(1)->Wake does not run prepareToExitSleep; an otherwise parked
+        // client in that state still needs the common notification below.
+        if(!phase && !internal && pending && nativePower==0)phase=3;
+        if(phase==3)events[17]|=1U<<index;
         if(!phase && !pending && !internal)phase=2;
         if(phase<2) {
             events[2]|=1U<<index;
@@ -171,7 +180,9 @@ bool XE::finishDisplay13SystemWake(IOService *caller) {
                 if(events[5+2*index]!=kIOReturnSuccess)displayWakeEventErrors|=1U<<(index+3);
             }
         }
-        if(phase==2)events[3]|=1U<<index;else complete=false;
+        // Phase 3 is delegated, not a claim that the native callback finished.
+        if(phase==2)events[3]|=1U<<index;
+        else if(phase!=3)complete=false;
         fb->release();
     }
     IOLockLock(c.lock);const bool sameEpoch=c.restoreEpoch==epoch;IOLockUnlock(c.lock);
