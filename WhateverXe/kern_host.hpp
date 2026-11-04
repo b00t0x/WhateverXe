@@ -12,6 +12,10 @@ private:
  mach_vm_address_t sleepFBCount {},sleepFBAt {};
  uint32_t repeatedSleep {};
  static uint32_t pendingSleepDisplays(void *);
+ mach_vm_address_t orgDisplayQueueIdle {};
+ uint32_t queueObservation {};
+ static void wrapDisplayQueueIdle(void *);
+ void recordDisplayQueue(void *,uint32_t,uint32_t);
  mach_vm_address_t orgWSAAAttribute {};
  static IOReturn wrapWSAAAttribute(IOFramebuffer *,uint32_t,uint32_t);
  bool backlightEnabled {};

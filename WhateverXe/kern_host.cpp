@@ -107,6 +107,21 @@ void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t a
    }
   }
   IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIDarkWakeReady",ready);
+  // Observe the queue under its existing native gate. No driver locks or
+  // live object pointers are retained by a registry serializer.
+  const auto idle=sym("__ZN18IOAccelDisplayPipe28transaction_queue_idle_gatedEv");
+  const auto framebuffer=sym("__ZNK18IOAccelDisplayPipe14getFramebufferEv");
+  const uint8_t idleFields[]={0x55,0x48,0x89,0xe5,0x41,0x56,0x53,0x50,0x48,0x89,0xfb,0x8b,0x87,0x38,2,0,0,0x8b,0x8f,0x3c,2,0,0};
+  const uint8_t framebufferField[]={0x55,0x48,0x89,0xe5,0x48,0x8b,0x87,0x98,0,0,0,0x5d,0xc3};
+  const auto within=[&](mach_vm_address_t fn,size_t bytes){return fn>=address && fn-address<=size && bytes<=size-(fn-address);};
+  bool queueReady=false;
+  if(ready && within(idle,sizeof(idleFields)) && within(framebuffer,sizeof(framebufferField)) &&
+     !memcmp(reinterpret_cast<void *>(idle),idleFields,sizeof(idleFields)) &&
+     !memcmp(reinterpret_cast<void *>(framebuffer),framebufferField,sizeof(framebufferField))) {
+   KernelPatcher::RouteRequest route("__ZN18IOAccelDisplayPipe28transaction_queue_idle_gatedEv",wrapDisplayQueueIdle,orgDisplayQueueIdle);
+   queueReady=patcher.routeMultiple(index,&route,1,address,size);patcher.clearError();
+  }
+  IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplayQueueObserverReady",queueReady);
   return;
  }
  if(backlight.loadIndex==index) {
@@ -139,6 +154,46 @@ void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t a
  }
  xe.processKext(patcher,index,address,size);
 }
+void XeHost::recordDisplayQueue(void *pipe,uint32_t serial,uint32_t phase) {
+ auto bytes=static_cast<uint8_t *>(pipe);
+ auto fb=*reinterpret_cast<IOService **>(bytes+0x98);
+ if(!xe.ownedDisplay13Framebuffer(fb))return;
+ const auto index=*reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(fb)+0x1DC);
+ uint64_t record[54] {1,serial,phase,index};
+ clock_get_uptime(record+4);
+ record[5]=*reinterpret_cast<uint32_t *>(bytes+0x238);
+ record[6]=*reinterpret_cast<uint32_t *>(bytes+0x23c);
+ record[7]=*reinterpret_cast<uint64_t *>(bytes+0x248);
+ record[8]=*reinterpret_cast<uint64_t *>(bytes+0x250);
+ record[9]=*reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(fb)+0x4284);
+ record[10]=*reinterpret_cast<uint8_t *>(reinterpret_cast<uint8_t *>(fb)+0x199);
+ auto accelerator=*reinterpret_cast<uint8_t **>(bytes+0x88);
+ if(accelerator) {
+  record[11]=*reinterpret_cast<uint32_t *>(accelerator+0xc78);
+  auto machine=*reinterpret_cast<uint8_t **>(accelerator+0x378);
+  if(machine)record[12]=*reinterpret_cast<uint32_t *>(machine+0x10c);
+ }
+ record[13]=*reinterpret_cast<uint32_t *>(bytes+0x29c);
+ record[14]=*reinterpret_cast<uint32_t *>(bytes+0x2a4);
+ record[15]=reinterpret_cast<uintptr_t>(pipe);
+ // Embedded event slots only: do not dereference transactions whose lifetime
+ // can end when the original action drops its gate to wait.
+ memcpy(record+16,bytes+0x118,4*0x48);
+ record[52]=*reinterpret_cast<uint8_t *>(bytes+0x280);
+ record[53]=*reinterpret_cast<uint8_t *>(bytes+0x299);
+ const char *enter[]={"WEXDisplayQueueEnter0","WEXDisplayQueueEnter1","WEXDisplayQueueEnter2"};
+ const char *exit[]={"WEXDisplayQueueExit0","WEXDisplayQueueExit1","WEXDisplayQueueExit2"};
+ IORegistryEntry::getRegistryRoot()->setProperty((phase==1?enter:exit)[index],record,sizeof(record));
+}
+
+void XeHost::wrapDisplayQueueIdle(void *pipe) {
+ auto h=callbackHost;
+ const auto serial=__atomic_add_fetch(&h->queueObservation,1,__ATOMIC_RELAXED);
+ h->recordDisplayQueue(pipe,serial,1);
+ FunctionCast(wrapDisplayQueueIdle,h->orgDisplayQueueIdle)(pipe);
+ h->recordDisplayQueue(pipe,serial,2);
+}
+
 uint32_t XeHost::pendingSleepDisplays(void *accelerator) {
  auto h=callbackHost;
  auto bytes=static_cast<uint8_t *>(accelerator);

@@ -73,6 +73,7 @@ public:
 	 *  @return true if patched anything
 	 */
 	bool processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size);
+    bool ownedDisplay13Framebuffer(IOService *fb) const;
     bool parkedDisplay13Framebuffer(IOService *fb) const;
     bool failedDSIWakeFor(IOService *fb) const;
 

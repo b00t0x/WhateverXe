@@ -14,6 +14,7 @@ code=r'''
 #include <vector>
 #include "kern_xelp_platform.hpp"
 using mach_vm_address_t=uintptr_t;
+void clock_get_uptime(uint64_t *value){*value=0;}
 struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}void setProperty(const char*,bool){}void setProperty(const char*,const void*,size_t){}};
 std::vector<int> events;bool publish=true,published=false;uint32_t identity=0x9a498086;uint8_t revision=0;
 struct Object {virtual ~Object()=default;};
@@ -55,6 +56,8 @@ constexpr IOReturn kIOReturnNotReady=-1;
 struct XeHost {
  static XeHost *callbackHost;bool systemWakeRecovery=false;
  uintptr_t sleepFBCount=0,sleepFBAt=0;uint32_t repeatedSleep=0;static uint32_t pendingSleepDisplays(void*);
+ uintptr_t orgDisplayQueueIdle=0;uint32_t queueObservation=0;
+ static void wrapDisplayQueueIdle(void*);void recordDisplayQueue(void*,uint32_t,uint32_t);
  uintptr_t orgWSAAAttribute=0;
  static IOReturn wrapWSAAAttribute(IOFramebuffer*,uint32_t,uint32_t);
  bool active=false,backlightEnabled=false;enum {FB_DETECT,FB_RESET,FB_COPY,FB_ZEROFILL,FB_NONE,FB_TOTAL};uint32_t resetFramebuffer=FB_NONE;
@@ -62,6 +65,7 @@ struct XeHost {
  struct vc_info{};vc_info consoleVinfo;bool gotConsoleVinfo=false;
  struct XE {
  IOService *parked=nullptr;bool parkedDisplay13Framebuffer(IOService *f)const{return parked && f==parked;}
+ bool ownedDisplay13Framebuffer(IOService *)const{return false;}
  IOFramebuffer *degraded=nullptr; bool failedDSIWakeFor(IOFramebuffer *f) const {return f && f==degraded;}
  void processKernel(KernelPatcher &,DeviceInfo *){events.push_back(8);}
  void processKext(KernelPatcher&,size_t index,mach_vm_address_t,size_t){events.push_back(100+index);}
