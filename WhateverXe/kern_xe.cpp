@@ -10586,7 +10586,7 @@ bool XE::adlnPowerReference(void *power,uint32_t operation,uint32_t domain) {
 	}
 	uint64_t record[32] {},check[21] {2,operation,domain},auxRecord[10] {},context[24] {},gateEvidence[8] {}; Display13Power::Result result;
 	IOWorkLoop *acquiredGate=nullptr;
-	Display13FBIRQ::PowerReleaseScope releaseScope;uint64_t irqRelease[12] {};
+	Display13FBIRQ::PowerReleaseScope releaseScope;uint64_t irqRelease[16] {};
 	bool previousQuiescing=false;uint32_t previousBlocked=0;
 	bool disableEngine=false;
 	IOLockLock(c.lock);
@@ -10667,9 +10667,21 @@ bool XE::adlnPowerReference(void *power,uint32_t operation,uint32_t domain) {
 				irqRelease[0]=1;irqRelease[1]=released;irqRelease[2]=affected;irqRelease[3]=irq.handlers;
 				irqRelease[4]=irq.scopes.display;irqRelease[5]=irq.softwareHandlers;
 				irqRelease[6]=queued;irqRelease[7]=aux;irqRelease[8]=hpd;
+				// Native short-pulse/hotplug handlers get PG before AUX work
+				// and put it before returning to SWInterruptHandler. That same
+				// gated stack is the releaser, not a competing SW consumer.
+				// Permit only stopped leaf pipe wells: shared PW1/PW2 teardown
+				// still requires the entire software handler to have returned.
+				constexpr uint32_t pipeWells=Display13Power::bit(Display13Power::Domain::PipeA)|
+					Display13Power::bit(Display13Power::Domain::PipeB)|Display13Power::bit(Display13Power::Domain::PipeC);
+				const bool ownSoftware=operation==2 && !(released&~pipeWells) && gateEvidence[4] &&
+					irq.softwareHandlers==1 && irq.softwareThread==reinterpret_cast<uintptr_t>(current_thread());
+				const unsigned competingSoftware=ownSoftware ? 0 : irq.softwareHandlers;
+				irqRelease[12]=ownSoftware;irqRelease[13]=competingSoftware;
+				irqRelease[14]=irq.softwareThread==reinterpret_cast<uintptr_t>(current_thread());irqRelease[15]=gateEvidence[4];
 				const auto status=!irq.quiescing && irq.scopes.total==irq.handlers ?
 					Display13FBIRQ::beginPowerRelease(irqIO,irq.state,releaseScope,released,affected,
-						irq.scopes.display,irq.softwareHandlers,queued,aux,hpd) : Display13FBIRQ::Status::Unavailable;
+						irq.scopes.display,competingSoftware,queued,aux,hpd) : Display13FBIRQ::Status::Unavailable;
 				irqRelease[9]=static_cast<uint32_t>(status);releaseAllowed=status==Display13FBIRQ::Status::Complete;
 				if(releaseScope.held) {irq.quiescing=true;irq.blockedPipes=affected;}
 			} else {
@@ -10720,6 +10732,7 @@ bool XE::adlnPowerReference(void *power,uint32_t operation,uint32_t domain) {
 	if(display13TraceEnabled)IORegistryEntry::getRegistryRoot()->setProperty("N97FBPowerContext",context,sizeof(context));
 	if(gateEvidence[0])IORegistryEntry::getRegistryRoot()->setProperty("N97FBPowerReleaseGate",gateEvidence,sizeof(gateEvidence));
 	if(irqRelease[0])IORegistryEntry::getRegistryRoot()->setProperty("N97FBPowerReleaseIRQ",irqRelease,sizeof(irqRelease));
+    if(irqRelease[12])IORegistryEntry::getRegistryRoot()->setProperty("N97FBOwnSoftwarePGRelease",irqRelease,sizeof(irqRelease));
     IORegistryEntry::getRegistryRoot()->setProperty("N97FBAUXPower",auxRecord,sizeof(auxRecord));
 	if(check[14])IORegistryEntry::getRegistryRoot()->setProperty("N97FBPowerReleaseMap",check,sizeof(check));
 	if(record[4]!=static_cast<uint32_t>(Display13Power::Status::Complete) && record[7]==1)
