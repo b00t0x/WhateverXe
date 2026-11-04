@@ -126,8 +126,10 @@ uint32_t XE::wrapDSISetAttribute(IOService *fb,uint32_t attribute,uintptr_t valu
                 // IOGraphics sends spwr before restart or power-off. Park the adopted
                 // panel through its own power path while display resources are live.
                 if(attribute==kIOSystemPowerAttribute && callbackXE->dsiPowerTest && dsiModeTarget(fb) &&
-                   (value==kIOMessageSystemWillRestart || value==kIOMessageSystemWillPowerOff))
+                   (value==kIOMessageSystemWillRestart || value==kIOMessageSystemWillPowerOff)) {
+                    IORecursiveLockUnlock(scope.lock);scope.lock=nullptr;
                     return wrapDisplay13SetPowerState(fb,0);
+                }
                 if(attribute==0x626B7376)return callbackXE->saveDSIBrightness(fb,value);
                 if(XELP::DSI::AppleAdapter::transportAttribute(attribute))return kIOReturnUnsupported;
                 token=beginDSIFramebufferWriter(fb);if(token<0)return kIOReturnNotReady;

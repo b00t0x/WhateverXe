@@ -32,6 +32,7 @@ using IOService=OSObject;
 struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}
  void setProperty(const char *name,const void *data,unsigned bytes){
   if(!strcmp(name,"WEXDSISystemWakeEvents")){assert(bytes==8);return;}
+  if(!strcmp(name,"WEXDSIPowerNotifications")){assert(bytes==20);return;}
   assert(!strcmp(name,"WEXDSIModeRequest") && bytes==64);
   const auto words=static_cast<const uint64_t *>(data);assert(words[0]==1);
  }};
@@ -78,8 +79,9 @@ uint32_t nativeStream(IOService*,IOService*,OSObject*,const void*);
 struct XE {
  static bool prepareDisplay13Wake(IOService*){return true;}
  struct {unsigned dsi=1;}adlnOutputWiring;bool dsiStopAttempted=false,dsiResourcesReady=true;
- uintptr_t display13FramebufferEvent=0;bool dsiSystemWakeNotify=false;
- bool finishDisplay13SystemWake(IOService *fb){using Event=uint32_t(*)(IOService*,int,void*);auto event=reinterpret_cast<Event>(display13FramebufferEvent);event(fb,4,reinterpret_cast<void*>(1));event(fb,8,nullptr);return true;}
+ uintptr_t display13FramebufferEvent=0;bool dsiSystemWakeNotify=false,dsiPowerOffNotified=false;
+ uint32_t dsiPowerCallbackBusy=0,dsiPowerOffEvents=0,dsiPowerOnEvents=0;
+ bool finishDisplay13SystemWake(IOService *fb){using Event=uint32_t(*)(IOService*,int,void*);auto event=reinterpret_cast<Event>(display13FramebufferEvent);event(fb,4,reinterpret_cast<void*>(1));event(fb,8,nullptr);if(dsiPowerOffNotified){dsiPowerOffNotified=false;++dsiPowerOnEvents;}return true;}
  bool dsiPowerTest=false;struct {bool sleeping=false,failed=false;}dsiRuntimePower;unsigned wakeCalls=0;bool wakeOK=false;
  bool dsiStopTest=false,dsiMemoryReleased=false,dsiDDIReleased=false,stopOK=false;unsigned stopCalls=0;
  struct {bool done=false;bool complete(){return done;}}dsiClockStop;
@@ -188,9 +190,11 @@ uint32_t nativeStream(IOService *ctl,IOService *fb,OSObject *path,const void *ti
  ++streamCalls;return 0xe0000124U;
 }
 template<class T>void put(void *p,unsigned o,T v){memcpy(static_cast<uint8_t*>(p)+o,&v,sizeof(v));}
+static uint32_t systemEvent(IOService*,int,void*);
 struct Case {
  IOService fb,ctl,peer;OSObject path,port;IOLock lock;
  Case(){assert(!fbLock.depth && !owner);expectedWriters=1;nestedCursor=nestedTx=nestedAttribute=false;xe={};dsiFixedMode={};
+  xe.display13FramebufferEvent=reinterpret_cast<uintptr_t>(&systemEvent);
   xe.orgDSIAttributes[0]=reinterpret_cast<uintptr_t>(nativeAttribute);
   xe.orgDSIAttributes[1]=reinterpret_cast<uintptr_t>(nativeConnectionAttribute);
   xe.orgDSIAttributes[2]=reinterpret_cast<uintptr_t>(nativePower);
@@ -216,9 +220,24 @@ struct Case {
 static unsigned systemEvents;
 static uint32_t systemEvent(IOService*,int event,void *arg){
  assert(!fbLock.depth && !owner);
- assert((event==4 && arg==reinterpret_cast<void *>(1)) || (event==8 && !arg));++systemEvents;return 0;
+ assert((event==4 && arg==reinterpret_cast<void *>(1)) || ((event==7 || event==8) && !arg));++systemEvents;return 0;
 }
 int main(){
+ // Real power wrapper must notify without a retained outer attribute lock,
+ // preserve the off obligation across failed stop/wake, and avoid a false
+ // system DidWake for display-only doze.
+ {Case c;xe.dsiPowerTest=true;put(&c.fb,0x4284,2U);
+  assert(XE::wrapDSISetAttribute(&c.fb,0x706F7772,1)==kIOReturnNotReady);
+  assert(xe.dsiPowerOffNotified && xe.dsiPowerOffEvents==1 && !xe.dsiPowerCallbackBusy);
+  xe.stopOK=true;assert(XE::wrapDSISetAttribute(&c.fb,0x706F7772,1)==0);
+  assert(xe.dsiPowerOffEvents==1);
+  assert(XE::wrapDSISetAttribute(&c.fb,0x706F7772,2)==kIOReturnNotReady);
+  assert(!xe.dsiPowerOnEvents && xe.dsiPowerOffNotified);
+  xe.wakeOK=true;auto n=systemEvents;
+  assert(XE::wrapDSISetAttribute(&c.fb,0x706F7772,2)==0);
+  assert(systemEvents==n+1 && xe.dsiPowerOnEvents==1 && !xe.dsiPowerOffNotified);
+ }
+
 
  for(auto message:{kIOMessageSystemWillRestart,kIOMessageSystemWillPowerOff}){Case c;put(&c.fb,0x4284,2U);
   auto notify=[&]{return XE::wrapDSISetAttribute(&c.fb,kIOSystemPowerAttribute,message);};

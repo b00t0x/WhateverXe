@@ -6,6 +6,15 @@
 uint32_t XE::wrapDisplay13SetPowerState(IOService *fb,uint32_t state) {
     bool notifyWake=false;
     recordDSIClient(fb,9,state,UINT32_MAX);
+    // Subscribers can re-enter clients. Serialize this transport's callback,
+    // without holding its FB mutex across notifications.
+    auto busy=callbackXE->adlnOutputWiring.dsi && fb &&
+        fb->getMetaClass()->getClassSize()>=0x4B90 && dsiModeTarget(fb) ? &callbackXE->dsiPowerCallbackBusy : nullptr;
+    if(busy && __atomic_exchange_n(busy,1U,__ATOMIC_ACQUIRE))return kIOReturnNotReady;
+    struct PowerCallback {
+        uint32_t *busy;
+        ~PowerCallback(){if(busy)__atomic_store_n(busy,0U,__ATOMIC_RELEASE);}
+    } callback{busy};
     auto result=[&]() -> uint32_t {
         if(callbackXE->adlnOutputWiring.dsi) {
             if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
@@ -15,6 +24,25 @@ uint32_t XE::wrapDisplay13SetPowerState(IOService *fb,uint32_t state) {
                     auto controller=Display13FBMemory::field<IOService *>(fb,0x1D0);
                     auto path=Display13FBMemory::singlePath<OSObject *>(fb);
                     auto &power=callbackXE->dsiRuntimePower;
+                    if(state<2 && !power.sleeping && !power.failed && dsiNativeUpdateAllowed(fb) &&
+                       !callbackXE->dsiPowerOffNotified) {
+                        if(!callbackXE->display13FramebufferEvent)return kIOReturnNotReady;
+                        // Match prepareToExitWake's WillPowerOff notification
+                        // before disabling the display and its completion IRQ.
+                        IORecursiveLockUnlock(scope.lock);scope.lock=nullptr;
+                        callbackXE->dsiPowerOffNotified=true;
+                        ++callbackXE->dsiPowerOffEvents;
+                        const auto event=reinterpret_cast<uint32_t (*)(IOService *,int,void *)>(callbackXE->display13FramebufferEvent);
+                        const auto status=event(fb,7,nullptr);
+                        uint32_t notice[]={1,7,status,callbackXE->dsiPowerOffEvents,callbackXE->dsiPowerOnEvents};
+                        IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPowerNotifications",notice,sizeof(notice));
+                        if(status!=kIOReturnSuccess)return status;
+                        scope.lock=Display13FBMemory::field<IORecursiveLock *>(fb,0x4220);
+                        if(!scope.lock)return kIOReturnNotReady;
+                        IORecursiveLockLock(scope.lock);
+                        if(!dsiModeTarget(fb) || Display13FBMemory::singlePath<OSObject *>(fb)!=path ||
+                           Display13FBMemory::field<IOService *>(fb,0x1D0)!=controller)return kIOReturnNotReady;
+                    }
                     const bool ready=!power.failed && (state==2 ? (power.sleeping ? callbackXE->resumeDSIPath(controller,fb,path) : dsiNativeUpdateAllowed(fb)) :
                         (power.sleeping ? true : (dsiNativeUpdateAllowed(fb) && callbackXE->quiesceDSIPath(controller,fb,path,true))));
                     if(!ready)return kIOReturnNotReady;
@@ -52,6 +80,14 @@ uint32_t XE::wrapDisplay13SetPowerState(IOService *fb,uint32_t state) {
     if(result==kIOReturnSuccess && state==2 && (notifyWake || callbackXE->dsiSystemWakeNotify)) {
         if(callbackXE->finishDisplay13SystemWake(fb))callbackXE->dsiSystemWakeNotify=false;
         else result=kIOReturnNotReady;
+    } else if(result==kIOReturnSuccess && state==2 && busy && callbackXE->dsiPowerOffNotified) {
+        // Display-only doze has no system DidWake obligation. Pair its off
+        // notification only after the DSI path is usable again.
+        const auto event=reinterpret_cast<uint32_t (*)(IOService *,int,void *)>(callbackXE->display13FramebufferEvent);
+        result=event ? event(fb,8,nullptr) : kIOReturnNotReady;
+        if(result==kIOReturnSuccess){callbackXE->dsiPowerOffNotified=false;++callbackXE->dsiPowerOnEvents;}
+        uint32_t notice[]={1,8,result,callbackXE->dsiPowerOffEvents,callbackXE->dsiPowerOnEvents};
+        IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPowerNotifications",notice,sizeof(notice));
     }
     recordDSIClient(fb,9,state,result);
     return result;
@@ -127,6 +163,11 @@ bool XE::finishDisplay13SystemWake(IOService *caller) {
             if(phase==1) {
                 events[5+2*index]=event(fb,8,nullptr);
                 phase=2;
+                if(internal && events[5+2*index]==kIOReturnSuccess && dsiPowerOffNotified) {
+                    dsiPowerOffNotified=false;++dsiPowerOnEvents;
+                    uint32_t notice[]={1,8,events[5+2*index],dsiPowerOffEvents,dsiPowerOnEvents};
+                    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPowerNotifications",notice,sizeof(notice));
+                }
                 if(events[5+2*index]!=kIOReturnSuccess)displayWakeEventErrors|=1U<<(index+3);
             }
         }

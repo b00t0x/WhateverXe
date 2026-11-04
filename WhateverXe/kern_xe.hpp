@@ -253,6 +253,8 @@ private:
     mach_vm_address_t display13FramebufferEvent {};
     uint32_t dsiWakeDegraded {},dsiWakeRejections {};
     bool dsiSystemWakeNotify {},display13PagingLayoutKnown {},dsiFirstWakeLatch {};
+    bool dsiPowerOffNotified {};
+    uint32_t dsiPowerCallbackBusy {},dsiPowerOffEvents {},dsiPowerOnEvents {};
     uint32_t dsiRestoredEpoch {}; // Last shared reset consumed by this transport.
     bool finishDisplay13SystemWake(IOService *);
     uint32_t displayWakeEventEpoch {},displayWakeEventBusy {},displayWakeEventErrors {};
