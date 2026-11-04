@@ -810,6 +810,8 @@ bool XE::quiesceDSIPath(IOService *controller,IOService *fb,OSObject *path,bool 
         dsiSleepImage.captured=display13ClockVariant()==Display13Clock::Variant::RPLU &&
             (c.dbuf.selected&1) && !(irq.state.active&1);
         if(dsiSleepImage.captured) {
+            Display13FBDBUFIO dbuf{c.map};
+            dsiSleepImage.captured=Display13DBUF::captureCredits(dbuf,c.dbuf)==Display13DBUF::Status::Complete;
             for(unsigned i=0;i<XELP::DSI::SystemSleepImage::count;++i)
                 dsiSleepImage.regs[i]=io.read(XELP::DSI::SystemSleepImage::config[i]);
             for(unsigned i=0;i<XELP::DSI::SystemSleepImage::fieldCount;++i) {

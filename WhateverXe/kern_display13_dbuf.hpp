@@ -40,6 +40,7 @@ struct State {
     uint32_t capacity {}; // Optional board capacity: reserve B/C banks before either path attaches.
     uint32_t selected {},updating {},unretired {}; // Updating is a per-pipe transaction mask.
     uint32_t restorePending {}; // Retained allocations whose hardware was lost in system sleep.
+    uint32_t creditSaved {},credit[3] {}; // Writable MBUS fetch-credit fields of selected, powered pipes.
 };
 inline Status fail(State &s,Status status) {s.faulted=true;return status;}
 inline uint32_t tracked(const State &s) {
@@ -297,6 +298,23 @@ template<class IO> Status power(IO &io,State &s,uint32_t wanted,uint32_t consume
     }
     s.consumers=consumers;return Status::Complete;
 }
+constexpr uint32_t CreditMask=0x01FFDF0F;
+// Snapshot while the display owner lock still protects the selected pipes.
+// Never read an unpowered bank. Native later enable restores arbitration
+// slots separately; these MBUS credits also need the pre-sleep allocation.
+template<class IO> Status captureCredits(IO &io,State &s) {
+    if(s.faulted)return Status::Faulted;
+    if(!s.begun)return Status::Unavailable;
+    s.creditSaved=0;
+    const auto wells=io.read(0x45404);
+    if(wells==UINT32_MAX)return fail(s,Status::Power);
+    for(unsigned p=0;p<3;++p)if((s.selected&(1U<<p)) && Display13FBIRQ::powered(wells,p)) {
+        const auto value=io.read(0x7003C+0x1000*p);
+        if(value==UINT32_MAX)return fail(s,Status::Readback);
+        s.credit[p]=value&CreditMask;s.creditSaved|=1U<<p;
+    }
+    return Status::Complete;
+}
 // The caller records total display power loss, with all timing engines off.
 // Restore only an existing allocation, before its native mode/WM programming.
 // An unpowered bank stays pending until its regular native PG acquisition.
@@ -325,6 +343,13 @@ template<class IO> Status restoreAllocation(IO &io,State &s,unsigned index) {
     for(unsigned n=0;n<2;++n) {
         if(io.read(addresses[n])!=values[n])io.write(addresses[n],values[n]);
         if(io.read(addresses[n])!=values[n])return fail(s,Status::Readback);
+    }
+    if(s.creditSaved&bit) {
+        const auto reg=0x7003C+bank,before=io.read(reg);
+        if(before==UINT32_MAX)return fail(s,Status::Readback);
+        const auto value=(before&~CreditMask)|s.credit[index];
+        if(before!=value)io.write(reg,value);
+        if(io.read(reg)!=value)return fail(s,Status::Readback);
     }
     s.restorePending&=~bit;return Status::Complete;
 }
@@ -452,7 +477,7 @@ template<class IO> Status detach(IO &io,State &s,unsigned index) {
     if(a.consumers || a.unretired || (s.updating&(1U<<index)))return fail(s,Status::Conflict);
     if(!Display13FBIRQ::powered(io.read(0x45404),index) || !Display13FBIRQ::consumersStopped(io,1U<<index,s.transcoders))return fail(s,Status::Conflict);
     s.released[index]={true,a.primary,a.cursor};s.pipe[index]={};s.selected&=~(1U<<index);
-    s.restorePending&=~(1U<<index);syncMasks(s);return Status::Complete;
+    s.restorePending&=~(1U<<index);s.creditSaved&=~(1U<<index);syncMasks(s);return Status::Complete;
 }
 // Global display-engine/clock teardown still proves every powered bank is
 // stopped, including unbound/foreign consumers. No per-pipe ACK substitutes it.

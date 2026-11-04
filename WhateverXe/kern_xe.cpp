@@ -5088,6 +5088,11 @@ struct Display13FBDBUFIO {
 	uint32_t read(uint32_t reg) const {return *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg);}
 	void write(uint32_t reg,uint32_t value) {
 		for(auto allowed:Display13DBUF::regs)if(reg==allowed) {*reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg)=value;return;}
+		// Cold restore writes retained primary/cursor allocation and fetch
+		// credits after restoreAllocation proves this bank is stopped/owned.
+		for(unsigned pipe=0;pipe<3;++pipe)if(reg==0x7027C+0x1000*pipe || reg==0x7017C+0x1000*pipe || reg==0x7003C+0x1000*pipe) {
+			*reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+reg)=value;return;
+		}
 	}
 	void delayUs(unsigned us) {IODelay(us);}
 };
