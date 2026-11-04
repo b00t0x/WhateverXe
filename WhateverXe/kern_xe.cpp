@@ -10161,27 +10161,66 @@ void XE::wrapAlderLakeNPowerOverride(void *power,bool enable) {
 	// override(true) is only reached by the donor's simulator backend; our
 	// physical object has simulator=0. Do not force unrelated DDI/AUX domains.
 	if(!enable)wrapAlderLakeNEngineDisable(power);
-	uint64_t record[32] {};Display13Power::Result result;IOLockLock(c.lock);
+	uint64_t record[32] {},suspendIRQ[24] {};Display13Power::Result result;
+	IOWorkLoop *acquiredGate=nullptr;IOLockLock(c.lock);
 	if(callbackXE->display13FBLifecycleHooksReady && !enable && c.bridge.begun && !c.bridge.state.faulted &&
 		!c.engineEnabled && c.clockStopped && !c.dbuf.owned && !Display13WM::busyPipes(c.pipe)) {
 		if(c.bridge.state.suspended)result.status=Display13Power::Status::Complete;
 		else {
 			auto &irq=display13FBIRQ;Display13FBIRQIO irqIO {irq.base};
-			const auto saved=IOSimpleLockLockDisableInterrupt(irq.lock);
-			const bool quiet=!irq.quiescing && Display13FBIRQ::quiescent(irqIO,irq.state,c.bridge.state.allowed,irq.handlers);
-			if(quiet) {irq.quiescing=true;irq.blockedPipes=7;}
-			IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
-			if(quiet) {
-				Display13FBPowerIO io {c.map};result=c.bridge.suspend(io);
+			const bool multi=Display13FBTopology::multiOutputWiring(callbackXE->adlnOutputWiring);
+			bool gated=!multi;
+			suspendIRQ[0]=1;suspendIRQ[1]=multi;suspendIRQ[2]=c.bridge.state.allowed;
+			if(multi && c.workLoop && Display13FBMemory::field<IOWorkLoop *>(c.controller,0xE00)==c.workLoop &&
+			   callbackXE->adlnWorkLoopInGate && callbackXE->adlnWorkLoopTryClose && callbackXE->adlnWorkLoopOpen) {
+				suspendIRQ[3]=reinterpret_cast<bool (*)(const IOWorkLoop *)>(callbackXE->adlnWorkLoopInGate)(c.workLoop);
+				if(suspendIRQ[3])gated=true;
+				else if(reinterpret_cast<bool (*)(IOWorkLoop *)>(callbackXE->adlnWorkLoopTryClose)(c.workLoop)) {
+					acquiredGate=c.workLoop;suspendIRQ[4]=1;gated=true;
+				}
+			}
+			suspendIRQ[5]=gated;
+			Display13FBIRQ::PowerReleaseScope scope;bool quiet=false;
+			if(gated && irq.lock && irq.base && adlnIRQOwner(static_cast<IOService *>(c.controller))) {
+				const auto saved=IOSimpleLockLockDisableInterrupt(irq.lock);
+				suspendIRQ[6]=irq.handlers;suspendIRQ[7]=irq.scopes.display;suspendIRQ[8]=irq.softwareHandlers;
+				suspendIRQ[9]=irq.state.enabled;suspendIRQ[10]=irqIO.read(Display13FBIRQ::Master);
+				suspendIRQ[11]=irq.state.active;suspendIRQ[12]=irq.quiescing;
+				for(unsigned i=0;i<3;++i)suspendIRQ[13+i]=__atomic_load_n(reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(c.controller)+0xE08+4*i),__ATOMIC_ACQUIRE);
+				// Engine idle keeps HPD alive. Full suspend must explicitly park
+				// that IRQ ownership, not reject the master enable we just armed.
+				// Require all consumers and competing work to retire first.
+				if(multi) {
+					const auto status=!irq.quiescing && irq.scopes.total==irq.handlers ?
+						Display13FBIRQ::beginPowerRelease(irqIO,irq.state,scope,c.bridge.state.allowed,7,
+							irq.scopes.display,irq.softwareHandlers,suspendIRQ[13],suspendIRQ[14],suspendIRQ[15]) : Display13FBIRQ::Status::Unavailable;
+					suspendIRQ[16]=static_cast<uint32_t>(status);quiet=status==Display13FBIRQ::Status::Complete;
+				} else quiet=!irq.quiescing && Display13FBIRQ::quiescent(irqIO,irq.state,c.bridge.state.allowed,irq.handlers);
+				if(quiet || scope.held) {irq.quiescing=true;irq.blockedPipes=7;}
+				IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
+			}
+			suspendIRQ[17]=quiet;suspendIRQ[18]=c.bridge.auxBusy();
+			if(quiet) {Display13FBPowerIO io {c.map};result=c.bridge.suspend(io);}
+			if(quiet || scope.held) {
 				const auto done=IOSimpleLockLockDisableInterrupt(irq.lock);
+				suspendIRQ[19]=scope.parked;
+				if(scope.held && result.status!=Display13Power::Status::Complete)
+					suspendIRQ[20]=static_cast<uint32_t>(Display13FBIRQ::endPowerRelease(irqIO,irq.state,scope));
+				// Successful suspend consumes the scope with DE masked. Re-arming
+				// HPD here would undo suspend when firmware still owns PW1.
+				scope.held=false;suspendIRQ[21]=irq.state.enabled;
 				irq.quiescing=false;irq.blockedPipes=0;IOSimpleLockUnlockEnableInterrupt(irq.lock,done);
 			}
+			suspendIRQ[22]=static_cast<uint32_t>(result.status);suspendIRQ[23]=c.bridge.state.suspended;
 		}
 	}
 	if(result.status!=Display13Power::Status::Complete)adlnFault(c.bridge.state.faulted,__LINE__);
 	display13FBPowerRecord(record,8,enable,result);IOLockUnlock(c.lock);
+	if(acquiredGate)reinterpret_cast<void (*)(IOWorkLoop *)>(callbackXE->adlnWorkLoopOpen)(acquiredGate);
+	if(suspendIRQ[0])IORegistryEntry::getRegistryRoot()->setProperty("N97FBSuspendIRQ",suspendIRQ,sizeof(suspendIRQ));
 	adlnPublishPowerRecord("N97FBPowerOverride",record);
 }
+
 void XE::wrapAlderLakeNPowerRestore(void *power,bool waking) {
 	auto &c=display13FBPower;if(!c.lock || power!=c.power || !c.controller)return;
 	uint64_t record[32] {};Display13Power::Result result;IOLockLock(c.lock);
