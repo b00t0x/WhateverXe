@@ -159,9 +159,12 @@ extern "C" __attribute__((naked,used)) void tglTahoeMatrixBridge() {
   "1: jmpq *_tglSonomaMatrixZero(%rip)\n"
   "2: jmpq *_tglSonomaMatrixOther(%rip)\n");
 }
-static bool tglSonomaSurfaceFramebufferReady=true;
+static XELPNative::SurfaceABI tglHostSurfaceABI=XELPNative::SurfaceABI::Unknown;
+void XE::setHostSurfaceABI(unsigned layout) { tglHostSurfaceABI=static_cast<XELPNative::SurfaceABI>(layout); }
+static bool tglSonomaSurfaceFramebufferReady=false;
 static bool tglInstallSonomaSurfaceABI(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size,bool framebuffer) {
- if((XELP::kernelOS(version)!=XELP::OS::Sonoma) && (XELP::kernelOS(version)!=XELP::OS::Sequoia) && (XELP::kernelOS(version)!=XELP::OS::Tahoe))return true;
+ if(tglHostSurfaceABI==XELPNative::SurfaceABI::Unknown)return false;
+ if(tglHostSurfaceABI==XELPNative::SurfaceABI::Original)return true;
  struct Site {size_t offset,length;uint8_t before[6],after[6];};
  const Site fb[] {
   {0x2B5E8,6,{0x8B,0x80,0xA4,0,0,0},{0x8B,0x80,0x80,0,0,0}}, // pixelFormat
@@ -189,7 +192,7 @@ static bool tglInstallSonomaSurfaceABI(KernelPatcher &patcher,size_t index,mach_
  if(!framebuffer) {
   tglSonomaMatrixZero=address+0x8130E;tglSonomaMatrixOne=address+0x81305;tglSonomaMatrixOther=address+0x81361;
   uint8_t jump[15] {0xFF,0x25,0,0,0,0};
-  const auto target=reinterpret_cast<uintptr_t>((XELP::kernelOS(version)==XELP::OS::Tahoe) ? tglTahoeMatrixBridge : tglSonomaMatrixBridge);
+  const auto target=reinterpret_cast<uintptr_t>((tglHostSurfaceABI==XELPNative::SurfaceABI::Attachment6E) ? tglTahoeMatrixBridge : tglSonomaMatrixBridge);
   memcpy(jump+6,&target,sizeof(target));jump[14]=0x90;
   patcher.routeBlock(address+0x812F6,jump,sizeof(jump));
   ready=patcher.getError()==KernelPatcher::Error::NoError && !memcmp(reinterpret_cast<void *>(address+0x812F6),jump,sizeof(jump));
@@ -1924,38 +1927,76 @@ static bool tglPrepareMMIOBAR(IOMemoryDescriptor *bar) {
  tglPmapBARFirstPage=first;tglPmapBAREndPage=end;
  return true;
 }
+static size_t tglNativeInstructionSize(const uint8_t *bytes,size_t length) {
+ // HDE may read ahead by 32 bytes. Decode a padded local copy, then require
+ // the complete instruction to lie in the nofault-read native span.
+ uint8_t code[32] {};memcpy(code,bytes,length<sizeof(code)?length:sizeof(code));
+ Disassembler::hde_t ins {};
+ const auto size=Disassembler::hdeDisasm(reinterpret_cast<uintptr_t>(code),&ins);
+ return !(ins.flags&F_ERROR) && size<=length ? size : 0;
+}
+static bool tglNativeProtectCall(uintptr_t protect,uintptr_t pmap,XELPNative::ProtectABI abi) {
+ uint8_t code[512] {};
+ return tglVM.nofault && protect && pmap &&
+  tglVM.nofault(protect,reinterpret_cast<uint64_t>(code),sizeof(code))==sizeof(code) &&
+  XELPNative::protectCall(code,sizeof(code),protect,pmap,abi,tglNativeInstructionSize);
+}
+// The kernel can reorder basic blocks and symbols. Lilu locates the
+// function and searches its code; our only extra constraints are the live
+// instruction boundaries and the stack/register ABI used by each bridge.
+struct TGLNativePmapCode {
+ static constexpr size_t capacity=0x4000;
+ uint8_t *storage {};size_t length {};
+ TGLNativePmapCode(KernelPatcher &patcher,uintptr_t fn) {
+  const auto panic=patcher.solveSymbol(KernelPatcher::KernelID,"_panic");patcher.clearError();
+  if(!tglVM.nofault || !fn || !panic)return;
+  storage=Buffer::create<uint8_t>(capacity*4);if(!storage)return;
+  const auto copied=tglVM.nofault(fn,reinterpret_cast<uint64_t>(storage),capacity);
+  if(copied)length=XELPNative::reachable(storage,copied,storage+capacity,
+   reinterpret_cast<uint16_t *>(storage+capacity*2),fn,panic,tglNativeInstructionSize);
+ }
+ ~TGLNativePmapCode(){if(storage)Buffer::deleter(storage);}
+ template<size_t N> bool find(const uint8_t (&pattern)[N],size_t &offset) const {
+  return length && XELPNative::uniqueInstruction(storage,length,storage+capacity,
+   pattern,N,offset,KernelPatcher::findPattern);
+ }
+};
 static void tglPrepareMontereyMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  tglMMIOUCReady=false;
  auto bar=pci->getDeviceMemoryWithRegister(0x10);
  auto fn=patcher.solveSymbol(KernelPatcher::KernelID,"_pmap_enter_options");
  auto protect=patcher.solveSymbol(KernelPatcher::KernelID,"_IOProtectCacheMode");
  auto kernelMap=patcher.solveSymbol(KernelPatcher::KernelID,"_kernel_map");
- const uint8_t frame[] {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC,0x08,0x01,0,0};
+ const uint8_t frame[] {0x55,0x48,0x89,0xE5}; // RBP frame; total stack allocation is not bridge ABI
  const uint8_t args[] {0x44,0x89,0x4D,0x88,0x89,0x95,0x70,0xFF,0xFF,0xFF,0x89,0xD7,0x49,0x8B,0x77,0x40};
  const uint8_t nonEPT[] {0x48,0x89,0x75,0x90};
  const uint8_t protection[] {0x89,0x4D,0x8C};
  const uint8_t create[] {0x8B,0x4D,0x8C,0x89,0xCB,0x83,0xE3,1,0x48,0x09,0xD3,0xF6,0xC1,2};
  const uint8_t update[] {0x8B,0x4D,0x8C,0x41,0x89,0xCE,0x41,0x83,0xE6,1,0x49,0x09,0xC6,0xF6,0xC1,2};
- const uint8_t protectFrame[] {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x28};
- const uint8_t protectCall[] {0xE8,0x1A,0x99,0x02,0};
+ TGLNativePmapCode native(patcher,fn);
+ size_t frameAt=0;const bool frameReady=native.find(frame,frameAt);
+ size_t argsAt=0;const bool argsReady=native.find(args,argsAt);
+ size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt);
+ size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt);
+ size_t createAt=0;const bool createReady=native.find(create,createAt);
+ size_t updateAt=0;const bool updateReady=native.find(update,updateAt);
+ const bool protectCallReady=tglNativeProtectCall(protect,fn,XELPNative::ProtectABI::Legacy);
  uint32_t lo,hi;asm volatile("rdmsr" : "=a"(lo),"=d"(hi) : "c"(0x277));
  const uint64_t pat=static_cast<uint64_t>(hi)<<32|lo;
  bool ok=tglVM.enabled && tglPrepareMMIOBAR(bar) &&
-  pat==0x1040600070406ULL && fn && protect && kernelMap &&
-  !memcmp(reinterpret_cast<void *>(fn),frame,sizeof(frame)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x51),args,sizeof(args)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x78),protection,sizeof(protection)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x116),nonEPT,sizeof(nonEPT)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x15F9),create,sizeof(create)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x12CE),update,sizeof(update)) &&
-  !memcmp(reinterpret_cast<void *>(protect),protectFrame,sizeof(protectFrame)) &&
-  !memcmp(reinterpret_cast<void *>(protect+0xC1),protectCall,sizeof(protectCall)) &&
+  pat==0x1040600070406ULL && fn && protect && kernelMap && protectCallReady &&
+  frameReady &&
+  argsReady &&
+  protectionReady &&
+  nonEPTReady &&
+  createReady &&
+  updateReady &&
   tglVMRead(kernelMap,tglKernelMap) && (tglKernelMap>>47)==0x1FFFF;
  if(ok) {
   tglProtectCacheMode=reinterpret_cast<decltype(tglProtectCacheMode)>(protect);
-  tglPmapNewResume=fn+0x1607;tglPmapUpdateResume=fn+0x12DE;
+  tglPmapNewResume=fn+createAt+sizeof(create);tglPmapUpdateResume=fn+updateAt+sizeof(update);
   const uintptr_t targets[] {reinterpret_cast<uintptr_t>(tglMontereyPmapNewBridge),reinterpret_cast<uintptr_t>(tglMontereyPmapUpdateBridge)};
-  const uintptr_t sites[] {fn+0x15F9,fn+0x12CE};
+  const uintptr_t sites[] {fn+createAt,fn+updateAt};
   const size_t lengths[] {sizeof(create),sizeof(update)};
   for(unsigned i=0;i<2 && ok;++i) {
    uint8_t jump[16] {0xFF,0x25,0,0,0,0};jump[14]=jump[15]=0x90;
@@ -1975,34 +2016,39 @@ static void tglPrepareVenturaMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  auto fn=patcher.solveSymbol(KernelPatcher::KernelID,"_pmap_enter_options");
  auto protect=patcher.solveSymbol(KernelPatcher::KernelID,"_IOProtectCacheMode");
  auto kernelMap=patcher.solveSymbol(KernelPatcher::KernelID,"_kernel_map");
- const uint8_t frame[] {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC,0xC8,0x00,0x00,0x00};
+ const uint8_t frame[] {0x55,0x48,0x89,0xE5}; // RBP frame; total stack allocation is not bridge ABI
  const uint8_t flags[] {0x44,0x89,0x4D,0xBC};
  const uint8_t args[] {0x89,0x55,0x94,0x89,0xD7,0x49,0x8B,0x75,0x40};
  const uint8_t nonEPT[] {0x48,0x89,0x75,0xB0};
  const uint8_t protection[] {0x89,0x4D,0xAC};
  const uint8_t create[] {0x8B,0x75,0xAC,0x89,0xF1,0x83,0xE1,0x01,0x48,0x09,0xD1,0x40,0xF6,0xC6,0x02};
  const uint8_t update[] {0x8B,0x55,0xAC,0x89,0xD0,0x83,0xE0,0x01,0x48,0x09,0xC8,0xF6,0xC2,0x02};
- const uint8_t protectFrame[] {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x28};
- const uint8_t protectCall[] {0xE8,0xBA,0x51,0x02,0x00};
+ TGLNativePmapCode native(patcher,fn);
+ size_t frameAt=0;const bool frameReady=native.find(frame,frameAt);
+ size_t flagsAt=0;const bool flagsReady=native.find(flags,flagsAt);
+ size_t argsAt=0;const bool argsReady=native.find(args,argsAt);
+ size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt);
+ size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt);
+ size_t createAt=0;const bool createReady=native.find(create,createAt);
+ size_t updateAt=0;const bool updateReady=native.find(update,updateAt);
+ const bool protectCallReady=tglNativeProtectCall(protect,fn,XELPNative::ProtectABI::Legacy);
  uint32_t lo,hi;asm volatile("rdmsr" : "=a"(lo),"=d"(hi) : "c"(0x277));
  const uint64_t pat=static_cast<uint64_t>(hi)<<32|lo;
  bool ok=tglVM.enabled && tglPrepareMMIOBAR(bar) &&
-  pat==0x1040600070406ULL && fn && protect && kernelMap &&
-  !memcmp(reinterpret_cast<void *>(fn),frame,sizeof(frame)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x14),flags,sizeof(flags)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x47),args,sizeof(args)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x64),protection,sizeof(protection)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0xC1),nonEPT,sizeof(nonEPT)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x13F4),create,sizeof(create)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x1097),update,sizeof(update)) &&
-  !memcmp(reinterpret_cast<void *>(protect),protectFrame,sizeof(protectFrame)) &&
-  !memcmp(reinterpret_cast<void *>(protect+0xC1),protectCall,sizeof(protectCall)) &&
+  pat==0x1040600070406ULL && fn && protect && kernelMap && protectCallReady &&
+  frameReady &&
+  flagsReady &&
+  argsReady &&
+  protectionReady &&
+  nonEPTReady &&
+  createReady &&
+  updateReady &&
   tglVMRead(kernelMap,tglKernelMap) && (tglKernelMap>>47)==0x1FFFF;
  if(ok) {
   tglProtectCacheMode=reinterpret_cast<decltype(tglProtectCacheMode)>(protect);
-  tglPmapNewResume=fn+0x1403;tglPmapUpdateResume=fn+0x10A5;
+  tglPmapNewResume=fn+createAt+sizeof(create);tglPmapUpdateResume=fn+updateAt+sizeof(update);
   const uintptr_t targets[] {reinterpret_cast<uintptr_t>(tglVenturaPmapNewBridge),reinterpret_cast<uintptr_t>(tglVenturaPmapUpdateBridge)};
-  const uintptr_t sites[] {fn+0x13F4,fn+0x1097};
+  const uintptr_t sites[] {fn+createAt,fn+updateAt};
   const size_t lengths[] {sizeof(create),sizeof(update)};
   for(unsigned i=0;i<2 && ok;++i) {
    uint8_t jump[16] {0xFF,0x25,0,0,0,0};jump[14]=jump[15]=0x90;
@@ -2016,64 +2062,51 @@ static void tglPrepareVenturaMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  auto evidence=OSSerializer::forTarget(nullptr,tglMMIOEvidenceSerialize);
  if(evidence) {root->setProperty("TGLMMIOMappingEvidence",evidence);evidence->release();}
 }
-static size_t tglNativeInstructionSize(const uint8_t *bytes,size_t length) {
- // HDE may read ahead by 32 bytes. Decode a padded local copy, then require
- // the complete instruction to lie in the nofault-read native span.
- uint8_t code[32] {};memcpy(code,bytes,length<sizeof(code)?length:sizeof(code));
- Disassembler::hde_t ins {};
- const auto size=Disassembler::hdeDisasm(reinterpret_cast<uintptr_t>(code),&ins);
- return !(ins.flags&F_ERROR) && size<=length ? size : 0;
-}
-static bool tglNativeProtectCall(uintptr_t protect,uintptr_t pmap,bool tahoe) {
- uint8_t code[512] {};
- return tglVM.nofault && protect && pmap &&
-  tglVM.nofault(protect,reinterpret_cast<uint64_t>(code),sizeof(code))==sizeof(code) &&
-  XELPNative::protectCall(code,sizeof(code),protect,pmap,tahoe,tglNativeInstructionSize);
-}
 static void tglPrepareTahoeMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  tglMMIOUCReady=false;
  auto bar=pci->getDeviceMemoryWithRegister(0x10);
  auto fn=patcher.solveSymbol(KernelPatcher::KernelID,"_pmap_enter_options");
  auto protect=patcher.solveSymbol(KernelPatcher::KernelID,"_IOProtectCacheMode");
  auto kernelMap=patcher.solveSymbol(KernelPatcher::KernelID,"_kernel_map");
- const uint8_t frame[] {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC,0xC8,0x00,0x00,0x00};
+ const uint8_t frame[] {0x55,0x48,0x89,0xE5}; // RBP frame; total stack allocation is not bridge ABI
  const uint8_t flags[] {0x44,0x89,0x6D,0xB0};
  const uint8_t args[] {0x89,0x55,0x9C,0x89,0xD7,0x49,0x8B,0x76,0x40};
  const uint8_t nonEPT[] {0x48,0x89,0x75,0xC0};
  const uint8_t protection[] {0x89,0x4D,0xB4};
  const uint8_t create[] {0x8B,0x75,0xB4,0x89,0xF1,0x83,0xE1,0x01,0x48,0x09,0xD1,0x40,0xF6,0xC6,0x02};
  const uint8_t update[] {0x8B,0x55,0xB4,0x89,0xD0,0x83,0xE0,0x01,0x48,0x09,0xC8,0xF6,0xC2,0x02};
- const uint8_t protectFrame[] {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x28};
- const bool protectCallReady=tglNativeProtectCall(protect,fn,true);
+ TGLNativePmapCode native(patcher,fn);
+ size_t frameAt=0;const bool frameReady=native.find(frame,frameAt);
+ size_t flagsAt=0;const bool flagsReady=native.find(flags,flagsAt);
+ size_t argsAt=0;const bool argsReady=native.find(args,argsAt);
+ size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt);
+ size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt);
+ size_t createAt=0;const bool createReady=native.find(create,createAt);
+ size_t updateAt=0;const bool updateReady=native.find(update,updateAt);
+ const bool protectCallReady=tglNativeProtectCall(protect,fn,XELPNative::ProtectABI::Tahoe);
  uint32_t lo,hi;asm volatile("rdmsr" : "=a"(lo),"=d"(hi) : "c"(0x277));
  const uint64_t pat=static_cast<uint64_t>(hi)<<32|lo;
  bool ok=tglVM.enabled && tglPrepareMMIOBAR(bar) &&
   pat==0x1040600070406ULL && fn && protect && kernelMap &&
-  !memcmp(reinterpret_cast<void *>(fn),frame,sizeof(frame)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x15A),flags,sizeof(flags)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x44),args,sizeof(args)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x61),protection,sizeof(protection)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0xAA),nonEPT,sizeof(nonEPT)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x10C1),create,sizeof(create)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x1197),update,sizeof(update)) &&
-  !memcmp(reinterpret_cast<void *>(protect),protectFrame,sizeof(protectFrame)) &&
+  frameReady &&
+  flagsReady &&
+  argsReady &&
+  protectionReady &&
+  nonEPTReady &&
+  createReady &&
+  updateReady &&
   protectCallReady &&
   tglVMRead(kernelMap,tglKernelMap) && (tglKernelMap>>47)==0x1FFFF;
  uint64_t guard[20] {1,tglVM.enabled,tglVM.pciBAR,bar ? bar->getLength() : 0,pat,bool(fn),bool(protect),bool(kernelMap)};
- if(fn && protect) {
-  const uintptr_t sites[] {fn,fn+0x15A,fn+0x44,fn+0x61,fn+0xAA,fn+0x10C1,fn+0x1197,protect};
-  const uint8_t *bytes[] {frame,flags,args,protection,nonEPT,create,update,protectFrame};
-  const size_t lengths[] {sizeof(frame),sizeof(flags),sizeof(args),sizeof(protection),sizeof(nonEPT),sizeof(create),sizeof(update),sizeof(protectFrame)};
-  for(unsigned i=0;i<8;++i)guard[8+i]=!memcmp(reinterpret_cast<void *>(sites[i]),bytes[i],lengths[i]);
-  guard[16]=protectCallReady;
- }
+ const bool checks[] {frameReady,flagsReady,argsReady,protectionReady,nonEPTReady,createReady,updateReady,protectCallReady};
+ for(unsigned i=0;i<arrsize(checks);++i)guard[8+i]=checks[i];
  guard[17]=kernelMap && tglVMRead(kernelMap,tglKernelMap);guard[18]=tglKernelMap;guard[19]=ok;
  IORegistryEntry::getRegistryRoot()->setProperty("TGLTahoeMMIOGuard",guard,sizeof(guard));
  if(ok) {
   tglProtectCacheMode=reinterpret_cast<decltype(tglProtectCacheMode)>(protect);
-  tglPmapNewResume=fn+0x10D0;tglPmapUpdateResume=fn+0x11A5;
+  tglPmapNewResume=fn+createAt+sizeof(create);tglPmapUpdateResume=fn+updateAt+sizeof(update);
   const uintptr_t targets[] {reinterpret_cast<uintptr_t>(tglTahoePmapNewBridge),reinterpret_cast<uintptr_t>(tglTahoePmapUpdateBridge)};
-  const uintptr_t sites[] {fn+0x10C1,fn+0x1197};
+  const uintptr_t sites[] {fn+createAt,fn+updateAt};
   const size_t lengths[] {sizeof(create),sizeof(update)};
   for(unsigned i=0;i<2 && ok;++i) {
    uint8_t jump[16] {0xFF,0x25,0,0,0,0};jump[14]=jump[15]=0x90;
@@ -2093,44 +2126,45 @@ static void tglPrepareSequoiaMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  auto fn=patcher.solveSymbol(KernelPatcher::KernelID,"_pmap_enter_options");
  auto protect=patcher.solveSymbol(KernelPatcher::KernelID,"_IOProtectCacheMode");
  auto kernelMap=patcher.solveSymbol(KernelPatcher::KernelID,"_kernel_map");
- const uint8_t frame[] {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC,0xC8,0x00,0x00,0x00};
+ const uint8_t frame[] {0x55,0x48,0x89,0xE5}; // RBP frame; total stack allocation is not bridge ABI
  const uint8_t flags[] {0x44,0x89,0x65,0xB0};
  const uint8_t args[] {0x89,0x55,0x94,0x89,0xD7,0x49,0x8B,0x76,0x40};
  const uint8_t nonEPT[] {0x48,0x89,0x75,0xB8};
  const uint8_t protection[] {0x89,0x4D,0xB4};
  const uint8_t create[] {0x8B,0x75,0xB4,0x89,0xF1,0x83,0xE1,0x01,0x48,0x09,0xD1,0x40,0xF6,0xC6,0x02};
  const uint8_t update[] {0x8B,0x55,0xB4,0x89,0xD0,0x83,0xE0,0x01,0x48,0x09,0xC8,0xF6,0xC2,0x02};
- const uint8_t protectFrame[] {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x28};
- const bool protectCallReady=tglNativeProtectCall(protect,fn,false);
+ TGLNativePmapCode native(patcher,fn);
+ size_t frameAt=0;const bool frameReady=native.find(frame,frameAt);
+ size_t flagsAt=0;const bool flagsReady=native.find(flags,flagsAt);
+ size_t argsAt=0;const bool argsReady=native.find(args,argsAt);
+ size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt);
+ size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt);
+ size_t createAt=0;const bool createReady=native.find(create,createAt);
+ size_t updateAt=0;const bool updateReady=native.find(update,updateAt);
+ const bool protectCallReady=tglNativeProtectCall(protect,fn,XELPNative::ProtectABI::Extended);
  uint32_t lo,hi;asm volatile("rdmsr" : "=a"(lo),"=d"(hi) : "c"(0x277));
  const uint64_t pat=static_cast<uint64_t>(hi)<<32|lo;
  bool ok=tglVM.enabled && tglPrepareMMIOBAR(bar) &&
   pat==0x1040600070406ULL && fn && protect && kernelMap &&
-  !memcmp(reinterpret_cast<void *>(fn),frame,sizeof(frame)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x159),flags,sizeof(flags)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x35),args,sizeof(args)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x52),protection,sizeof(protection)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0xB8),nonEPT,sizeof(nonEPT)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x1390),create,sizeof(create)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x1030),update,sizeof(update)) &&
-  !memcmp(reinterpret_cast<void *>(protect),protectFrame,sizeof(protectFrame)) &&
+  frameReady &&
+  flagsReady &&
+  argsReady &&
+  protectionReady &&
+  nonEPTReady &&
+  createReady &&
+  updateReady &&
   protectCallReady &&
   tglVMRead(kernelMap,tglKernelMap) && (tglKernelMap>>47)==0x1FFFF;
  uint64_t guard[20] {1,tglVM.enabled,tglVM.pciBAR,bar ? bar->getLength() : 0,pat,bool(fn),bool(protect),bool(kernelMap)};
- if(fn && protect) {
-  const uintptr_t sites[] {fn,fn+0x159,fn+0x35,fn+0x52,fn+0xB8,fn+0x1390,fn+0x1030,protect};
-  const uint8_t *bytes[] {frame,flags,args,protection,nonEPT,create,update,protectFrame};
-  const size_t lengths[] {sizeof(frame),sizeof(flags),sizeof(args),sizeof(protection),sizeof(nonEPT),sizeof(create),sizeof(update),sizeof(protectFrame)};
-  for(unsigned i=0;i<8;++i)guard[8+i]=!memcmp(reinterpret_cast<void *>(sites[i]),bytes[i],lengths[i]);
-  guard[16]=protectCallReady;
- }
+ const bool checks[] {frameReady,flagsReady,argsReady,protectionReady,nonEPTReady,createReady,updateReady,protectCallReady};
+ for(unsigned i=0;i<arrsize(checks);++i)guard[8+i]=checks[i];
  guard[17]=kernelMap && tglVMRead(kernelMap,tglKernelMap);guard[18]=tglKernelMap;guard[19]=ok;
  IORegistryEntry::getRegistryRoot()->setProperty("TGLSequoiaMMIOGuard",guard,sizeof(guard));
  if(ok) {
   tglProtectCacheMode=reinterpret_cast<decltype(tglProtectCacheMode)>(protect);
-  tglPmapNewResume=fn+0x139F;tglPmapUpdateResume=fn+0x103E;
+  tglPmapNewResume=fn+createAt+sizeof(create);tglPmapUpdateResume=fn+updateAt+sizeof(update);
   const uintptr_t targets[] {reinterpret_cast<uintptr_t>(tglSequoiaPmapNewBridge),reinterpret_cast<uintptr_t>(tglSequoiaPmapUpdateBridge)};
-  const uintptr_t sites[] {fn+0x1390,fn+0x1030};
+  const uintptr_t sites[] {fn+createAt,fn+updateAt};
   const size_t lengths[] {sizeof(create),sizeof(update)};
   for(unsigned i=0;i<2 && ok;++i) {
    uint8_t jump[16] {0xFF,0x25,0,0,0,0};jump[14]=jump[15]=0x90;
@@ -2150,43 +2184,44 @@ static void tglPrepareSonomaMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  auto fn=patcher.solveSymbol(KernelPatcher::KernelID,"_pmap_enter_options");
  auto protect=patcher.solveSymbol(KernelPatcher::KernelID,"_IOProtectCacheMode");
  auto kernelMap=patcher.solveSymbol(KernelPatcher::KernelID,"_kernel_map");
- const uint8_t frame[] {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x81,0xEC,0xC8,0x00,0x00,0x00};
+ const uint8_t frame[] {0x55,0x48,0x89,0xE5}; // RBP frame; total stack allocation is not bridge ABI
  const uint8_t flags[] {0x44,0x89,0x4D,0xB4};
  const uint8_t args[] {0x89,0x55,0x9C,0x89,0xD6,0x4C,0x8B,0x6F,0x40};
  const uint8_t nonEPT[] {0x4C,0x89,0x6D,0xB8};
  const uint8_t protection[] {0x89,0x4D,0xB0};
  const uint8_t create[] {0x8B,0x75,0xB0,0x89,0xF1,0x83,0xE1,0x01,0x48,0x09,0xD1,0x40,0xF6,0xC6,0x02};
  const uint8_t update[] {0x8B,0x55,0xB0,0x89,0xD0,0x83,0xE0,0x01,0x48,0x09,0xC8,0xF6,0xC2,0x02};
- const uint8_t protectFrame[] {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x28};
- const uint8_t protectCall[] {0xE8,0xDC,0x8F,0x02,0x00};
+ TGLNativePmapCode native(patcher,fn);
+ size_t frameAt=0;const bool frameReady=native.find(frame,frameAt);
+ size_t flagsAt=0;const bool flagsReady=native.find(flags,flagsAt);
+ size_t argsAt=0;const bool argsReady=native.find(args,argsAt);
+ size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt);
+ size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt);
+ size_t createAt=0;const bool createReady=native.find(create,createAt);
+ size_t updateAt=0;const bool updateReady=native.find(update,updateAt);
+ const bool protectCallReady=tglNativeProtectCall(protect,fn,XELPNative::ProtectABI::Extended);
  uint32_t lo,hi;asm volatile("rdmsr" : "=a"(lo),"=d"(hi) : "c"(0x277));
  const uint64_t pat=static_cast<uint64_t>(hi)<<32|lo;
  bool ok=tglVM.enabled && tglPrepareMMIOBAR(bar) &&
-  pat==0x1040600070406ULL && fn && protect && kernelMap &&
-  !memcmp(reinterpret_cast<void *>(fn),frame,sizeof(frame)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x14),flags,sizeof(flags)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x48),args,sizeof(args)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x65),protection,sizeof(protection)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x103),nonEPT,sizeof(nonEPT)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x12F2),create,sizeof(create)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0xFE1),update,sizeof(update)) &&
-  !memcmp(reinterpret_cast<void *>(protect),protectFrame,sizeof(protectFrame)) &&
-  !memcmp(reinterpret_cast<void *>(protect+0xBF),protectCall,sizeof(protectCall)) &&
+  pat==0x1040600070406ULL && fn && protect && kernelMap && protectCallReady &&
+  frameReady &&
+  flagsReady &&
+  argsReady &&
+  protectionReady &&
+  nonEPTReady &&
+  createReady &&
+  updateReady &&
   tglVMRead(kernelMap,tglKernelMap) && (tglKernelMap>>47)==0x1FFFF;
  uint64_t guard[20] {1,tglVM.enabled,tglVM.pciBAR,bar ? bar->getLength() : 0,pat,bool(fn),bool(protect),bool(kernelMap)};
- if(fn && protect) {
-  const uintptr_t sites[] {fn,fn+0x14,fn+0x48,fn+0x65,fn+0x103,fn+0x12F2,fn+0xFE1,protect,protect+0xBF};
-  const uint8_t *bytes[] {frame,flags,args,protection,nonEPT,create,update,protectFrame,protectCall};
-  const size_t lengths[] {sizeof(frame),sizeof(flags),sizeof(args),sizeof(protection),sizeof(nonEPT),sizeof(create),sizeof(update),sizeof(protectFrame),sizeof(protectCall)};
-  for(unsigned i=0;i<9;++i)guard[8+i]=!memcmp(reinterpret_cast<void *>(sites[i]),bytes[i],lengths[i]);
- }
+ const bool checks[] {frameReady,flagsReady,argsReady,protectionReady,nonEPTReady,createReady,updateReady,protectCallReady};
+ for(unsigned i=0;i<arrsize(checks);++i)guard[8+i]=checks[i];
  guard[17]=kernelMap && tglVMRead(kernelMap,tglKernelMap);guard[18]=tglKernelMap;guard[19]=ok;
  IORegistryEntry::getRegistryRoot()->setProperty("TGLSonomaMMIOGuard",guard,sizeof(guard));
  if(ok) {
   tglProtectCacheMode=reinterpret_cast<decltype(tglProtectCacheMode)>(protect);
-  tglPmapNewResume=fn+0x1301;tglPmapUpdateResume=fn+0xFEF;
+  tglPmapNewResume=fn+createAt+sizeof(create);tglPmapUpdateResume=fn+updateAt+sizeof(update);
   const uintptr_t targets[] {reinterpret_cast<uintptr_t>(tglSonomaPmapNewBridge),reinterpret_cast<uintptr_t>(tglSonomaPmapUpdateBridge)};
-  const uintptr_t sites[] {fn+0x12F2,fn+0xFE1};
+  const uintptr_t sites[] {fn+createAt,fn+updateAt};
   const size_t lengths[] {sizeof(create),sizeof(update)};
   for(unsigned i=0;i<2 && ok;++i) {
    uint8_t jump[16] {0xFF,0x25,0,0,0,0};jump[14]=jump[15]=0x90;
@@ -2223,28 +2258,36 @@ static void tglPrepareMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  auto fn=patcher.solveSymbol(KernelPatcher::KernelID,"_pmap_enter_options");
  auto protect=patcher.solveSymbol(KernelPatcher::KernelID,"_IOProtectCacheMode");
  auto kernelMap=patcher.solveSymbol(KernelPatcher::KernelID,"_kernel_map");
- const uint8_t protectFrame[] {0x55,0x48,0x89,0xE5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xEC,0x28};
- const uint8_t protectCall[] {0xE8,0xC9,0x66,0x02,0x00};
  const uint8_t frame[] {0x89,0x55,0x98,0x89,0xD0,0x48,0x89,0x85,0xF0,0xFE,0xFF,0xFF,0x48,0xC1,0xE0,0x0C};
+ const uint8_t flags[] {0x44,0x89,0x4D,0xB4};
+ const uint8_t protection[] {0x89,0x4D,0x9C};
+ const uint8_t rootSource[] {0x48,0x8B,0x4F,0x40};
  const uint8_t nonEPT[] {0x48,0x89,0x4D,0xA8,0x4C,0x89,0x7D,0xC0};
  const uint8_t create[] {0x8B,0x75,0x9C,0x89,0xF1,0x83,0xE1,1,0x48,0x09,0xD1,0x40,0xF6,0xC6,2};
  const uint8_t update[] {0x8B,0x75,0x9C,0x89,0xF0,0x83,0xE0,1,0x48,0x09,0xD0,0x40,0xF6,0xC6,2};
+ TGLNativePmapCode native(patcher,fn);
+ size_t frameAt=0;const bool frameReady=native.find(frame,frameAt);
+ size_t flagsAt=0;const bool flagsReady=native.find(flags,flagsAt);
+ size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt);
+ size_t rootSourceAt=0;const bool rootSourceReady=native.find(rootSource,rootSourceAt);
+ size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt);
+ size_t createAt=0;const bool createReady=native.find(create,createAt);
+ size_t updateAt=0;const bool updateReady=native.find(update,updateAt);
+ const bool protectCallReady=tglNativeProtectCall(protect,fn,XELPNative::ProtectABI::Legacy);
  uint32_t lo,hi;asm volatile("rdmsr" : "=a"(lo),"=d"(hi) : "c"(0x277));
  const uint64_t pat=static_cast<uint64_t>(hi)<<32|lo;
  bool ok=native20G && tglPrepareMMIOBAR(bar) &&
-  pat==0x1040600070406ULL && fn && protect && kernelMap &&
-  !memcmp(reinterpret_cast<void *>(protect),protectFrame,sizeof(protectFrame)) &&
-  !memcmp(reinterpret_cast<void *>(protect+0xD2),protectCall,sizeof(protectCall)) &&
+  pat==0x1040600070406ULL && fn && protect && kernelMap && protectCallReady &&
   tglVMRead(kernelMap,tglKernelMap) && (tglKernelMap>>47)==0x1FFFF &&
-  !memcmp(reinterpret_cast<void *>(fn+0x48),frame,sizeof(frame)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x157),nonEPT,sizeof(nonEPT)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x15FA),create,sizeof(create)) &&
-  !memcmp(reinterpret_cast<void *>(fn+0x1850),update,sizeof(update));
+  frameReady && flagsReady && protectionReady && rootSourceReady &&
+  nonEPTReady &&
+  createReady &&
+  updateReady;
  if (ok) {
   tglProtectCacheMode=reinterpret_cast<decltype(tglProtectCacheMode)>(protect);
-  tglPmapEntryResume=fn+0x58; tglPmapNewResume=fn+0x1609; tglPmapUpdateResume=fn+0x185F;
+  tglPmapEntryResume=fn+frameAt+sizeof(frame); tglPmapNewResume=fn+createAt+sizeof(create); tglPmapUpdateResume=fn+updateAt+sizeof(update);
   const uintptr_t targets[] {reinterpret_cast<uintptr_t>(tglPmapEntryBridge),reinterpret_cast<uintptr_t>(tglPmapNewBridge),reinterpret_cast<uintptr_t>(tglPmapUpdateBridge)};
-  const uintptr_t sites[] {fn+0x48,fn+0x15FA,fn+0x1850};
+  const uintptr_t sites[] {fn+frameAt,fn+createAt,fn+updateAt};
   for (unsigned i=0;i<3 && ok;i++) {
    uint8_t jump[16] {0xFF,0x25,0,0,0,0}; jump[14]=jump[15]=0x90;
    const size_t length=i ? 15 : 16;
@@ -2270,30 +2313,14 @@ void tglVMPrepare(KernelPatcher &patcher,IOPCIDevice *pci) {
  auto nf=patcher.solveSymbol(KernelPatcher::KernelID,"_ml_nofault_copy");
  patcher.clearError();
  if (!verify || !kp || !pb || !pe || !nf) return;
- const bool dp1=(XELP::kernelOS(version)==XELP::OS::Donor);
- const bool monterey=(XELP::kernelOS(version)==XELP::OS::Monterey);
- const bool ventura=(XELP::kernelOS(version)==XELP::OS::Ventura);
- const bool sonoma=(XELP::kernelOS(version)==XELP::OS::Sonoma);
- const bool sequoia=(XELP::kernelOS(version)==XELP::OS::Sequoia);
- const bool tahoe=(XELP::kernelOS(version)==XELP::OS::Tahoe);
- if(sequoia || tahoe) {
-  const auto store=patcher.solveSymbol(KernelPatcher::KernelID,"_kernel_pmap_store");
-  patcher.clearError();
-  uint8_t caller[96] {},accessor[64] {};
-  const auto copy=reinterpret_cast<decltype(tglVM.nofault)>(nf);
-  if(!store || copy(verify,reinterpret_cast<uint64_t>(caller),sizeof(caller))!=sizeof(caller))return;
-  const auto target=XELPNative::rootCall(caller,sizeof(caller),verify,store);
-  if((target>>47)!=0x1FFFF || copy(target,reinterpret_cast<uint64_t>(accessor),sizeof(accessor))!=sizeof(accessor) ||
-     !XELPNative::rootAccessor(accessor,sizeof(accessor)))return;
- } else {
-  const uint8_t callPrefix[] {0x48,0x89,0xDE,0xE8};
-  if (memcmp(reinterpret_cast<void *>(verify+0x10),callPrefix,sizeof(callPrefix))) return;
-  int32_t displacement;memcpy(&displacement,reinterpret_cast<void *>(verify+0x14),4);
-  const auto target=verify+0x18+displacement;
-  if (target!=verify-(dp1 ? 0x3930 : monterey ? 0x4190 : ventura ? 0x3D70 : sonoma ? 0x3EF0 : 0x3AB0)) return;
-  const uint8_t rootLoad[] {0x48,0x8B,0x47,0x50};
-  if (memcmp(reinterpret_cast<void *>(target+0x20),rootLoad,sizeof(rootLoad))) return;
- }
+ const auto store=patcher.solveSymbol(KernelPatcher::KernelID,"_kernel_pmap_store");
+ patcher.clearError();
+ uint8_t caller[96] {},accessor[64] {};
+ const auto copy=reinterpret_cast<decltype(tglVM.nofault)>(nf);
+ if(!store || copy(verify,reinterpret_cast<uint64_t>(caller),sizeof(caller))!=sizeof(caller))return;
+ const auto target=XELPNative::rootCall(caller,sizeof(caller),verify,store,kp);
+ if((target>>47)!=0x1FFFF || copy(target,reinterpret_cast<uint64_t>(accessor),sizeof(accessor))!=sizeof(accessor) ||
+    !XELPNative::rootAccessor(accessor,sizeof(accessor)))return;
  tglVM.nofault=reinterpret_cast<decltype(tglVM.nofault)>(nf);
  if (!tglVMRead(kp,tglVM.kernelPmap) || !tglVMRead(pb,tglVM.directBase) ||
      !tglVMRead(pe,tglVM.directEnd)) return;
@@ -4521,6 +4548,11 @@ void XE::processKernel(KernelPatcher &patcher, DeviceInfo *info) {
 		}
 		return;
 	}
+}
+
+bool XE::isIntelDonor(size_t index) const {
+    return (currentFramebuffer && currentFramebuffer->loadIndex==index) ||
+        (currentGraphics && currentGraphics->loadIndex==index);
 }
 
 bool XE::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size) {
@@ -12131,12 +12163,11 @@ bool XE::processTGLAccelerator(KernelPatcher &patcher, size_t index, mach_vm_add
 			// target returns after native reset/resume; its lower-level reset still
 			// performs context replay. Port that CALLER contract only. No changed
 			// completion values, queue drops, hardware reset or panic entry points.
-			// The same donor caller also stalls the accelerator resource lock on
-			// this Tahoe kernel. Keep the OS-family and exact donor guards: only the
-			// recovery caller changes; native reset/replay still owns completion.
-			const bool recoveryRequested=checkKernelArgument("-disablegfxfirmware") &&
-				((XELP::kernelOS(version)==XELP::OS::BigSur) ||
-				 (XELP::kernelOS(version)==XELP::OS::Tahoe));
+			// IOAccel on Darwin 20-25 releases its recovery locks after this void
+			// callback returns. Native ICL uses the same single-pass caller; no host
+			// requires the TGL donor's extra stamp wait. Select by the firmware mode,
+			// exact donor and scheduler ABI, not by the OS used to observe a hang.
+			const bool recoveryRequested=checkKernelArgument("-disablegfxfirmware");
 			bool recoveryOK=!recoveryRequested;
 			if (recoveryRequested) {
 				const char *recovery="__ZN18IGAccelFIFOChannel22resetHardwareAndReplayEv";

@@ -76,6 +76,11 @@ public:
     bool ownedDisplay13Framebuffer(IOService *fb) const;
     bool parkedDisplay13Framebuffer(IOService *fb) const;
     bool failedDSIWakeFor(IOService *fb) const;
+    bool isIntelDonor(size_t index) const;
+    void setHostSurfaceABI(unsigned layout);
+    void setHostSleepReady(bool ready) { hostSleepReady=ready; }
+    void setHostWakeRecoveryReady(bool ready) { hostWakeRecoveryReady=ready; }
+    void setHostFramebufferEvent(mach_vm_address_t event) { hostFramebufferEvent=event; }
 
 private:
     bool adlpLoadOnly {};
@@ -250,8 +255,9 @@ private:
     bool processDSINativeTransactions(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     bool processDisplay13NativeAttributes(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     mach_vm_address_t orgDSIAttributes[4] {};
-    mach_vm_address_t display13FramebufferEvent {};
-    uint32_t dsiWakeDegraded {},dsiWakeRejections {};
+    mach_vm_address_t display13FramebufferEvent {},hostFramebufferEvent {};
+    uint32_t dsiWakeDegraded {},dsiWakeIncomplete {},dsiWakeRejections {};
+    bool hostSleepReady {},hostWakeRecoveryReady {};
     bool dsiSystemWakeNotify {},display13PagingLayoutKnown {},dsiFirstWakeLatch {};
     bool dsiPowerOffNotified {};
     uint32_t dsiPowerCallbackBusy {},dsiPowerOffEvents {},dsiPowerOnEvents {};

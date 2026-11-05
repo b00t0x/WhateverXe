@@ -242,7 +242,8 @@ uint32_t XE::wrapDSISetConnectionAttribute(IOService *fb,int32_t connection,uint
 
 
 bool XE::failedDSIWakeFor(IOService *fb) const {
-    if(!__atomic_load_n(&dsiWakeDegraded,__ATOMIC_ACQUIRE) || !fb ||
+    if((!__atomic_load_n(&dsiWakeDegraded,__ATOMIC_ACQUIRE) &&
+        !__atomic_load_n(&dsiWakeIncomplete,__ATOMIC_ACQUIRE)) || !fb ||
        strcmp(fb->getMetaClass()->getClassName(),"AppleIntelFramebuffer") ||
        fb->getMetaClass()->getClassSize()<0x4B90 ||
        Display13FBMemory::field<IOService *>(fb,0x1D0)!=adlnTopologyController)return false;

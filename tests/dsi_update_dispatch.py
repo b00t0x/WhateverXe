@@ -80,6 +80,7 @@ struct XE {
  static bool prepareDisplay13Wake(IOService*){return true;}
  struct {unsigned dsi=1;}adlnOutputWiring;bool dsiStopAttempted=false,dsiResourcesReady=true;
  uintptr_t display13FramebufferEvent=0;bool dsiSystemWakeNotify=false,dsiPowerOffNotified=false;
+ uint32_t dsiWakeIncomplete=0;
  uint32_t dsiPowerCallbackBusy=0,dsiPowerOffEvents=0,dsiPowerOnEvents=0;
  bool finishDisplay13SystemWake(IOService *fb){using Event=uint32_t(*)(IOService*,int,void*);auto event=reinterpret_cast<Event>(display13FramebufferEvent);event(fb,4,reinterpret_cast<void*>(1));event(fb,8,nullptr);if(dsiPowerOffNotified){dsiPowerOffNotified=false;++dsiPowerOnEvents;}return true;}
  bool dsiPowerTest=false;struct {bool sleeping=false,failed=false;}dsiRuntimePower;unsigned wakeCalls=0;bool wakeOK=false;
@@ -401,6 +402,7 @@ int main(){
  for(unsigned old=0;old<3;++old)for(unsigned state=0;state<4;++state){Case c;put(&c.fb,0x4284,old);const auto before=attrCalls[2];
   const auto expected=old==2 && state==2?kIOReturnSuccess:kIOReturnUnsupported;
   assert(XE::wrapDisplay13SetPowerState(&c.fb,state)==expected && attrCalls[2]==before);
+  if(state==2)assert(xe.dsiWakeIncomplete==unsigned(expected!=kIOReturnSuccess));
   assert(Display13FBMemory::field<uint32_t>(&c.fb,0x4284)==old);
   assert(XE::wrapDSISetAttribute(&c.fb,0x706F7772,state)==expected);}
  {Case c;put(&c.fb,0x4284,2U);assert(XE::wrapDSISetAttribute(&c.fb,0x706F7772,0x100000002ULL)==kIOReturnUnsupported);}

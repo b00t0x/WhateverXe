@@ -12,7 +12,14 @@ code=r'''
 #include <cassert>
 #include <cstdio>
 #include <vector>
+#include <algorithm>
+#define arrsize(x) (sizeof(x)/sizeof((x)[0]))
+#define SYSLOG(...) ((void)0)
 #include "kern_xelp_platform.hpp"
+#include "kern_host_power_contract.hpp"
+#include "kern_xelp_native_placement.hpp"
+size_t hostInstructionSize(const uint8_t*,size_t){return 0;}
+size_t hostFunctionExtent(uintptr_t,uintptr_t,size_t){return 0;}
 using mach_vm_address_t=uintptr_t;
 void clock_get_uptime(uint64_t *value){*value=0;}
 struct IORegistryEntry {static IORegistryEntry *getRegistryRoot(){static IORegistryEntry r;return &r;}void setProperty(const char*,bool){}void setProperty(const char*,const void*,size_t){}};
@@ -37,6 +44,7 @@ struct DeviceInfo {
 namespace WIOKit {bool awaitPublishing(IOPCIDevice *){events.push_back(1);published=publish;return publish;}void renameDevice(IOPCIDevice *device,const char *name){device->name=name;++device->renames;events.push_back(5);}}
 // DEVICE_ADAPTER
 struct KernelPatcher {
+ enum class Error {NoError}; Error getError(){return Error::NoError;}
  static constexpr int KernelID=0;
  uintptr_t solveSymbol(int,const char *){return 0;}
  template<class T>T solveSymbol(size_t,const char*,mach_vm_address_t,size_t){return T{};}
@@ -45,25 +53,31 @@ struct KernelPatcher {
  void routeBlock(uintptr_t,const uint8_t*,size_t){}
  void clearError(){}
 };
-// The optional observer is inactive in this host-publication fixture.
 namespace XeDataAccess {bool processKext(KernelPatcher&,size_t,mach_vm_address_t,size_t){return false;}void processKernel(KernelPatcher &){assert(published);events.push_back(7);}}
 struct Graphics {size_t loadIndex=4;bool off=false;void switchOff(){off=true;}} graphics;
-struct {size_t loadIndex=5;}backlight;struct {size_t loadIndex=7;}accelFamily;
+struct {size_t loadIndex=6;}surface;struct {size_t loadIndex=5;}backlight;struct {size_t loadIndex=7;}accelFamily;
 using IOService=IOPCIDevice;using IOReturn=int;using IOFramebuffer=IOPCIDevice;
 constexpr uint32_t kIOWindowServerActiveAttribute=1,kIOWSAA_StateMask=15,kIOWSAA_Accelerated=1,kIOWSAA_Unaccelerated=0;
 constexpr IOReturn kIOReturnNotReady=-1;
 #define FunctionCast(fn,addr) reinterpret_cast<decltype(&fn)>(addr)
 struct XeHost {
  static XeHost *callbackHost;bool systemWakeRecovery=false;
+ bool surfaceSeen=false,graphicsSeen=false,accelSeen=false;
+ struct PendingDonor {size_t index;uintptr_t address;size_t size;};PendingDonor pendingDonors[2]{};unsigned pendingDonorCount=0;
+ bool dependenciesSeen() const {return surfaceSeen && (!systemWakeRecovery || (graphicsSeen && accelSeen));}
+ void flushDonors(KernelPatcher&);
  uintptr_t sleepFBCount=0,sleepFBAt=0;uint32_t repeatedSleep=0;static uint32_t pendingSleepDisplays(void*);
- uintptr_t orgDisplayQueueIdle=0;uint32_t queueObservation=0;
- static void wrapDisplayQueueIdle(void*);void recordDisplayQueue(void*,uint32_t,uint32_t);
  uintptr_t orgWSAAAttribute=0;
  static IOReturn wrapWSAAAttribute(IOFramebuffer*,uint32_t,uint32_t);
  bool active=false,backlightEnabled=false;enum {FB_DETECT,FB_RESET,FB_COPY,FB_ZEROFILL,FB_NONE,FB_TOTAL};uint32_t resetFramebuffer=FB_NONE;
  IOPCIDevice *backlightGPU=nullptr;
  struct vc_info{};vc_info consoleVinfo;bool gotConsoleVinfo=false;
  struct XE {
+ bool defer=false;bool isIntelDonor(size_t i)const{return defer && (i==1 || i==2);}
+ void setHostSurfaceABI(unsigned){}
+ void setHostFramebufferEvent(uintptr_t){}
+ void setHostSleepReady(bool){}
+ void setHostWakeRecoveryReady(bool){}
  IOService *parked=nullptr;bool parkedDisplay13Framebuffer(IOService *f)const{return parked && f==parked;}
  bool ownedDisplay13Framebuffer(IOService *)const{return false;}
  IOFramebuffer *degraded=nullptr; bool failedDSIWakeFor(IOFramebuffer *f) const {return f && f==degraded;}
@@ -101,6 +115,15 @@ for(unsigned i=0;i<3;++i){
  reinterpret_cast<IOService**>(machine)[i]=&gpu;
 }
 assert(exercised.repeatedSleep==2);
+// Already-loaded notifications may arrive in any host dependency order.
+// Neither missing contracts nor a late callback may silently skip donor setup.
+unsigned order[]={4,6,7};do {
+ XeHost host;host.active=host.systemWakeRecovery=host.xe.defer=true;events.clear();
+ host.processKext(patcher,1,0,0);host.processKext(patcher,2,0,0);
+ assert(events.empty() && host.pendingDonorCount==2);
+ for(unsigned i=0;i<3;++i){host.processKext(patcher,order[i],0,0);if(i<2)assert(events.empty());}
+ assert((events==std::vector<int>{101,102}) && host.pendingDonorCount==0);
+}while(std::next_permutation(order,order+3));
 const char *names[]={nullptr,"IMEI","HECI","MEI"};
 for(unsigned firmware=0;firmware<2;++firmware)for(unsigned me=0;me<5;++me)for(unsigned test=0;test<6;++test){
  mei.name=names[me%4];mei.renames=0;gpu.name="GFX0";

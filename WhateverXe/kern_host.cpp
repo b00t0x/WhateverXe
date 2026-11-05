@@ -1,11 +1,25 @@
 // Copyright © 2018 vit9696. Derived from WhateverGreen (BSD-3-Clause).
 #include "kern_host.hpp"
+#include "kern_host_power_contract.hpp"
+#include "kern_xelp_native_placement.hpp"
+#include <Headers/kern_disasm.hpp>
 #include "kern_xelp_device.hpp"
 #include "kern_xe_data_access.hpp"
 #include "kern_backlight_profile.hpp"
 #include <Headers/kern_api.hpp>
 #include <Headers/kern_iokit.hpp>
 #include <IOKit/pci/IOPCIDevice.h>
+static size_t hostInstructionSize(const uint8_t *bytes,size_t length) {
+ uint8_t code[32] {};memcpy(code,bytes,length<sizeof(code)?length:sizeof(code));
+ Disassembler::hde_t ins {};
+ const auto n=Disassembler::hdeDisasm(reinterpret_cast<uintptr_t>(code),&ins);
+ return !(ins.flags&F_ERROR) && n<=length ? n : 0;
+}
+static size_t hostFunctionExtent(mach_vm_address_t fn,mach_vm_address_t base,size_t size) {
+ if(fn<base || fn-base>=size)return 0;
+ const auto remaining=size-(fn-base);
+ return HostPowerContract::extent(reinterpret_cast<const uint8_t *>(fn),remaining<2048?remaining:2048,hostInstructionSize);
+}
 XeHost *XeHost::callbackHost;
 struct FramebufferViewer : public IOFramebuffer {
  static IOMemoryMap *&getVramMap(IOFramebuffer *fb) { return static_cast<FramebufferViewer *>(fb)->fVramMap; }
@@ -16,6 +30,8 @@ static const char *accelPath[] { "/System/Library/Extensions/IOAcceleratorFamily
 static KernelPatcher::KextInfo accelFamily { "com.apple.iokit.IOAcceleratorFamily2",accelPath,arrsize(accelPath),{true},{},KernelPatcher::KextInfo::Unloaded };
 static const char *backlightPath[] { "/System/Library/Extensions/AppleBacklight.kext/Contents/MacOS/AppleBacklight" };
 static KernelPatcher::KextInfo backlight { "com.apple.driver.AppleBacklight",backlightPath,arrsize(backlightPath),{true},{},KernelPatcher::KextInfo::Unloaded };
+static const char *surfacePath[] { "/System/Library/Extensions/IOSurface.kext/Contents/MacOS/IOSurface" };
+static KernelPatcher::KextInfo surface { "com.apple.iokit.IOSurface",surfacePath,arrsize(surfacePath),{true},{},KernelPatcher::KextInfo::Unloaded };
 void XeHost::init() {
  callbackHost=this;
  PE_parse_boot_argn("gfxrst",&resetFramebuffer,sizeof(resetFramebuffer));
@@ -25,6 +41,7 @@ void XeHost::init() {
  lilu.onKextLoadForce(&graphics);
  lilu.onKextLoadForce(&accelFamily);
  lilu.onKextLoadForce(&backlight);
+ lilu.onKextLoadForce(&surface);
  xe.init();
  XeDataAccess::init();
 }
@@ -77,51 +94,70 @@ void XeHost::processKernel(KernelPatcher &patcher) {
  if(!active || resetFramebuffer==FB_DETECT){resetFramebuffer=FB_NONE;if(!systemWakeRecovery)graphics.switchOff();}
  DeviceInfo::deleter(info);
 }
+void XeHost::flushDonors(KernelPatcher &patcher) {
+ if(!dependenciesSeen())return;
+ // Lilu enumerates already-loaded kmods in list order, not dependency order.
+ // Flush synchronously within Lilu's load notification once hosts are known.
+ // Keep the received donor order; never bypass Lilu's image validation by
+ // resolving an unnotified host image ourselves.
+ for(unsigned i=0;i<pendingDonorCount;++i) {
+  const auto &p=pendingDonors[i];xe.processKext(patcher,p.index,p.address,p.size);
+ }
+ pendingDonorCount=0;
+}
 void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
  if(!active)return;
+ if(surface.loadIndex==index) {
+  if(surfaceSeen)return;
+  const char *names[]={"__ZNK9IOSurface14getPixelFormatEv","__ZNK9IOSurface13getPlaneCountEv",
+   "__ZNK9IOSurface12getSurfaceIDEv","__ZNK9IOSurface14getYCbCrMatrixEv"};
+  const uint8_t *functions[4] {};size_t lengths[4] {};
+  for(unsigned i=0;i<4;++i) {
+   const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,names[i],address,size);patcher.clearError();
+   if(fn>=address && fn-address<size) {
+    functions[i]=reinterpret_cast<const uint8_t *>(fn);
+    const auto remaining=size-(fn-address);lengths[i]=remaining<32?remaining:32;
+   }
+  }
+  const auto layout=XELPNative::surfaceABI(functions,lengths);
+  xe.setHostSurfaceABI(static_cast<unsigned>(layout));
+  surfaceSeen=true;
+  uint32_t state=static_cast<uint32_t>(layout);
+  IORegistryEntry::getRegistryRoot()->setProperty("WEXHostSurfaceABI",&state,sizeof(state));
+  flushDonors(patcher);
+  return;
+ }
  if(accelFamily.loadIndex==index) {
-  if(!systemWakeRecovery)return;
+  if(!systemWakeRecovery || accelSeen)return;
   // Only the first loop of system_will_sleep(false) opens mode changes.
   // Leave its subsequent orphan cleanup and the hardware sleep phase native.
   const auto sym=[&](const char *name) {
    auto v=patcher.solveSymbol<mach_vm_address_t>(index,name,address,size);patcher.clearError();return v;
   };
-  const uint8_t before[]={0x48,0x8b,0xbb,0x78,3,0,0,0xe8,0xdc,0xcb,0xfc,0xff,0x41,0xb6,1,0x85,0xc0,0x74,0x37};
-  const uint8_t asleep[]={0xf6,0x83,0x78,0x0c,0,0,1};
-  const uint8_t nesting[]={0x8b,0x83,0x0c,1,0,0,0x8d,0x48,1,0x89,0x8b,0x0c,1,0,0};
   sleepFBCount=sym("__ZNK21IOAccelDisplayMachine19getFramebufferCountEv");
   sleepFBAt=sym("__ZNK21IOAccelDisplayMachine16getIOFramebufferEj");
+  const auto sleep=sym("__ZN22IOGraphicsAccelerator217system_will_sleepEib");
+  const auto mode=sym("__ZN21IOAccelDisplayMachine24display_mode_will_changeEj");
+  const auto sleepLength=hostFunctionExtent(sleep,address,size);
+  const auto modeLength=hostFunctionExtent(mode,address,size);
+  const auto site=HostPowerContract::sleepSite(reinterpret_cast<const uint8_t *>(sleep),sleepLength,sleep,sleepFBCount,hostInstructionSize);
   bool ready=false;
-  if(size>0x412f0 && sleepFBCount==address+0xde8e && sleepFBAt==address+0xdfc0 &&
-     sym("__ZN22IOGraphicsAccelerator217system_will_sleepEib")==address+0x41144 &&
-     !memcmp(reinterpret_cast<void *>(address+0x411bc),asleep,sizeof(asleep)) &&
-     !memcmp(reinterpret_cast<void *>(address+0xe104),nesting,sizeof(nesting)) &&
-     !memcmp(reinterpret_cast<void *>(address+0x412a6),before,sizeof(before))) {
-   // Pass the owning accelerator instead of just the display machine.
-   uint8_t code[]={0x48,0x89,0xdf,0xe8,0,0,0,0,0x90,0x90,0x90,0x90};
-   const auto distance=static_cast<int64_t>(reinterpret_cast<uintptr_t>(pendingSleepDisplays)-(address+0x412ae));
+  if(sleepFBCount && sleepFBAt && site.valid && HostPowerContract::sleepFields(
+     reinterpret_cast<const uint8_t *>(sleep),sleepLength,reinterpret_cast<const uint8_t *>(mode),modeLength,hostInstructionSize,site.owner)) {
+   // Pass this accelerator in rdi. The host compiler may keep it in rbx or
+   // r14; the matched count query establishes which register owns it.
+   uint8_t code[]={0x48,0x89,0xdf,0xe8,0,0,0,0,0x90,0x90,0x90,0x90,0x90};
+   code[0]=0x48|(site.owner>=8 ? 4 : 0);code[2]=0xC7|((site.owner&7)<<3);
+   const auto target=sleep+site.offset;
+   const auto distance=static_cast<int64_t>(reinterpret_cast<uintptr_t>(pendingSleepDisplays)-(target+8));
    if(distance==static_cast<int32_t>(distance)) {
     const auto rel=static_cast<int32_t>(distance);memcpy(code+4,&rel,4);
-    patcher.routeBlock(address+0x412a6,code,sizeof(code));
-    ready=!memcmp(reinterpret_cast<void *>(address+0x412a6),code,sizeof(code));patcher.clearError();
+    patcher.routeBlock(target,code,site.length);
+    ready=patcher.getError()==KernelPatcher::Error::NoError && !memcmp(reinterpret_cast<void *>(target),code,site.length);patcher.clearError();
    }
   }
   IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIDarkWakeReady",ready);
-  // Observe the queue under its existing native gate. No driver locks or
-  // live object pointers are retained by a registry serializer.
-  const auto idle=sym("__ZN18IOAccelDisplayPipe28transaction_queue_idle_gatedEv");
-  const auto framebuffer=sym("__ZNK18IOAccelDisplayPipe14getFramebufferEv");
-  const uint8_t idleFields[]={0x55,0x48,0x89,0xe5,0x41,0x56,0x53,0x48,0x89,0xfb,0x8b,0x87,0x38,2,0,0,0x8b,0x8f,0x3c,2,0,0};
-  const uint8_t framebufferField[]={0x55,0x48,0x89,0xe5,0x48,0x8b,0x87,0x98,0,0,0,0x5d,0xc3};
-  const auto within=[&](mach_vm_address_t fn,size_t bytes){return fn>=address && fn-address<=size && bytes<=size-(fn-address);};
-  bool queueReady=false;
-  if(ready && within(idle,sizeof(idleFields)) && within(framebuffer,sizeof(framebufferField)) &&
-     !memcmp(reinterpret_cast<void *>(idle),idleFields,sizeof(idleFields)) &&
-     !memcmp(reinterpret_cast<void *>(framebuffer),framebufferField,sizeof(framebufferField))) {
-   KernelPatcher::RouteRequest route("__ZN18IOAccelDisplayPipe28transaction_queue_idle_gatedEv",wrapDisplayQueueIdle,orgDisplayQueueIdle);
-   queueReady=patcher.routeMultiple(index,&route,1,address,size);patcher.clearError();
-  }
-  IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplayQueueObserverReady",queueReady);
+  xe.setHostSleepReady(ready);accelSeen=true;flushDonors(patcher);
   return;
  }
  if(backlight.loadIndex==index) {
@@ -135,65 +171,36 @@ void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t a
  }
  if(XeDataAccess::processKext(patcher,index,address,size))return;
  if(graphics.loadIndex==index) {
-  if(systemWakeRecovery) {
+  if(systemWakeRecovery && !graphicsSeen) {
    const char *sym="__ZN13IOFramebuffer16setWSAAAttributeEjj";
-   const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,sym,address,size);
+   // Lilu resolves the symbol, verifies the image range, and builds the
+   // entrance trampoline. This wrapper needs no private implementation ABI.
+   KernelPatcher::RouteRequest route(sym,wrapWSAAAttribute,orgWSAAAttribute);
+   const bool ready=patcher.routeMultiple(index,&route,1,address,size);patcher.clearError();
+   xe.setHostWakeRecoveryReady(ready);
+   // Bound the host function by its own image, not by the Intel donor.
+   const auto event=patcher.solveSymbol<mach_vm_address_t>(index,"__ZN13IOFramebuffer11handleEventEiPv",address,size);
    patcher.clearError();
-   const uint8_t prologue[]={0x55,0x48,0x89,0xe5,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x53,0x48,0x83,0xec,0x68};
-   bool ready=false;
-   if(size>=0x1cd64+sizeof(prologue) && fn==address+0x1cd64 && !memcmp(reinterpret_cast<void *>(fn),prologue,sizeof(prologue))) {
-    KernelPatcher::RouteRequest route(sym,wrapWSAAAttribute,orgWSAAAttribute);
-    ready=patcher.routeMultiple(index,&route,1,address,size);patcher.clearError();
-   }
+   const auto eventLength=hostFunctionExtent(event,address,size);
+   const bool paging=eventLength && HostPowerContract::paging(reinterpret_cast<const uint8_t *>(event),eventLength,hostInstructionSize);
+   xe.setHostFramebufferEvent(paging?event:0);
+   IORegistryEntry::getRegistryRoot()->setProperty("WEXHostPagingContractReady",paging);
    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIWakeRecoveryReady",ready);
+   graphicsSeen=true;flushDonors(patcher);
   }
   if(resetFramebuffer==FB_NONE)return;
   gIOFBVerboseBootPtr=patcher.solveSymbol<uint8_t *>(index,"__ZL16gIOFBVerboseBoot",address,size);
   if(gIOFBVerboseBootPtr){KernelPatcher::RouteRequest route("__ZN13IOFramebuffer6initFBEv",wrapFramebufferInit,orgFramebufferInit);patcher.routeMultiple(index,&route,1,address,size);}
   patcher.clearError();return;
  }
+ if(xe.isIntelDonor(index) && !dependenciesSeen()) {
+  for(unsigned i=0;i<pendingDonorCount;++i)if(pendingDonors[i].index==index)return;
+  if(pendingDonorCount<arrsize(pendingDonors))pendingDonors[pendingDonorCount++]={index,address,size};
+  else SYSLOG("wex","host dependency queue overflow");
+  return;
+ }
  xe.processKext(patcher,index,address,size);
 }
-void XeHost::recordDisplayQueue(void *pipe,uint32_t serial,uint32_t phase) {
- auto bytes=static_cast<uint8_t *>(pipe);
- auto fb=*reinterpret_cast<IOService **>(bytes+0x98);
- if(!xe.ownedDisplay13Framebuffer(fb))return;
- const auto index=*reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(fb)+0x1DC);
- uint64_t record[54] {1,serial,phase,index};
- clock_get_uptime(record+4);
- record[5]=*reinterpret_cast<uint32_t *>(bytes+0x238);
- record[6]=*reinterpret_cast<uint32_t *>(bytes+0x23c);
- record[7]=*reinterpret_cast<uint64_t *>(bytes+0x248);
- record[8]=*reinterpret_cast<uint64_t *>(bytes+0x250);
- record[9]=*reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(fb)+0x4284);
- record[10]=*reinterpret_cast<uint8_t *>(reinterpret_cast<uint8_t *>(fb)+0x199);
- auto accelerator=*reinterpret_cast<uint8_t **>(bytes+0x88);
- if(accelerator) {
-  record[11]=*reinterpret_cast<uint32_t *>(accelerator+0xc78);
-  auto machine=*reinterpret_cast<uint8_t **>(accelerator+0x378);
-  if(machine)record[12]=*reinterpret_cast<uint32_t *>(machine+0x10c);
- }
- record[13]=*reinterpret_cast<uint32_t *>(bytes+0x29c);
- record[14]=*reinterpret_cast<uint32_t *>(bytes+0x2a4);
- record[15]=reinterpret_cast<uintptr_t>(pipe);
- // Embedded event slots only: do not dereference transactions whose lifetime
- // can end when the original action drops its gate to wait.
- memcpy(record+16,bytes+0x118,4*0x48);
- record[52]=*reinterpret_cast<uint8_t *>(bytes+0x280);
- record[53]=*reinterpret_cast<uint8_t *>(bytes+0x299);
- const char *enter[]={"WEXDisplayQueueEnter0","WEXDisplayQueueEnter1","WEXDisplayQueueEnter2"};
- const char *exit[]={"WEXDisplayQueueExit0","WEXDisplayQueueExit1","WEXDisplayQueueExit2"};
- IORegistryEntry::getRegistryRoot()->setProperty((phase==1?enter:exit)[index],record,sizeof(record));
-}
-
-void XeHost::wrapDisplayQueueIdle(void *pipe) {
- auto h=callbackHost;
- const auto serial=__atomic_add_fetch(&h->queueObservation,1,__ATOMIC_RELAXED);
- h->recordDisplayQueue(pipe,serial,1);
- FunctionCast(wrapDisplayQueueIdle,h->orgDisplayQueueIdle)(pipe);
- h->recordDisplayQueue(pipe,serial,2);
-}
-
 uint32_t XeHost::pendingSleepDisplays(void *accelerator) {
  auto h=callbackHost;
  auto bytes=static_cast<uint8_t *>(accelerator);

@@ -1,4 +1,4 @@
-// Exact TGL donor layout, with the 20G1443 ICL recovery caller contract.
+// Exact TGL donor layout, with the native ICL single-pass recovery contract.
 // The caller must qualify the binary and select host scheduler 5 first.
 #ifndef kern_tgl_recovery_hpp
 #define kern_tgl_recovery_hpp
@@ -15,7 +15,7 @@ struct Result {
 	bool resetOK;
 };
 
-// ICL 20G1443 resetHardwareAndReplay (4A712): reset once, account a native
+// ICL resetHardwareAndReplay: reset once, account a native
 // failure, resume scheduling, return to IOAccel's error/event processing.
 // TGL's lower reset still owns hardware reset, context replay and CSB handling.
 // Do not append a new stamp or wait inside this recovery work-loop callback.

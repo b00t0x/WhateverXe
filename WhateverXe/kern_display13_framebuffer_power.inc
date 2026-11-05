@@ -15,6 +15,10 @@ uint32_t XE::wrapDisplay13SetPowerState(IOService *fb,uint32_t state) {
         uint32_t *busy;
         ~PowerCallback(){if(busy)__atomic_store_n(busy,0U,__ATOMIC_RELEASE);}
     } callback{busy};
+    // Keep WSAA out of the native queue wait whenever this callback cannot
+    // finish hardware restoration or its notification obligation. This covers
+    // early failures too, not only the post-resume cadence diagnostic.
+    if(busy && state==2)__atomic_store_n(&callbackXE->dsiWakeIncomplete,1U,__ATOMIC_RELEASE);
     auto result=[&]() -> uint32_t {
         if(callbackXE->adlnOutputWiring.dsi) {
             if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
@@ -89,6 +93,7 @@ uint32_t XE::wrapDisplay13SetPowerState(IOService *fb,uint32_t state) {
         uint32_t notice[]={1,8,result,callbackXE->dsiPowerOffEvents,callbackXE->dsiPowerOnEvents};
         IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPowerNotifications",notice,sizeof(notice));
     }
+    if(busy && state==2 && result==kIOReturnSuccess)__atomic_store_n(&callbackXE->dsiWakeIncomplete,0U,__ATOMIC_RELEASE);
     recordDSIClient(fb,9,state,result);
     return result;
 }
@@ -220,22 +225,32 @@ bool XE::processDisplay13NativeAttributes(KernelPatcher &patcher,size_t index,ma
             int32_t wd,od;
             memcpy(&wd,reinterpret_cast<const void *>(address+0x26F18),sizeof(wd));
             memcpy(&od,reinterpret_cast<const void *>(address+0x26814),sizeof(od));
-            if(wd && od && address+0x26F1C+wd==address+0x26818+od)
-                display13FramebufferEvent=address+0x26F1C+wd;
-            if(display13FramebufferEvent) {
-                // Accept the pagingState field only when the linked handleEvent
-                // sets precisely this bit in both DidWake and DidPowerOn.
-                auto fn=reinterpret_cast<const uint8_t *>(display13FramebufferEvent);
-                if(fn[0]==0xFF && fn[1]==0x25) {
-                    const auto slot=XELPCall::relativeTarget(fn+2,reinterpret_cast<uintptr_t>(fn)+6);
-                    memcpy(&fn,reinterpret_cast<const void *>(slot),sizeof(fn));
+            const auto imported=address+0x26F1C+wd;
+            if(wd && od && imported==address+0x26818+od) {
+                auto target=imported;
+                // Only inspect a linkage stub and pointer slot inside this
+                // already-qualified donor image. A direct host call needs no
+                // dereference before comparing its resolved symbol identity.
+                if(target!=hostFramebufferEvent && target>=address && target-address<=size && size-(target-address)>=6) {
+                    const auto fn=reinterpret_cast<const uint8_t *>(target);
+                    if(fn[0]==0xFF && fn[1]==0x25) {
+                        const auto slot=XELPCall::relativeTarget(fn+2,target+6);
+                        if(slot>=address && slot-address<=size && size-(slot-address)>=sizeof(target))
+                            memcpy(&target,reinterpret_cast<const void *>(slot),sizeof(target));
+                    }
                 }
-                const uint8_t setPaging[]={0x41,0x80,0x8D,0x99,0x01,0x00,0x00,0x20};
-                display13PagingLayoutKnown=fn && fn[0]==0x55 && !memcmp(fn+0x100,setPaging,sizeof(setPaging)) &&
-                    !memcmp(fn+0x1A8,setPaging,sizeof(setPaging));
+                display13PagingLayoutKnown=hostFramebufferEvent && target==hostFramebufferEvent;
+                if(display13PagingLayoutKnown)display13FramebufferEvent=imported;
+                IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13PagingContractReady",display13PagingLayoutKnown);
             }
         }
     }
+    // A DSI writer replaces the native power callback and therefore owns its
+    // notifications and failed-wake escape. Refuse incomplete initialization
+    // here, before any GOP ownership or panel power is changed.
+    const bool hostReady=display13FramebufferEvent && display13PagingLayoutKnown && hostSleepReady && hostWakeRecoveryReady;
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13HostPowerReady",hostReady);
+    if(adlnOutputWiring.dsi && !hostReady)return false;
     // Standard routes copy 17/17/16/20-byte prologues, before RIP counters.
     KernelPatcher::RouteRequest routes[]={
         {symbols[0],wrapDSISetAttribute,orgDSIAttributes[0]},
