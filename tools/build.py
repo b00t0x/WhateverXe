@@ -19,7 +19,7 @@ def main():
  base+=['-fdebug-compilation-dir=.', '-ffile-prefix-map='+str(ROOT)+'=/WhateverXe',
         '-ffile-prefix-map='+str(sdk)+'=/MacKernelSDK', '-ffile-prefix-map='+str(lilu)+'=/Lilu']
  manifest={}
- for name,version,sources in [('WhateverXe','0.7.0',sorted((ROOT/'WhateverXe').glob('*.cpp'))+[lilu/'Library/plugin_start.cpp']),('AppleIntelTGLCompat','0.7.0',[ROOT/'AppleIntelTGLCompat/AppleIntelTGLCompat.cpp'])]:
+ for name,version,sources in [('WhateverXe','0.8.0',sorted((ROOT/'WhateverXe').glob('*.cpp'))+[lilu/'Library/plugin_start.cpp']),('AppleIntelTGLCompat','0.8.0',[ROOT/'AppleIntelTGLCompat/AppleIntelTGLCompat.cpp'])]:
   bundle=out/(name+'.kext')/'Contents';(bundle/'MacOS').mkdir(parents=True,exist_ok=True);objdir=out/name;objdir.mkdir(exist_ok=True)
   objects=[]
   for source in sources:

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.0
+
+Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) package with this update.
+
+### Added
+
+- Add Raptor Lake-U graphics support, tested on CHUWI MiniBook X U300 with Big Sur and Tahoe.
+- Add experimental system sleep/wake on MiniBook X N100 and U300 with suitable model-specific ACPI configuration. Tested on Big Sur and Tahoe with the internal display alone or up to two external displays; other configurations remain unverified.
+- Add an optional 60 Hz internal-display mode for matching MiniBook X N100 and U300 panels.
+
+### Fixed
+
+- Fix restart and shutdown with the supported MIPI DSI panels, and accelerated startup with USB-C displays already connected.
+- Fix rotated MIPI DSI display-mode selection and improve display restoration after sleep.
+- Improve compatibility with supported macOS updates when kernel or system-driver code placement changes.
+
 ## 0.7.0
 
 Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) package with this update.

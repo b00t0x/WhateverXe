@@ -25,7 +25,7 @@ Sequoia and Tahoe accept compatible updates within their OS family. Future Apple
 - Twin Lake: 32-EU configurations.
 - Alder Lake-H: 96-EU configurations, including single-channel operation.
 - Alder Lake-S: UHD Graphics 770.
-- Raptor Lake-U: 48-EU Intel Processor U300 on Big Sur.
+- Raptor Lake-U: 48-EU configurations on Big Sur and Tahoe (MiniBook X U300).
 
 See [tested features and known issues](#tested-features-and-known-issues) for OS coverage and display configurations. PCI IDs are listed in [device selection](docs/device-selection.md).
 
@@ -35,7 +35,7 @@ See [tested features and known issues](#tested-features-and-known-issues) for OS
 - Other supported Alder Lake-N / Twin Lake configurations.
 - Other supported Alder Lake-H/P/U and Raptor Lake-H/P/U configurations.
 - Other supported Alder Lake-S/HX and Raptor Lake-S/HX configurations.
-- Internal eDP on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P is implemented but has not been tested on hardware.
+- Internal eDP on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P/U is implemented but has not been tested on hardware.
 
 ### Further implementation required
 
@@ -81,9 +81,8 @@ These settings are unnecessary at 96MB and do not increase firmware-allocated me
 ### Other settings
 
 - Add `SSDT-PNLF` for internal-display brightness control.
-- The tested MiniBook X U300 setup uses `-wex-dsi-adopt` to adopt the firmware’s internal DSI scanout. On matching MiniBook X U300 and N100 panel firmware, `-wex-dsi-60hz` requests a fixed 60 Hz mode at boot. Both panels were tested under Big Sur using their respective firmware blanking intervals. The N100 was also tested under Tahoe. Remove the argument and reboot for the default 50 Hz. The U300 timing comes from the [minibookx-ctl display guide](https://github.com/ishad0w/minibookx-ctl/blob/main/docs/guide/display.md).
 - GPU selection is automatic; a `device-id` override is normally unnecessary.
-- Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P select tiling automatically. Do not use `-yTileDisable`; `AAPL,GfxYTile` is unnecessary.
+- Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P/U select tiling automatically. Do not use `-yTileDisable`; `AAPL,GfxYTile` is unnecessary.
 
 ## Tested features and known issues
 
@@ -94,25 +93,27 @@ The common regression checks cover Metal, OpenGL, OpenCL, hardware H.264 encode/
 | Tiger Lake mini PCs | Big Sur–Tahoe: 80 EU, two 1080p60 displays, display off/on, Safari video and Widevine |
 | Tiger Lake laptops | Big Sur–Tahoe: 48 EU, internal eDP and brightness, HDMI/USB-C, up to three displays and display off/on |
 | Alder Lake-N mini PCs | Big Sur–Tahoe: 16/24 EU, two 1080p60 HDMI displays and display off/on |
-| Alder Lake-N / Twin Lake laptops | MIPI DSI on MicroPC 2 (N250) and MiniBook X N100. Big Sur: brightness, rotation, display off/on and external HDMI/USB-C coexistence; MiniBook X N100 also supports the optional 60 Hz mode. MicroPC 2 also has HiDPI and up to three displays. Tahoe: MicroPC 2 internal/external displays, brightness, rotation and HiDPI |
-| Raptor Lake-U laptop | Big Sur: MiniBook X U300, internal MIPI DSI at 1200×1920 @ 50 Hz or optional 60 Hz, accelerated startup with up to two USB-C displays connected, Metal compute/render, OpenGL, hardware H.264 encode/decode and HEVC decode. Tahoe: internal 50 Hz display, native landscape and HiDPI modes |
+| Alder Lake-N / Twin Lake laptops | MicroPC 2 and MiniBook X N100 on Big Sur/Tahoe: MIPI DSI, brightness, rotation, display off/on and HDMI/USB-C coexistence. MicroPC 2: HiDPI and up to three displays; MiniBook X N100: optional 60 Hz |
+| Raptor Lake-U laptop | MiniBook X U300 on Big Sur/Tahoe: internal MIPI DSI, brightness, rotation, HiDPI and up to two USB-C displays. Internal panel: 50 Hz; optional 60 Hz also tested on Big Sur |
 | Alder Lake-H | Big Sur–Tahoe: 96 EU, three displays using HDMI and a DP-to-HDMI adapter. Single-channel `4626` graphics acceleration checked on Big Sur |
 | Alder Lake-S | Big Sur–Tahoe: UHD 770, HDMI/DP/USB-C and up to three displays; Safari video, with Widevine checked on Big Sur/Tahoe |
 
-MIPI DSI support is **experimental**. The tested panels are those in the GPD MicroPC 2 and CHUWI MiniBook X N100 and U300.
+MIPI DSI support is **experimental**, limited to the tested GPD MicroPC 2 and CHUWI MiniBook X N100/U300 panels. Do not expect it to work on other devices.
+
+System sleep/wake is **experimental** on MiniBook X N100/U300 with suitable model-specific ACPI configuration. Tested on Big Sur and Tahoe with the internal display alone or up to two external displays. Other models, OS versions and prolonged DarkWake cycles remain unverified.
 
 ### Known issues and limits
 
 - DisplayPort reconnection can cause black screens or freezes. Tiger Lake USB-C reconnection is also unreliable; Alder Lake-S DP output/reconnection can be slow.
 - Some image-conversion operations can crash applications; App Store video can freeze the GPU on Sequoia.
 - Safari video may occasionally drop frames. FairPlay-protected playback is unsupported.
-- Up to three displays are supported. Resolutions beyond the tested configurations and full system sleep/wake remain unverified.
+- Up to three displays are supported. Resolutions beyond the tested configurations remain unverified.
 - Some connector layouts and backlight methods, MST and Thunderbolt-managed outputs are unsupported.
 
 ### Roadmap
 
-- Complete DisplayPort, USB-C and internal-display support on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P.
-- Improve display reconnection reliability and investigate full system sleep/wake.
+- Complete DisplayPort, USB-C and internal-display support on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P/U.
+- Improve display reconnection reliability and extend system sleep/wake coverage.
 
 ## Build and test
 
@@ -133,3 +134,5 @@ See [LICENSE.txt](LICENSE.txt). Lilu and MacKernelSDK are separate dependencies.
 Thanks to [JulioNectar/XPS13Plus](https://github.com/JulioNectar/Hackintosh-XPS13Plus-IrisXe-Tahoe) for sharing its Xe graphics work. Its compiler adapter and LLVM bridge informed the OS-native AIR conversion used in WhateverXe Graphics.
 
 Internal-panel work also draws on [WhateverXe-RaptorLakeP](https://github.com/samranahmad09/WhateverXe-RaptorLakeP), [X1Carbon-G11](https://github.com/dssoftx/Hackintosh-X1Carbon-G11-IrisXe-Tahoe), XPS13Plus and the [Linux i915 display sources](https://github.com/torvalds/linux/tree/v6.12/drivers/gpu/drm/i915/display) for hardware behavior and implementation comparisons.
+
+The optional MiniBook X 60 Hz panel timing also draws on the [minibookx-ctl display guide](https://github.com/ishad0w/minibookx-ctl/blob/main/docs/guide/display.md).

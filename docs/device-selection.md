@@ -15,7 +15,7 @@ WEX selects the GPU from its physical PCI ID and detects its actual resources au
 | Raptor Lake-S / HX | `A780`, `A781`, `A782`, `A783`, `A788`, `A789`, `A78A`, `A78B` |
 
 An implemented backend does not imply hardware validation for every ID or connector. See [compatibility and tested configurations](../README.md#compatibility).
-Raptor Lake-U uses its own CDCLK table, including 480 MHz and its PCODE voltage level. The physical PCI ID selects this clock policy. Internal DSI and acceleration have been verified on `A7A9` with Big Sur. Rocket Lake remains unsupported.
+Raptor Lake-U internal DSI and acceleration have been verified on MiniBook X U300 (`A7A9`) with Big Sur and Tahoe. Rocket Lake remains unsupported.
 
 Memory configuration can change the PCI ID, such as `46A6` to `4626` in a single-channel Alder Lake-H configuration. No override is needed; use updated WEX and Graphics components together.
 
