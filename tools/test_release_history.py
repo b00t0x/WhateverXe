@@ -27,7 +27,9 @@ int main(){
   if(!p.admitted())continue;
   auto family=unsigned(p.family),gt=unsigned(p.gt);
   if(!seen.emplace(family,gt).second)continue;
-  for(unsigned combo=0;combo<8;++combo)for(unsigned assign=0;assign<4096;++assign)
+  // TGL uses Combo A/B/C; desktop Display12 also maps physical ports at
+  // coordinates 3/4. Include those bits when replaying old ADL/RPL-S policy.
+  for(unsigned combo=0;combo<32;++combo)for(unsigned assign=0;assign<4096;++assign)
   for(unsigned backend:{1U,2U,3U,7U,0x19U})for(unsigned legacyBackend=0;legacyBackend<64;++legacyBackend){
    Released::ProbeConfig before;before.profile=p;before.combo=combo;before.comboBackend=backend;
    unsigned bits=assign;
