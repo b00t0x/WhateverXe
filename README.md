@@ -25,7 +25,7 @@ Sequoia and Tahoe accept compatible updates within their OS family. Future Apple
 - Twin Lake: 32-EU configurations.
 - Alder Lake-H: 96-EU configurations, including single-channel operation.
 - Alder Lake-S: UHD Graphics 770.
-- Raptor Lake-U: 48-EU configurations on Big Sur and Tahoe (MiniBook X U300).
+- Raptor Lake-U: 48-EU configurations.
 
 See [tested features and known issues](#tested-features-and-known-issues) for OS coverage and display configurations. PCI IDs are listed in [device selection](docs/device-selection.md).
 

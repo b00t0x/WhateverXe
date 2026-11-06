@@ -25,7 +25,7 @@ SequoiaとTahoeは同じOS系列内の互換性のある更新に対応します
 - Twin Lake：32 EU構成。
 - Alder Lake-H：シングルチャネルを含む96 EU構成。
 - Alder Lake-S：UHD Graphics 770。
-- Raptor Lake-U：48 EU構成（MiniBook X U300、Big Sur・Tahoe）。
+- Raptor Lake-U：48 EU構成。
 
 OS別の範囲と表示構成は[動作確認済みの機能と既知の問題](#動作確認済みの機能と既知の問題)、PCI IDは[デバイス選択](docs/device-selection.md)を参照してください。
 
