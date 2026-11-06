@@ -136,14 +136,18 @@ void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t a
    auto v=patcher.solveSymbol<mach_vm_address_t>(index,name,address,size);patcher.clearError();return v;
   };
   sleepFBCount=sym("__ZNK21IOAccelDisplayMachine19getFramebufferCountEv");
-  sleepFBAt=sym("__ZNK21IOAccelDisplayMachine16getIOFramebufferEj");
   const auto sleep=sym("__ZN22IOGraphicsAccelerator217system_will_sleepEib");
   const auto mode=sym("__ZN21IOAccelDisplayMachine24display_mode_will_changeEj");
   const auto sleepLength=hostFunctionExtent(sleep,address,size);
   const auto modeLength=hostFunctionExtent(mode,address,size);
   const auto site=HostPowerContract::sleepSite(reinterpret_cast<const uint8_t *>(sleep),sleepLength,sleep,sleepFBCount,hostInstructionSize);
   bool ready=false;
-  if(sleepFBCount && sleepFBAt && site.valid && HostPowerContract::sleepFields(
+  if(!sleepScopeLock)sleepScopeLock=IOSimpleLockAlloc();
+  KernelPatcher::RouteRequest notification("__ZN18IOAccelDisplayPipe22display_change_handlerEPvP13IOFramebufferiS0_",
+      wrapDisplayChange,orgDisplayChange);
+  const bool notifications=sleepScopeLock && patcher.routeMultiple(index,&notification,1,address,size);
+  patcher.clearError();
+  if(notifications && sleepFBCount && site.valid && HostPowerContract::sleepFields(
      reinterpret_cast<const uint8_t *>(sleep),sleepLength,reinterpret_cast<const uint8_t *>(mode),modeLength,hostInstructionSize,site.owner)) {
    // Pass this accelerator in rdi. The host compiler may keep it in rbx or
    // r14; the matched count query establishes which register owns it.
@@ -202,23 +206,65 @@ void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t a
  }
  xe.processKext(patcher,index,address,size);
 }
+// Observe the subscriber that owns a sleep scope. Native system_will_sleep
+// ignores its event-number argument and loops over every display pipe; a
+// controller-wide asleep flag cannot identify which subscriber already woke.
+IOReturn XeHost::wrapDisplayChange(void *pipe,void *reference,IOFramebuffer *fb,int event,void *argument) {
+ auto h=callbackHost;
+ const bool tracked=(event==3 || event==4) && !argument && h->xe.ownedDisplay13Framebuffer(fb);
+ if((event!=3 && event!=4) || argument)
+  return FunctionCast(wrapDisplayChange,h->orgDisplayChange)(pipe,reference,fb,event,argument);
+ SleepScope scope;scope.thread=reinterpret_cast<uintptr_t>(current_thread());scope.fb=tracked && event==3 ? fb : nullptr;
+ auto saved=IOSimpleLockLockDisableInterrupt(h->sleepScopeLock);
+ scope.next=h->sleepScopes;h->sleepScopes=&scope;
+ IOSimpleLockUnlockEnableInterrupt(h->sleepScopeLock,saved);
+ const auto result=FunctionCast(wrapDisplayChange,h->orgDisplayChange)(pipe,reference,fb,event,argument);
+ saved=IOSimpleLockLockDisableInterrupt(h->sleepScopeLock);
+ // The list holds stack records only during a synchronous native callback.
+ // Another thread or a nested subscriber must never inherit this decision.
+ auto link=&h->sleepScopes;
+ while(*link && *link!=&scope)link=&(*link)->next;
+ if(*link)*link=scope.next;
+ SleepEntry *entry=nullptr;
+ if(tracked)for(auto &item:h->sleepEntries)if(item.fb==fb){entry=&item;break;}
+ if(tracked && !entry)for(auto &item:h->sleepEntries)if(!item.pending){entry=&item;item.fb=fb;break;}
+ if(entry && result==kIOReturnSuccess) {
+  if(event==3 && scope.reached){entry->pending=true;++h->sleepNotifications;}
+  if(event==4){entry->pending=false;++h->wakeNotifications;}
+ }
+ uint32_t pending=0;
+ for(auto &item:h->sleepEntries)if(item.pending)++pending;
+ uint32_t receipt[]={1,h->sleepNotifications,h->wakeNotifications,h->repeatedSleep,pending,
+     static_cast<uint32_t>(event),scope.reached,scope.skipped,static_cast<uint32_t>(result)};
+ IOSimpleLockUnlockEnableInterrupt(h->sleepScopeLock,saved);
+ IORegistryEntry::getRegistryRoot()->setProperty("WEXHostSleepScopes",receipt,sizeof(receipt));
+ return result;
+}
+
 uint32_t XeHost::pendingSleepDisplays(void *accelerator) {
  auto h=callbackHost;
  auto bytes=static_cast<uint8_t *>(accelerator);
  auto machine=*reinterpret_cast<uint8_t **>(bytes+0x378);
  const auto count=reinterpret_cast<uint32_t (*)(void *)>(h->sleepFBCount)(machine);
- if(!count || !(*reinterpret_cast<volatile uint32_t *>(bytes+0xc78)&1))return count;
- const auto depth=*reinterpret_cast<volatile uint32_t *>(machine+0x10c);
- if(depth<count)return count;
- // Every subscriber in this machine must be parked. FB0 alone cannot
- // establish whether an external display acquired a new wake scope.
- for(unsigned i=0;i<count;++i) {
-  auto fb=reinterpret_cast<IOService *(*)(void *,unsigned)>(h->sleepFBAt)(machine,i);
-  if(!h->xe.parkedDisplay13Framebuffer(fb))return count;
+ if(!count || !h->sleepScopeLock)return count;
+ const auto thread=reinterpret_cast<uintptr_t>(current_thread());
+ auto saved=IOSimpleLockLockDisableInterrupt(h->sleepScopeLock);
+ SleepScope *scope=h->sleepScopes;
+ while(scope && scope->thread!=thread)scope=scope->next;
+ bool duplicate=false;
+ if(scope && scope->fb) {
+  scope->reached=true;
+  for(auto &entry:h->sleepEntries)if(entry.fb==scope->fb && entry.pending){duplicate=true;break;}
+  scope->skipped=duplicate;
+  if(duplicate)++h->repeatedSleep;
  }
- // Already parked by a full two-phase notification, with no intervening
- // DidWake. The real resume must close the original scope exactly once.
- uint32_t record[]={__atomic_add_fetch(&h->repeatedSleep,1,__ATOMIC_RELAXED),count,depth};
+ const auto repeated=h->repeatedSleep;
+ IOSimpleLockUnlockEnableInterrupt(h->sleepScopeLock,saved);
+ if(!duplicate)return count;
+ // Skip only the repeated preparation loop. Orphan cleanup, the hardware
+ // sleep phase and every native wake notification still execute normally.
+ const auto depth=*reinterpret_cast<volatile uint32_t *>(machine+0x10c);
+ uint32_t record[]={repeated,count,depth};
  IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIDarkWakeParked",record,sizeof(record));
  return 0;
 }

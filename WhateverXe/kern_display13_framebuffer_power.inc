@@ -111,10 +111,6 @@ bool XE::ownedDisplay13Framebuffer(IOService *fb) const {
         Display13FBMemory::field<IOService *>(adlnTopologyController,0xD60+8*Display13FBMemory::field<uint32_t>(fb,0x1DC))==fb;
 }
 
-bool XE::parkedDisplay13Framebuffer(IOService *fb) const {
-    return ownedDisplay13Framebuffer(fb) && !(Display13FBMemory::field<uint8_t>(fb,0x199)&0x20);
-}
-
 bool XE::finishDisplay13SystemWake(IOService *caller) {
     if(!display13FramebufferEvent || !caller)return false;
     auto controller=Display13FBMemory::field<IOService *>(caller,0x1D0);

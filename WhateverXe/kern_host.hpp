@@ -14,8 +14,18 @@ private:
  PendingDonor pendingDonors[2] {};unsigned pendingDonorCount {};
  bool dependenciesSeen() const {return surfaceSeen && (!systemWakeRecovery || (graphicsSeen && accelSeen));}
  void flushDonors(KernelPatcher &);
- mach_vm_address_t sleepFBCount {},sleepFBAt {};
- uint32_t repeatedSleep {};
+ mach_vm_address_t sleepFBCount {};
+ uint32_t repeatedSleep {},sleepNotifications {},wakeNotifications {};
+ IOSimpleLock *sleepScopeLock {};
+ struct SleepEntry {IOService *fb {};bool pending {};};
+ SleepEntry sleepEntries[3] {};
+ struct SleepScope {
+  SleepScope *next {};uintptr_t thread {};IOService *fb {};
+  bool reached {},skipped {};
+ };
+ SleepScope *sleepScopes {};
+ mach_vm_address_t orgDisplayChange {};
+ static IOReturn wrapDisplayChange(void *,void *,IOFramebuffer *,int,void *);
  static uint32_t pendingSleepDisplays(void *);
  mach_vm_address_t orgWSAAAttribute {};
  static IOReturn wrapWSAAAttribute(IOFramebuffer *,uint32_t,uint32_t);

@@ -56,9 +56,14 @@ struct KernelPatcher {
 namespace XeDataAccess {bool processKext(KernelPatcher&,size_t,mach_vm_address_t,size_t){return false;}void processKernel(KernelPatcher &){assert(published);events.push_back(7);}}
 struct Graphics {size_t loadIndex=4;bool off=false;void switchOff(){off=true;}} graphics;
 struct {size_t loadIndex=6;}surface;struct {size_t loadIndex=5;}backlight;struct {size_t loadIndex=7;}accelFamily;
+using IOSimpleLock=int;int scopeLock=0;uintptr_t fakeThread=1;
+IOSimpleLock *IOSimpleLockAlloc(){return &scopeLock;}
+int IOSimpleLockLockDisableInterrupt(IOSimpleLock*){return 0;}
+void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock*,int){}
+void *current_thread(){return reinterpret_cast<void*>(fakeThread);}
 using IOService=IOPCIDevice;using IOReturn=int;using IOFramebuffer=IOPCIDevice;
 constexpr uint32_t kIOWindowServerActiveAttribute=1,kIOWSAA_StateMask=15,kIOWSAA_Accelerated=1,kIOWSAA_Unaccelerated=0;
-constexpr IOReturn kIOReturnNotReady=-1;
+constexpr IOReturn kIOReturnSuccess=0,kIOReturnNotReady=-1;
 #define FunctionCast(fn,addr) reinterpret_cast<decltype(&fn)>(addr)
 struct XeHost {
  static XeHost *callbackHost;bool systemWakeRecovery=false;
@@ -66,7 +71,13 @@ struct XeHost {
  struct PendingDonor {size_t index;uintptr_t address;size_t size;};PendingDonor pendingDonors[2]{};unsigned pendingDonorCount=0;
  bool dependenciesSeen() const {return surfaceSeen && (!systemWakeRecovery || (graphicsSeen && accelSeen));}
  void flushDonors(KernelPatcher&);
- uintptr_t sleepFBCount=0,sleepFBAt=0;uint32_t repeatedSleep=0;static uint32_t pendingSleepDisplays(void*);
+ uintptr_t sleepFBCount=0,sleepFBAt=0;uint32_t repeatedSleep=0,sleepNotifications=0,wakeNotifications=0;
+ IOSimpleLock *sleepScopeLock=nullptr;
+ struct SleepEntry {IOService *fb=nullptr;bool pending=false;};SleepEntry sleepEntries[3]{};
+ struct SleepScope {SleepScope *next=nullptr;uintptr_t thread=0;IOService *fb=nullptr;bool reached=false,skipped=false;};SleepScope *sleepScopes=nullptr;
+ uintptr_t orgDisplayChange=0;
+ static IOReturn wrapDisplayChange(void*,void*,IOFramebuffer*,int,void*);
+ static uint32_t pendingSleepDisplays(void*);
  uintptr_t orgWSAAAttribute=0;
  static IOReturn wrapWSAAAttribute(IOFramebuffer*,uint32_t,uint32_t);
  bool active=false,backlightEnabled=false;enum {FB_DETECT,FB_RESET,FB_COPY,FB_ZEROFILL,FB_NONE,FB_TOTAL};uint32_t resetFramebuffer=FB_NONE;
@@ -78,8 +89,7 @@ struct XeHost {
  void setHostFramebufferEvent(uintptr_t){}
  void setHostSleepReady(bool){}
  void setHostWakeRecoveryReady(bool){}
- IOService *parked=nullptr;bool parkedDisplay13Framebuffer(IOService *f)const{return parked && f==parked;}
- bool ownedDisplay13Framebuffer(IOService *)const{return false;}
+ std::vector<IOService*> owned;bool ownedDisplay13Framebuffer(IOService *f)const{return std::find(owned.begin(),owned.end(),f)!=owned.end();}
  IOFramebuffer *degraded=nullptr; bool failedDSIWakeFor(IOFramebuffer *f) const {return f && f==degraded;}
  void processKernel(KernelPatcher &,DeviceInfo *){events.push_back(8);}
  void processKext(KernelPatcher&,size_t index,mach_vm_address_t,size_t){events.push_back(100+index);}
@@ -97,24 +107,61 @@ XeHost exercised;XeHost::callbackHost=&exercised;exercised.orgWSAAAttribute=rein
 assert(XeHost::wrapWSAAAttribute(&gpu,1,1)==42);exercised.xe.degraded=&gpu;
 assert(XeHost::wrapWSAAAttribute(&gpu,1,0x101)==kIOReturnNotReady && XeHost::wrapWSAAAttribute(&gpu,1,0)==kIOReturnNotReady);
 assert(XeHost::wrapWSAAAttribute(&mei,1,1)==42 && XeHost::wrapWSAAAttribute(&gpu,2,1)==42 && XeHost::wrapWSAAAttribute(&gpu,1,3)==42);
+// Replay mixed DarkWake with every subscriber ordering and awake subset.
 alignas(8) uint8_t accel[0xd00]{},machine[0x140]{};
 *reinterpret_cast<uint8_t **>(accel+0x378)=machine;
 exercised.sleepFBCount=reinterpret_cast<uintptr_t>(+[](void*)->uint32_t{return 3;});
+exercised.sleepScopeLock=&scopeLock;
+IOPCIDevice fb[3],foreign;exercised.xe.owned={fb,fb+1,fb+2};
+for(unsigned i=0;i<3;++i)reinterpret_cast<IOService**>(machine)[i]=fb+i;
 exercised.sleepFBAt=reinterpret_cast<uintptr_t>(+[](void *m,unsigned i)->IOService*{assert(i<3);return static_cast<IOService**>(m)[i];});
-for(unsigned i=0;i<3;++i)reinterpret_cast<IOService**>(machine)[i]=&gpu;exercised.xe.parked=&gpu;
-for(unsigned asleep:{0U,1U})for(unsigned depth:{0U,2U,3U,9U})for(bool owned:{false,true}){
- *reinterpret_cast<uint32_t*>(accel+0xc78)=asleep;*reinterpret_cast<uint32_t*>(machine+0x10c)=depth;
- exercised.xe.parked=owned?&gpu:nullptr;
- assert(XeHost::pendingSleepDisplays(accel)==(asleep && depth>=3 && owned?0U:3U));
-}
-assert(exercised.repeatedSleep==2);
-// FB0 parked cannot hide a newly awake or foreign peer at any index.
-for(unsigned i=0;i<3;++i){
- reinterpret_cast<IOService**>(machine)[i]=&mei;
- assert(XeHost::pendingSleepDisplays(accel)==3);
- reinterpret_cast<IOService**>(machine)[i]=&gpu;
-}
-assert(exercised.repeatedSleep==2);
+static uint8_t *testAccel;testAccel=accel;static unsigned cleanups,hardware;static bool reject;
+exercised.orgDisplayChange=reinterpret_cast<uintptr_t>(+[](void*,void*,IOFramebuffer*,int event,void *argument)->IOReturn{
+ auto machine=*reinterpret_cast<uint8_t**>(testAccel+0x378);auto &depth=*reinterpret_cast<uint32_t*>(machine+0x10c);
+ if(reject)return -1;
+ if(event==3 && !argument){depth+=XeHost::pendingSleepDisplays(testAccel);++cleanups;}
+ if(event==4 && !argument){assert(depth>=3);depth-=3;}
+ if(argument)++hardware;
+ return 0;
+});
+unsigned ordering[]={0,1,2};do{for(unsigned mask=0;mask<8;++mask){
+ for(auto &entry:exercised.sleepEntries)entry={};exercised.repeatedSleep=0;
+ auto &depth=*reinterpret_cast<uint32_t*>(machine+0x10c);depth=0;cleanups=hardware=0;
+ auto notify=[&](unsigned i,int event){assert(XeHost::wrapDisplayChange(nullptr,nullptr,fb+i,event,nullptr)==0);assert(XeHost::wrapDisplayChange(nullptr,nullptr,fb+i,event,reinterpret_cast<void*>(1))==0);};
+ for(auto i:ordering)notify(i,3);assert(depth==9);
+ for(unsigned cycle=0;cycle<4;++cycle){
+  for(auto i:ordering)if(mask&(1U<<i))notify(i,4);
+  assert(depth==9-3*__builtin_popcount(mask));
+  // Peers can wake the accelerator while one subscriber remains parked.
+  *reinterpret_cast<uint32_t*>(accel+0xc78)=0;
+  for(auto i:ordering)notify(i,3);
+  assert(depth==9);
+ }
+ for(auto i:ordering)notify(i,4);
+ assert(depth==0 && exercised.repeatedSleep==4*(3-__builtin_popcount(mask)));
+ assert(cleanups==15 && hardware==18+4*__builtin_popcount(mask));
+ assert(!exercised.sleepScopes);
+}}
+while(std::next_permutation(ordering,ordering+3));
+// Failed notifications do not establish a completed preparation scope.
+for(auto &entry:exercised.sleepEntries)entry={};reject=true;
+assert(XeHost::wrapDisplayChange(nullptr,nullptr,fb,3,nullptr)==-1);reject=false;
+assert(XeHost::wrapDisplayChange(nullptr,nullptr,fb,3,nullptr)==0);
+assert(*reinterpret_cast<uint32_t*>(machine+0x10c)==3);
+// Other threads and direct calls cannot inherit an enclosing skip decision.
+XeHost::SleepScope outer;outer.thread=2;outer.fb=fb;exercised.sleepScopes=&outer;
+assert(XeHost::pendingSleepDisplays(accel)==3);exercised.sleepScopes=nullptr;
+assert(XeHost::pendingSleepDisplays(accel)==3);
+// A foreign nested subscriber on this thread is a barrier, not the owner
+// of the outer subscriber's pending preparation.
+outer.thread=1;outer.fb=fb;exercised.sleepScopes=&outer;
+const auto before=*reinterpret_cast<uint32_t*>(machine+0x10c);
+assert(XeHost::wrapDisplayChange(nullptr,nullptr,&foreign,3,nullptr)==0);
+assert(*reinterpret_cast<uint32_t*>(machine+0x10c)==before+3);
+assert(exercised.sleepScopes==&outer && !outer.reached);
+assert(XeHost::wrapDisplayChange(nullptr,nullptr,&foreign,4,nullptr)==0);
+assert(*reinterpret_cast<uint32_t*>(machine+0x10c)==before);
+exercised.sleepScopes=nullptr;
 // Already-loaded notifications may arrive in any host dependency order.
 // Neither missing contracts nor a late callback may silently skip donor setup.
 unsigned order[]={1,2,4,6,7};do {

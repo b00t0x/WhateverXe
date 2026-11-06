@@ -132,16 +132,9 @@ inline SleepSite sleepSite(const uint8_t *p,size_t size,uintptr_t address,uintpt
     return hits==1 && calls==2 ? result : SleepSite{};
 }
 inline bool sleepFields(const uint8_t *sleep,size_t sleepSize,const uint8_t *mode,size_t modeSize,Decode decode,unsigned owner) {
-    uint8_t asleep[9] {};size_t length=0;
-    if(owner>=8)asleep[length++]=0x41;
-    asleep[length++]=0xF6;asleep[length++]=0x80|(owner&7);
-    if((owner&7)==4)asleep[length++]=0x24;
-    asleep[length++]=0x78;asleep[length++]=0x0C;
-    asleep[length++]=0;asleep[length++]=0;asleep[length++]=1;
     const uint8_t depthRBX[]={0x8B,0x83,0x0C,1,0,0,0x8D,0x48,1,0x89,0x8B,0x0C,1,0,0};
     const uint8_t depthR12[]={0x41,0x8B,0x84,0x24,0x0C,1,0,0,0x8D,0x48,1,0x41,0x89,0x8C,0x24,0x0C,1,0,0};
     return ownerFromThis(sleep,sleepSize,owner,decode) &&
-        occurrences(sleep,sleepSize,asleep,length,decode)==1 &&
         ((ownerFromThis(mode,modeSize,3,decode) && occurrences(mode,modeSize,depthRBX,sizeof(depthRBX),decode)==1) ||
          (ownerFromThis(mode,modeSize,12,decode) && occurrences(mode,modeSize,depthR12,sizeof(depthR12),decode)==1));
 }
