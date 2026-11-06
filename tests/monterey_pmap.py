@@ -5,31 +5,14 @@ This checks instruction/register/flag semantics only, not native locking, TLBs,
 or GPU coherency. Optional --kernel checks all source guards against exact bytes.
 """
 from pathlib import Path
-import argparse,hashlib,re,struct,subprocess,tempfile
+import argparse,re,subprocess,tempfile
 R=Path(__file__).resolve().parents[1]
 s=(R/'WhateverXe/kern_xe.cpp').read_text()
-a=argparse.ArgumentParser();a.add_argument('--kernel',type=Path);a=a.parse_args()
+a=argparse.ArgumentParser();a.add_argument('--kernel',type=Path);a.add_argument('--hde-source',type=Path);a=a.parse_args()
 bridges='\n'.join(re.search(r'extern "C" __attribute__\(\(naked,used\)\) void tglMontereyPmap'+kind+r'Bridge\(\) \{.*?\n\}',s,re.S)[0] for kind in ['New','Update'])
 if a.kernel:
- d=a.kernel.read_bytes()
- assert hashlib.sha256(d).hexdigest()=='587b17cd2f01663b3492dc11c59dc91787fdcbb1bbe542e7e7684a0d37e0a773'
- segments=[];pos=32
- for _ in range(struct.unpack_from('<I',d,16)[0]):
-  command,size=struct.unpack_from('<II',d,pos)
-  if command==0x19:segments.append(struct.unpack_from('<4Q',d,pos+24))
-  pos+=size
- def read(va,n):
-  for base,vs,off,fs in segments:
-   if base<=va and va+n<=base+fs:return d[off+va-base:off+va-base+n]
-  raise ValueError(hex(va))
- block=s[s.index('static void tglPrepareMontereyMMIOUC'):s.index('static void tglPrepareMMIOUC')]
- sites={'frame':0,'args':0x51,'protection':0x78,'nonEPT':0x116,'create':0x15f9,'update':0x12ce}
- sites.update(protectFrame=0xffffff800036d8e0-0xffffff80003972c0,protectCall=0xffffff800036d9a1-0xffffff80003972c0)
- for name,offset in sites.items():
-  values=re.search(r'const uint8_t '+name+r'\[\] \{([^}]+)\}',block)[1]
-  values=bytes(int(v.strip(),0) for v in values.split(','))
-  assert read(0xffffff80003972c0+offset,len(values))==values,name
- print('PASS: exact kernel SHA and all 8 runtime guards')
+ from pmap_kernel_contract import check
+ check(a.kernel,s,"Monterey",a.hde_source)
 cpp=r'''#include <stdint.h>
 #include <initializer_list>
 #include <string.h>

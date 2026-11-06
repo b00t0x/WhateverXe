@@ -6,7 +6,7 @@ r=Path(__file__).resolve().parents[1];s=(r/'WhateverXe/kern_xe.cpp').read_text()
 a=s.index('// ADLP_LOAD_ONLY_HOOKS:');b=s.index('// ADLP_LOAD_ONLY_HOOKS_END',a);body=s[a:b]
 a=s.index('    // ADLP_LOAD_ONLY_KERNEL:');b=s.index('    // ADLP_LOAD_ONLY_KERNEL_END',a);selection=s[a:b]
 a=s.index('    if(xeProfile.mobileDisplay13() && physicalGPU && checkKernelArgument("-wex-adlp-readout")');b=s.index('    if(((display12SmallGTDetected',a);diagnostic=s[a:b]
-dispatch=s[s.index('bool XE::processKext('):s.index('    if((tglRequested',s.index('bool XE::processKext('))]
+dispatch=s[s.index('bool XE::processKext('):s.index('    if(isIntelProvider(index))',s.index('bool XE::processKext('))]
 assert dispatch.index('if(adlpLoadOnly)')<dispatch.index('processADLPLoadOnly')
 code=r'''
 #include <cassert>

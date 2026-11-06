@@ -107,6 +107,15 @@ void XeHost::flushDonors(KernelPatcher &patcher) {
 }
 void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
  if(!active)return;
+ if(xe.isIntelProvider(index)) {
+  // Donor imports exist before their native start, but Lilu's already-loaded
+  // kmod walk need not notify their provider first. Resolve its exports before
+  // the one-shot framebuffer installer consumes them. Seen is not ABI-ready:
+  // an incompatible provider still reaches the existing rejection guards.
+  xe.processKext(patcher,index,address,size);
+  providerSeen=true;flushDonors(patcher);
+  return;
+ }
  if(surface.loadIndex==index) {
   if(surfaceSeen)return;
   const char *names[]={"__ZNK9IOSurface14getPixelFormatEv","__ZNK9IOSurface13getPlaneCountEv",

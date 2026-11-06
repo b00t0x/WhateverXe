@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """Replay actual host admission: no PCI reads before successful publication."""
 from pathlib import Path
-import subprocess,tempfile
+import re,subprocess,tempfile
 r=Path(__file__).resolve().parents[1]
 adapter=(r/'WhateverXe/kern_xelp_device.hpp').read_text();adapter=adapter[adapter.index('namespace XELP {'):adapter.rindex('#endif')]
 s=(r/'WhateverXe/kern_host.cpp').read_text();body=s[s.index('void XeHost::processKernel'):s.index('bool XeHost::wrapPanelSetDisplay')]
+header=(r/'WhateverXe/kern_host.hpp').read_text()
+host_state=header[header.index(' bool active'):header.index(' void flushDonors')]
+xe_source=(r/'WhateverXe/kern_xe.cpp').read_text()
+provider_classifier='\n'.join(re.search(r'bool XE::'+name+r'\(.*?\n\}',xe_source,re.S)[0]
+                            for name in ['requiresIntelProvider','isIntelProvider'])
 code=r'''
 #include <cstdint>
 #include <cstddef>
@@ -56,6 +61,7 @@ struct KernelPatcher {
 namespace XeDataAccess {bool processKext(KernelPatcher&,size_t,mach_vm_address_t,size_t){return false;}void processKernel(KernelPatcher &){assert(published);events.push_back(7);}}
 struct Graphics {size_t loadIndex=4;bool off=false;void switchOff(){off=true;}} graphics;
 struct {size_t loadIndex=6;}surface;struct {size_t loadIndex=5;}backlight;struct {size_t loadIndex=7;}accelFamily;
+struct {size_t loadIndex=3;}kextAppleIntelTGLCompat;
 using IOSimpleLock=int;int scopeLock=0;uintptr_t fakeThread=1;
 IOSimpleLock *IOSimpleLockAlloc(){return &scopeLock;}
 int IOSimpleLockLockDisableInterrupt(IOSimpleLock*){return 0;}
@@ -66,10 +72,8 @@ constexpr uint32_t kIOWindowServerActiveAttribute=1,kIOWSAA_StateMask=15,kIOWSAA
 constexpr IOReturn kIOReturnSuccess=0,kIOReturnNotReady=-1;
 #define FunctionCast(fn,addr) reinterpret_cast<decltype(&fn)>(addr)
 struct XeHost {
- static XeHost *callbackHost;bool systemWakeRecovery=false;
- bool surfaceSeen=false,graphicsSeen=false,accelSeen=false;
- struct PendingDonor {size_t index;uintptr_t address;size_t size;};PendingDonor pendingDonors[2]{};unsigned pendingDonorCount=0;
- bool dependenciesSeen() const {return surfaceSeen && (!systemWakeRecovery || (graphicsSeen && accelSeen));}
+ static XeHost *callbackHost;
+ HOST_STATE
  void flushDonors(KernelPatcher&);
  uintptr_t sleepFBCount=0,sleepFBAt=0;uint32_t repeatedSleep=0,sleepNotifications=0,wakeNotifications=0;
  IOSimpleLock *sleepScopeLock=nullptr;
@@ -80,11 +84,15 @@ struct XeHost {
  static uint32_t pendingSleepDisplays(void*);
  uintptr_t orgWSAAAttribute=0;
  static IOReturn wrapWSAAAttribute(IOFramebuffer*,uint32_t,uint32_t);
- bool active=false,backlightEnabled=false;enum {FB_DETECT,FB_RESET,FB_COPY,FB_ZEROFILL,FB_NONE,FB_TOTAL};uint32_t resetFramebuffer=FB_NONE;
+ bool backlightEnabled=false;enum {FB_DETECT,FB_RESET,FB_COPY,FB_ZEROFILL,FB_NONE,FB_TOTAL};uint32_t resetFramebuffer=FB_NONE;
  IOPCIDevice *backlightGPU=nullptr;
  struct vc_info{};vc_info consoleVinfo;bool gotConsoleVinfo=false;
  struct XE {
  bool defer=false;bool isIntelDonor(size_t i)const{return defer && (i==1 || i==2);}
+ bool isIntelProvider(size_t index)const;
+ bool requiresIntelProvider()const;
+ bool requireProvider=false,providerReady=false,providerOK=true;unsigned rejectedDonors=0;
+ bool tglRequested=false,display13FramebufferRequested=false,adlpLoadOnly=false;
  void setHostSurfaceABI(unsigned,unsigned){}
  void setHostFramebufferEvent(uintptr_t){}
  void setHostSleepReady(bool){}
@@ -92,14 +100,18 @@ struct XeHost {
  std::vector<IOService*> owned;bool ownedDisplay13Framebuffer(IOService *f)const{return std::find(owned.begin(),owned.end(),f)!=owned.end();}
  IOFramebuffer *degraded=nullptr; bool failedDSIWakeFor(IOFramebuffer *f) const {return f && f==degraded;}
  void processKernel(KernelPatcher &,DeviceInfo *){events.push_back(8);}
- void processKext(KernelPatcher&,size_t index,mach_vm_address_t,size_t){events.push_back(100+index);}
+ void processKext(KernelPatcher&,size_t index,mach_vm_address_t,size_t){
+  if(index==3){providerReady=providerOK;return;}
+  if(requireProvider && isIntelDonor(index) && !providerReady)++rejectedDonors;
+  events.push_back(100+index);
+ }
  } xe;
  void processKernel(KernelPatcher &);
  void processKext(KernelPatcher &,size_t,mach_vm_address_t,size_t);
  static void wrapPanelSetDisplay(){}static void wrapFramebufferInit(){}
  uintptr_t orgPanelSetDisplay=0,orgFramebufferInit=0;uint8_t *gIOFBVerboseBootPtr=nullptr;
 };
-'''.replace('// DEVICE_ADAPTER',adapter)+body+r'''
+'''.replace('// DEVICE_ADAPTER',adapter).replace('HOST_STATE',host_state)+provider_classifier.replace('XE::','XeHost::XE::')+body+r'''
 XeHost *XeHost::callbackHost;
 static IOReturn vendor(IOFramebuffer*,uint32_t,uint32_t){return 42;}
 int main(){KernelPatcher patcher;IOPCIDevice gpu,mei;
@@ -164,8 +176,12 @@ assert(*reinterpret_cast<uint32_t*>(machine+0x10c)==before);
 exercised.sleepScopes=nullptr;
 // Already-loaded notifications may arrive in any host dependency order.
 // Neither missing contracts nor a late callback may silently skip donor setup.
-unsigned order[]={1,2,4,6,7};do {
+unsigned order[]={1,2,3,4,6,7};do {for(bool display13:{false,true})for(bool validProvider:{false,true}) {
  XeHost host;host.active=host.systemWakeRecovery=host.xe.defer=true;events.clear();
+ host.systemWakeRecovery=display13;
+ host.xe.tglRequested=!display13;host.xe.display13FramebufferRequested=display13;
+ host.xe.providerOK=validProvider;
+ host.xe.requireProvider=true;
  std::vector<int> received;
  for(auto id:order){
   if(id==1 || id==2)received.push_back(100+id);
@@ -174,7 +190,18 @@ unsigned order[]={1,2,4,6,7};do {
   else assert(events==received);
  }
  assert(events==received && events.size()==2 && host.pendingDonorCount==0);
-}while(std::next_permutation(order,order+5));
+ assert(host.xe.rejectedDonors==(validProvider?0U:2U));
+ // A failed provider is observed and rejected by consumers. It must not
+ // leave both donors waiting forever or fabricate valid ABI exports.
+ assert(host.providerSeen && host.xe.providerReady==validProvider);
+ }
+}while(std::next_permutation(order,order+6));
+for(bool loadOnly:{false,true})for(bool requested:{false,true}) {
+ XeHost host;host.xe.adlpLoadOnly=loadOnly;host.xe.display13FramebufferRequested=requested;
+ assert(host.xe.requiresIntelProvider()==(requested && !loadOnly));
+ assert(host.xe.isIntelProvider(3)==(requested && !loadOnly));
+ assert(!host.xe.isIntelProvider(99));
+}
 const char *names[]={nullptr,"IMEI","HECI","MEI"};
 for(unsigned firmware=0;firmware<2;++firmware)for(unsigned me=0;me<5;++me)for(unsigned test=0;test<6;++test){
  mei.name=names[me%4];mei.renames=0;gpu.name="GFX0";

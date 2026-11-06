@@ -5,31 +5,14 @@ This checks instruction/register/flag semantics only, not native locking, TLBs,
 or GPU coherency. Optional --kernel checks all source guards against exact bytes.
 """
 from pathlib import Path
-import argparse,hashlib,re,struct,subprocess,tempfile
+import argparse,re,subprocess,tempfile
 R=Path(__file__).resolve().parents[1]
 s=(R/'WhateverXe/kern_xe.cpp').read_text()
-a=argparse.ArgumentParser();a.add_argument('--kernel',type=Path);a=a.parse_args()
+a=argparse.ArgumentParser();a.add_argument('--kernel',type=Path);a.add_argument('--hde-source',type=Path);a=a.parse_args()
 bridges='\n'.join(re.search(r'extern "C" __attribute__\(\(naked,used\)\) void tglVenturaPmap'+kind+r'Bridge\(\) \{.*?\n\}',s,re.S)[0] for kind in ['New','Update'])
 if a.kernel:
- d=a.kernel.read_bytes()
- assert hashlib.sha256(d).hexdigest()=='5bc7a7f1c29dee8faf5f2427cbc6401fa82772df822c2dc427f2a5aec0fe7b96'
- segments=[];pos=32
- for _ in range(struct.unpack_from('<I',d,16)[0]):
-  command,size=struct.unpack_from('<II',d,pos)
-  if command==0x19:segments.append(struct.unpack_from('<4Q',d,pos+24))
-  pos+=size
- def read(va,n):
-  for base,vs,off,fs in segments:
-   if base<=va and va+n<=base+fs:return d[off+va-base:off+va-base+n]
-  raise ValueError(hex(va))
- block=s[s.index('static void tglPrepareVenturaMMIOUC'):s.index('static void tglPrepareMMIOUC')]
- sites={'frame':0,'flags':0x14,'args':0x47,'protection':0x64,'nonEPT':0xc1,'create':0x13f4,'update':0x1097}
- sites.update(protectFrame=0xffffff800048e3c0-0xffffff80004b3640,protectCall=0xffffff800048e481-0xffffff80004b3640)
- for name,offset in sites.items():
-  values=re.search(r'const uint8_t '+name+r'\[\] \{([^}]+)\}',block)[1]
-  values=bytes(int(v.strip(),0) for v in values.split(','))
-  assert read(0xffffff80004b3640+offset,len(values))==values,name
- print('PASS: exact kernel SHA and all 9 runtime guards')
+ from pmap_kernel_contract import check
+ check(a.kernel,s,"Ventura",a.hde_source)
 cpp=r'''#include <stdint.h>
 #include <initializer_list>
 #include <string.h>

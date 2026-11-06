@@ -4559,6 +4559,14 @@ bool XE::isIntelDonor(size_t index) const {
         (currentGraphics && currentGraphics->loadIndex==index);
 }
 
+bool XE::requiresIntelProvider() const {
+    return !adlpLoadOnly && (tglRequested || display13FramebufferRequested);
+}
+
+bool XE::isIntelProvider(size_t index) const {
+    return requiresIntelProvider() && kextAppleIntelTGLCompat.loadIndex==index;
+}
+
 bool XE::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size) {
     // No full donor patch set or native display/GT dispatcher in this stage.
     if(adlpLoadOnly) {
@@ -4566,7 +4574,7 @@ bool XE::processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t add
             return processADLPLoadOnly(patcher,index,address,size);
         return false;
     }
-    if((tglRequested || display13FramebufferRequested) && kextAppleIntelTGLCompat.loadIndex==index) {
+    if(isIntelProvider(index)) {
         const auto probe=patcher.solveSymbol<mach_vm_address_t>(index,"__ZN17AppleIntelPortHAL13probePortModeEv",address,size);
         patcher.clearError();
         const auto configure=patcher.solveSymbol<mach_vm_address_t>(index,"_xelpConfigureDisplay",address,size);
@@ -12197,7 +12205,12 @@ bool XE::processTGLAccelerator(KernelPatcher &patcher, size_t index, mach_vm_add
 			}
 			IORegistryEntry::getRegistryRoot()->setProperty("TGLRecoverySinglePassRequested",recoveryRequested);
 			IORegistryEntry::getRegistryRoot()->setProperty("TGLRecoverySinglePassReady",recoveryRequested && recoveryOK);
-			tglAcceleratorReady = surfaceABIReady && adlnObserved && skuReady && urbReady && ccsReady && hizReady && ccsPSReady && ggttOK && observed && ok && gucOK && dmaWriteOK && hostOK && scratchOK && blitInitOK && tglMMIOUCReady && copyOK && auxAlignOK && iosCCSOK && ffModeOK && cpsOK && flushOK && tlbPreparserOK && semaphoreTLBOK && hangOK && recoveryOK && completionCacheOK && contextCacheOK;
+			// These resource checks also precede probe/start. Include them in
+			// admission reporting so an installed patch set cannot hide an
+			// accelerator rejected before either native lifecycle callback.
+			const bool resourcesReady=(!tglGT2Detected || tglGT2Ready) &&
+				(!display12SmallGTDetected || display12SmallGTReady);
+			tglAcceleratorReady = resourcesReady && surfaceABIReady && adlnObserved && skuReady && urbReady && ccsReady && hizReady && ccsPSReady && ggttOK && observed && ok && gucOK && dmaWriteOK && hostOK && scratchOK && blitInitOK && tglMMIOUCReady && copyOK && auxAlignOK && iosCCSOK && ffModeOK && cpsOK && flushOK && tlbPreparserOK && semaphoreTLBOK && hangOK && recoveryOK && completionCacheOK && contextCacheOK;
 			// r201: resource/copy diagnostics are absent, not admission requirements.
 			IORegistryEntry::getRegistryRoot()->setProperty("TGLResourceDiagnosticsRemoved",true);
 			IORegistryEntry::getRegistryRoot()->setProperty("TGLAcceleratorAdmissionReady", tglAcceleratorReady);

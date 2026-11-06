@@ -9,10 +9,11 @@ private:
  static XeHost *callbackHost;
  XE xe;
  bool active {},systemWakeRecovery {};
- bool surfaceSeen {},graphicsSeen {},accelSeen {};
+ bool surfaceSeen {},graphicsSeen {},accelSeen {},providerSeen {};
  struct PendingDonor {size_t index;mach_vm_address_t address;size_t size;};
  PendingDonor pendingDonors[2] {};unsigned pendingDonorCount {};
- bool dependenciesSeen() const {return surfaceSeen && (!systemWakeRecovery || (graphicsSeen && accelSeen));}
+ bool dependenciesSeen() const {return surfaceSeen && (!xe.requiresIntelProvider() || providerSeen) &&
+  (!systemWakeRecovery || (graphicsSeen && accelSeen));}
  void flushDonors(KernelPatcher &);
  mach_vm_address_t sleepFBCount {};
  uint32_t repeatedSleep {},sleepNotifications {},wakeNotifications {};
