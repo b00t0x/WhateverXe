@@ -25,6 +25,15 @@ struct IORegistryEntry {
  static IORegistryEntry *getRegistryRoot(){static IORegistryEntry s;return &s;}
  template<class... A> void setProperty(A...) {}
 };
+using mach_vm_address_t=uintptr_t;
+struct KernelPatcher {
+ uintptr_t offset=0x748d4;
+ template<class T>T solveSymbol(size_t,const char *name,uintptr_t address,size_t) {
+  assert(!strcmp(name,"__ZN31AppleIntelFramebufferController20invokeHotplugHandlerEjN14AppleIntelPort8PortModeE"));
+  return address+offset;
+ }
+ void clearError(){}
+};
 void tglConnectionRecord(void*,unsigned,bool,uint32_t,uint32_t,void*){}
 void tglAUXRecord(void*,unsigned,bool,uint32_t,uint32_t,uint32_t){}
 bool coldReady=true;
@@ -50,10 +59,12 @@ struct XE {
  static void wrapTGLPortWriteReg(void*,uint32_t,uint32_t);
  static uint32_t wrapTGLSetPortMode(void*,uint32_t);
  uintptr_t orgTGLSetPortMode {};
- bool automatic=false,registered=false;
- uint32_t tglTCAutoRegistered=0,tglTCAutoCandidates=0x10,tglAUXParentMask=0x18;
+ uint32_t tglTCAutoRegistered=0,tglTCAutoCandidates=0,tglAUXParentMask=0x18;
  // LEGACY_HPD_POLICY
- bool tglTCModeAllowed(uint32_t ddi,uint32_t mode)const{return !automatic || ddi!=4 || mode==0 || (mode==4&&(registered || (tglTCAutoRegistered&0x10)));}
+ // LEGACY_MODE_POLICY
+ void qualifyLegacyHPD(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
+  // LEGACY_HPD_INSTALLER
+ }
  IORecursiveLock *tglModeTransitionLock {};uint32_t tglModeSerializedCalls {};
  bool tglModeResultReady {true}; uint32_t tglModeResultCorrections {};
 };
@@ -106,6 +117,19 @@ int main(int argc,char **argv){
  int32_t disp;std::memcpy(&disp,m+0x5fe3a,4);const auto vt=0x5fe3e + disp;
  *reinterpret_cast<uintptr_t*>(m+vt+0x148)=(uintptr_t)baseCall;
  base=(Fn)(m+0x1b4c8);native=(Fn)(m+0x5fcb8);instance.orgTGLSetPortMode=(uintptr_t)native;
+ // Publish the real native return PC, not a fixture-created ready flag.
+ // Wrong symbol, truncated image and changed instruction bytes stay closed.
+ for(unsigned failure=0;failure<3;++failure) {
+  XE candidate;KernelPatcher patcher;
+  if(failure==0)++patcher.offset;
+  if(failure==2)m[0x74a4b]^=1;
+  candidate.qualifyLegacyHPD(patcher,0,(uintptr_t)m,failure==1?0x74a59:b.size());
+  assert(!candidate.tglNativeLegacyHPDCaller);
+  if(failure==2)m[0x74a4b]^=1;
+ }
+ KernelPatcher patcher;instance.qualifyLegacyHPD(patcher,0,(uintptr_t)m,b.size());
+ const auto qualifiedHPD=(uintptr_t)m+0x74a59;
+ assert(instance.tglNativeLegacyHPDCaller==qualifiedHPD);
  reset(3,1);instance.tglDPAltCandidates=8;coldReady=false;
  assert(XE::wrapTGLSetPortMode(port,3)==kIOReturnNotReady && !reads && !writes && !powerGets);
  coldReady=true;instance.tglDPAltCandidates=0;
@@ -115,7 +139,7 @@ int main(int argc,char **argv){
  auto bound=reinterpret_cast<uint32_t *>(instance.tglPlatformCopy+0x20+24*ddi);
  const uint32_t fixed[]={ddi,ddi?ddi+6:1,1,0,0x400,0x201};memcpy(bound,fixed,sizeof(fixed));
  *reinterpret_cast<uint32_t **>(port+0x548)=bound;
- instance.tglNativeLegacyHPDCaller=testCaller=0x74a59;
+ instance.tglNativeLegacyHPDCaller=testCaller=qualifiedHPD;
  assert(XE::wrapTGLSetPortMode(port,4)==0 && mode()==1);
  assert(!reads && !writes && !powerGets && !powerPuts && !sleeps);
  }
@@ -140,22 +164,22 @@ int main(int argc,char **argv){
  controller[0xc58]=0;
  // The automatic path must reject unsupported mode entry before the native
  // writer acquires AUX or modifies ownership; cleanup mode0 is always allowed.
- instance.automatic=true;reset(4,2);
+ instance.tglTCAutoCandidates=0x10;instance.tglTCAutoRegistered=0;reset(4,2);
  for(unsigned m:{2u,3u,4u})assert(XE::wrapTGLSetPortMode(port,m)==kIOReturnNotReady);
  assert(!powerGets&&!powerPuts&&!writes&&!reads);
- instance.registered=true;assert(XE::wrapTGLSetPortMode(port,4)==0&&mode()==4);
+ instance.tglTCAutoRegistered=0x10;assert(XE::wrapTGLSetPortMode(port,4)==0&&mode()==4);
  assert(XE::wrapTGLSetPortMode(port,3)==kIOReturnNotReady&&mode()==4);
  assert(XE::wrapTGLSetPortMode(port,0)==0&&powerGets==powerPuts);
  // First runtime HPD reaches the native setter without a startup probe.
- instance.registered=false;instance.tglNativeLegacyHPDCaller=0x100;
- reset(4,2);testCaller=0x101;
+ instance.tglTCAutoRegistered=0;instance.tglNativeLegacyHPDCaller=qualifiedHPD;
+ reset(4,2);testCaller=qualifiedHPD+1;
  assert(XE::wrapTGLSetPortMode(port,4)==kIOReturnNotReady&&!powerGets);
- testCaller=0x100;
+ testCaller=qualifiedHPD;
  assert(XE::wrapTGLSetPortMode(port,4)==0&&mode()==4&&instance.tglTCAutoRegistered==0x10);
  assert(powerGets==1&&powerPuts==0);
  assert(XE::wrapTGLSetPortMode(port,0)==0&&powerGets==powerPuts);
  assert(instance.tglTCAutoRegistered==0x10);testCaller=0;
- instance.automatic=false;
+ instance.tglTCAutoCandidates=0;
  // Native HAL does not treat repeated mode4 as a no-op. This is why boot
  // handoff and subsequent setters must share the durable mode slot.
  reset(4,2);assert(native(port,4)==0 && native(port,4)==0 && mode()==4);

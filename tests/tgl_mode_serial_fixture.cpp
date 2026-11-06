@@ -32,9 +32,9 @@ struct XE {
  XELP::Profile xeProfile=XELP::identify(0x9a498086,1);
  bool adlsDisplaySelected=false;AlderLakeS::Wiring adlsWiring;alignas(8) uint8_t tglPlatformCopy[0x1c0]{};
  uint32_t tglDPAltCandidates=0;void *tglObservationController=nullptr;
- uint32_t tglTCAutoRegistered=0,tglTCAutoCandidates=0x10,tglAUXParentMask=0x18;
+ uint32_t tglTCAutoRegistered=0,tglTCAutoCandidates=0,tglAUXParentMask=0x18;
  // LEGACY_HPD_POLICY
- bool tglTCModeAllowed(uint32_t,uint32_t)const{return true;}
+ // LEGACY_MODE_POLICY
  static void tglRecordStartOrder(unsigned,void*,unsigned=9,uint64_t=0,uint64_t=0,uint64_t=0){}
  static void tglRecordNativeModeBinding(void *,uint32_t,uint32_t) {}
  TGLNativeFiaContext tglNativeFiaContext; bool tglNativeFiaReady=false; uint32_t tglModularProbed=0;

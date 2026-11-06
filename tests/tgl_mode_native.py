@@ -34,6 +34,10 @@ f=(r/'tests'/('tgl_mode_serial_fixture.cpp' if a.serialization else 'tgl_mode_na
 header=(r/'WhateverXe/kern_xe.hpp').read_text()
 policy=header[header.index(' uintptr_t tglNativeLegacyHPDCaller'):header.index(' uint32_t tglTCProbeMask')]
 f=f.replace('// LEGACY_HPD_POLICY',policy)
+mode_policy=re.search(r' bool tglTCModeAllowed\(.*?\n \}',header,re.S).group()
+f=f.replace('// LEGACY_MODE_POLICY',mode_policy)
+installer=re.search(r'   const auto hotplug=patcher.solveSymbol<mach_vm_address_t>\(index,\s*"__ZN31AppleIntelFramebufferController20invokeHotplugHandler.*?patcher.clearError\(\);',s,re.S).group()
+f=f.replace('// LEGACY_HPD_INSTALLER',installer)
 with tempfile.TemporaryDirectory(prefix='tgl-mode-') as d:
  d=Path(d);(d/'check.cpp').write_text(f)
  subprocess.run(['clang++','-arch','x86_64','-std=c++14','-O1','-g','-pthread','-I',str(r/'WhateverXe'),str(d/'check.cpp'),'-o',str(d/'check')],check=True)
