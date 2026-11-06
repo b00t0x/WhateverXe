@@ -22,7 +22,7 @@ python_tests += ['tgl_power_fuses', 'display13_boot_aux', 'display13_aux', 'disp
 python_tests += ['display13_cursor_resize','dsi_presentation','dsi_native_mode','dsi_backing_adapter','dsi_update_dispatch','dsi_path_disposal','dsi_clock','dsi_quiesce_adapter','dsi_quiesce','dsi_surface','dsi_ggtt','dsi_lifecycle_dispatch','dsi_boot_adoption','dsi_native_cache','dsi_boot_probe','dsi_resources','dsi_boot_adapter','dsi_port_adapter','dsi_apple_adapter','fatal_log_storage','boot_stack_limits','xelp_combo_clock_guard','display13_tc_preparation','display13_tc_disconnect','display13_dbuf_setup','display13_retirement','display13_trial_retirement','display13_port_wait','display13_agdc','display13_training_frontend','framebuffer_donor_runtime','compat_bundle_version']
 python_tests += ['dsi_backlight_adapter','dsi_restart','dsi_panel','dsi_command_adapter','dsi_irq_live','dsi_surface_adapter','dsi_aperture_adapter']
 python_tests += ['display13_shutdown','display13_wake_notifications']
-python_tests += ['released_physical_admission','accelerator_resources']
+python_tests += ['released_physical_admission','released_topology','accelerator_resources']
 jobs += [(n,[sys.executable,str(R/'tests'/(n+'.py'))],None) for n in python_tests]
 for family,kernel in kernel_inputs.items():
  jobs += [(families[family]+'_pmap_native',[sys.executable,str(R/'tests'/(families[family]+'_pmap.py')),'--kernel',str(kernel),'--hde-source',str(a.hde_source.resolve())],None)]
