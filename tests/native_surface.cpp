@@ -16,12 +16,17 @@ int main() {
    f.insert(f.end(),load.begin(),load.end());if(frame)f.push_back(0x5d);f.push_back(0xc3);
    ptr[i]=f.data();length[i]=f.size();
   }
-  assert(XELPNative::surfaceABI(ptr,length)==expected);
-  for(unsigned i=0;i<4;++i) {
-   auto &f=functions[i];const auto at=padding+(frame?4:0)+2;
-   f[at]^=1;assert(XELPNative::surfaceABI(ptr,length)==A::Unknown);f[at]^=1;
-   --length[i];assert(XELPNative::surfaceABI(ptr,length)==A::Unknown);++length[i];
-   ptr[i]=nullptr;assert(XELPNative::surfaceABI(ptr,length)==A::Unknown);ptr[i]=f.data();
+  for(bool framebuffer:{false,true}) {
+   const auto result=framebuffer && expected!=A::Original ? A::RelocatedFields : expected;
+   assert(XELPNative::surfaceABI(ptr,length,framebuffer)==result);
+   for(unsigned i=0;i<4;++i) {
+    const bool used=framebuffer ? (i==0 || i==2) : i!=2;
+    const auto changed=used?A::Unknown:result;
+    auto &f=functions[i];const auto at=padding+(frame?4:0)+2;
+    f[at]^=1;assert(XELPNative::surfaceABI(ptr,length,framebuffer)==changed);f[at]^=1;
+    --length[i];assert(XELPNative::surfaceABI(ptr,length,framebuffer)==changed);++length[i];
+    ptr[i]=nullptr;assert(XELPNative::surfaceABI(ptr,length,framebuffer)==changed);ptr[i]=f.data();
+   }
   }
  }
 }

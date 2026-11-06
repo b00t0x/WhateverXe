@@ -159,12 +159,16 @@ extern "C" __attribute__((naked,used)) void tglTahoeMatrixBridge() {
   "1: jmpq *_tglSonomaMatrixZero(%rip)\n"
   "2: jmpq *_tglSonomaMatrixOther(%rip)\n");
 }
-static XELPNative::SurfaceABI tglHostSurfaceABI=XELPNative::SurfaceABI::Unknown;
-void XE::setHostSurfaceABI(unsigned layout) { tglHostSurfaceABI=static_cast<XELPNative::SurfaceABI>(layout); }
+static XELPNative::SurfaceABI tglHostSurfaceABI[2] {};
+void XE::setHostSurfaceABI(unsigned framebuffer,unsigned accelerator) {
+ tglHostSurfaceABI[0]=static_cast<XELPNative::SurfaceABI>(framebuffer);
+ tglHostSurfaceABI[1]=static_cast<XELPNative::SurfaceABI>(accelerator);
+}
 static bool tglSonomaSurfaceFramebufferReady=false;
 static bool tglInstallSonomaSurfaceABI(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size,bool framebuffer) {
- if(tglHostSurfaceABI==XELPNative::SurfaceABI::Unknown)return false;
- if(tglHostSurfaceABI==XELPNative::SurfaceABI::Original)return true;
+ const auto layout=tglHostSurfaceABI[framebuffer?0:1];
+ if(layout==XELPNative::SurfaceABI::Unknown)return false;
+ if(layout==XELPNative::SurfaceABI::Original)return true;
  struct Site {size_t offset,length;uint8_t before[6],after[6];};
  const Site fb[] {
   {0x2B5E8,6,{0x8B,0x80,0xA4,0,0,0},{0x8B,0x80,0x80,0,0,0}}, // pixelFormat
@@ -192,7 +196,7 @@ static bool tglInstallSonomaSurfaceABI(KernelPatcher &patcher,size_t index,mach_
  if(!framebuffer) {
   tglSonomaMatrixZero=address+0x8130E;tglSonomaMatrixOne=address+0x81305;tglSonomaMatrixOther=address+0x81361;
   uint8_t jump[15] {0xFF,0x25,0,0,0,0};
-  const auto target=reinterpret_cast<uintptr_t>((tglHostSurfaceABI==XELPNative::SurfaceABI::Attachment6E) ? tglTahoeMatrixBridge : tglSonomaMatrixBridge);
+  const auto target=reinterpret_cast<uintptr_t>((layout==XELPNative::SurfaceABI::Attachment6E) ? tglTahoeMatrixBridge : tglSonomaMatrixBridge);
   memcpy(jump+6,&target,sizeof(target));jump[14]=0x90;
   patcher.routeBlock(address+0x812F6,jump,sizeof(jump));
   ready=patcher.getError()==KernelPatcher::Error::NoError && !memcmp(reinterpret_cast<void *>(address+0x812F6),jump,sizeof(jump));
@@ -1956,9 +1960,9 @@ struct TGLNativePmapCode {
    reinterpret_cast<uint16_t *>(storage+capacity*2),fn,panic,tglNativeInstructionSize);
  }
  ~TGLNativePmapCode(){if(storage)Buffer::deleter(storage);}
- template<size_t N> bool find(const uint8_t (&pattern)[N],size_t &offset) const {
-  return length && XELPNative::uniqueInstruction(storage,length,storage+capacity,
-   pattern,N,offset,KernelPatcher::findPattern);
+ template<size_t N> bool find(const uint8_t (&pattern)[N],size_t &offset,bool requireUnique=true) const {
+  return length && XELPNative::findInstruction(storage,length,storage+capacity,
+   pattern,N,offset,KernelPatcher::findPattern,requireUnique);
  }
 };
 static void tglPrepareMontereyMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
@@ -1974,10 +1978,10 @@ static void tglPrepareMontereyMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  const uint8_t create[] {0x8B,0x4D,0x8C,0x89,0xCB,0x83,0xE3,1,0x48,0x09,0xD3,0xF6,0xC1,2};
  const uint8_t update[] {0x8B,0x4D,0x8C,0x41,0x89,0xCE,0x41,0x83,0xE6,1,0x49,0x09,0xC6,0xF6,0xC1,2};
  TGLNativePmapCode native(patcher,fn);
- size_t frameAt=0;const bool frameReady=native.find(frame,frameAt);
- size_t argsAt=0;const bool argsReady=native.find(args,argsAt);
- size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt);
- size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt);
+ size_t frameAt=0;const bool frameReady=native.find(frame,frameAt,false);
+ size_t argsAt=0;const bool argsReady=native.find(args,argsAt,false);
+ size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt,false);
+ size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt,false);
  size_t createAt=0;const bool createReady=native.find(create,createAt);
  size_t updateAt=0;const bool updateReady=native.find(update,updateAt);
  const bool protectCallReady=tglNativeProtectCall(protect,fn,XELPNative::ProtectABI::Legacy);
@@ -2024,11 +2028,11 @@ static void tglPrepareVenturaMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  const uint8_t create[] {0x8B,0x75,0xAC,0x89,0xF1,0x83,0xE1,0x01,0x48,0x09,0xD1,0x40,0xF6,0xC6,0x02};
  const uint8_t update[] {0x8B,0x55,0xAC,0x89,0xD0,0x83,0xE0,0x01,0x48,0x09,0xC8,0xF6,0xC2,0x02};
  TGLNativePmapCode native(patcher,fn);
- size_t frameAt=0;const bool frameReady=native.find(frame,frameAt);
- size_t flagsAt=0;const bool flagsReady=native.find(flags,flagsAt);
- size_t argsAt=0;const bool argsReady=native.find(args,argsAt);
- size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt);
- size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt);
+ size_t frameAt=0;const bool frameReady=native.find(frame,frameAt,false);
+ size_t flagsAt=0;const bool flagsReady=native.find(flags,flagsAt,false);
+ size_t argsAt=0;const bool argsReady=native.find(args,argsAt,false);
+ size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt,false);
+ size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt,false);
  size_t createAt=0;const bool createReady=native.find(create,createAt);
  size_t updateAt=0;const bool updateReady=native.find(update,updateAt);
  const bool protectCallReady=tglNativeProtectCall(protect,fn,XELPNative::ProtectABI::Legacy);
@@ -2076,11 +2080,11 @@ static void tglPrepareTahoeMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  const uint8_t create[] {0x8B,0x75,0xB4,0x89,0xF1,0x83,0xE1,0x01,0x48,0x09,0xD1,0x40,0xF6,0xC6,0x02};
  const uint8_t update[] {0x8B,0x55,0xB4,0x89,0xD0,0x83,0xE0,0x01,0x48,0x09,0xC8,0xF6,0xC2,0x02};
  TGLNativePmapCode native(patcher,fn);
- size_t frameAt=0;const bool frameReady=native.find(frame,frameAt);
- size_t flagsAt=0;const bool flagsReady=native.find(flags,flagsAt);
- size_t argsAt=0;const bool argsReady=native.find(args,argsAt);
- size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt);
- size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt);
+ size_t frameAt=0;const bool frameReady=native.find(frame,frameAt,false);
+ size_t flagsAt=0;const bool flagsReady=native.find(flags,flagsAt,false);
+ size_t argsAt=0;const bool argsReady=native.find(args,argsAt,false);
+ size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt,false);
+ size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt,false);
  size_t createAt=0;const bool createReady=native.find(create,createAt);
  size_t updateAt=0;const bool updateReady=native.find(update,updateAt);
  const bool protectCallReady=tglNativeProtectCall(protect,fn,XELPNative::ProtectABI::Tahoe);
@@ -2134,11 +2138,11 @@ static void tglPrepareSequoiaMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  const uint8_t create[] {0x8B,0x75,0xB4,0x89,0xF1,0x83,0xE1,0x01,0x48,0x09,0xD1,0x40,0xF6,0xC6,0x02};
  const uint8_t update[] {0x8B,0x55,0xB4,0x89,0xD0,0x83,0xE0,0x01,0x48,0x09,0xC8,0xF6,0xC2,0x02};
  TGLNativePmapCode native(patcher,fn);
- size_t frameAt=0;const bool frameReady=native.find(frame,frameAt);
- size_t flagsAt=0;const bool flagsReady=native.find(flags,flagsAt);
- size_t argsAt=0;const bool argsReady=native.find(args,argsAt);
- size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt);
- size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt);
+ size_t frameAt=0;const bool frameReady=native.find(frame,frameAt,false);
+ size_t flagsAt=0;const bool flagsReady=native.find(flags,flagsAt,false);
+ size_t argsAt=0;const bool argsReady=native.find(args,argsAt,false);
+ size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt,false);
+ size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt,false);
  size_t createAt=0;const bool createReady=native.find(create,createAt);
  size_t updateAt=0;const bool updateReady=native.find(update,updateAt);
  const bool protectCallReady=tglNativeProtectCall(protect,fn,XELPNative::ProtectABI::Extended);
@@ -2192,11 +2196,11 @@ static void tglPrepareSonomaMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  const uint8_t create[] {0x8B,0x75,0xB0,0x89,0xF1,0x83,0xE1,0x01,0x48,0x09,0xD1,0x40,0xF6,0xC6,0x02};
  const uint8_t update[] {0x8B,0x55,0xB0,0x89,0xD0,0x83,0xE0,0x01,0x48,0x09,0xC8,0xF6,0xC2,0x02};
  TGLNativePmapCode native(patcher,fn);
- size_t frameAt=0;const bool frameReady=native.find(frame,frameAt);
- size_t flagsAt=0;const bool flagsReady=native.find(flags,flagsAt);
- size_t argsAt=0;const bool argsReady=native.find(args,argsAt);
- size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt);
- size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt);
+ size_t frameAt=0;const bool frameReady=native.find(frame,frameAt,false);
+ size_t flagsAt=0;const bool flagsReady=native.find(flags,flagsAt,false);
+ size_t argsAt=0;const bool argsReady=native.find(args,argsAt,false);
+ size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt,false);
+ size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt,false);
  size_t createAt=0;const bool createReady=native.find(create,createAt);
  size_t updateAt=0;const bool updateReady=native.find(update,updateAt);
  const bool protectCallReady=tglNativeProtectCall(protect,fn,XELPNative::ProtectABI::Extended);
@@ -2267,10 +2271,10 @@ static void tglPrepareMMIOUC(KernelPatcher &patcher,IOPCIDevice *pci) {
  const uint8_t update[] {0x8B,0x75,0x9C,0x89,0xF0,0x83,0xE0,1,0x48,0x09,0xD0,0x40,0xF6,0xC6,2};
  TGLNativePmapCode native(patcher,fn);
  size_t frameAt=0;const bool frameReady=native.find(frame,frameAt);
- size_t flagsAt=0;const bool flagsReady=native.find(flags,flagsAt);
- size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt);
- size_t rootSourceAt=0;const bool rootSourceReady=native.find(rootSource,rootSourceAt);
- size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt);
+ size_t flagsAt=0;const bool flagsReady=native.find(flags,flagsAt,false);
+ size_t protectionAt=0;const bool protectionReady=native.find(protection,protectionAt,false);
+ size_t rootSourceAt=0;const bool rootSourceReady=native.find(rootSource,rootSourceAt,false);
+ size_t nonEPTAt=0;const bool nonEPTReady=native.find(nonEPT,nonEPTAt,false);
  size_t createAt=0;const bool createReady=native.find(create,createAt);
  size_t updateAt=0;const bool updateReady=native.find(update,updateAt);
  const bool protectCallReady=tglNativeProtectCall(protect,fn,XELPNative::ProtectABI::Legacy);

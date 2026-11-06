@@ -74,7 +74,7 @@ struct XeHost {
  struct vc_info{};vc_info consoleVinfo;bool gotConsoleVinfo=false;
  struct XE {
  bool defer=false;bool isIntelDonor(size_t i)const{return defer && (i==1 || i==2);}
- void setHostSurfaceABI(unsigned){}
+ void setHostSurfaceABI(unsigned,unsigned){}
  void setHostFramebufferEvent(uintptr_t){}
  void setHostSleepReady(bool){}
  void setHostWakeRecoveryReady(bool){}
@@ -117,13 +117,17 @@ for(unsigned i=0;i<3;++i){
 assert(exercised.repeatedSleep==2);
 // Already-loaded notifications may arrive in any host dependency order.
 // Neither missing contracts nor a late callback may silently skip donor setup.
-unsigned order[]={4,6,7};do {
+unsigned order[]={1,2,4,6,7};do {
  XeHost host;host.active=host.systemWakeRecovery=host.xe.defer=true;events.clear();
- host.processKext(patcher,1,0,0);host.processKext(patcher,2,0,0);
- assert(events.empty() && host.pendingDonorCount==2);
- for(unsigned i=0;i<3;++i){host.processKext(patcher,order[i],0,0);if(i<2)assert(events.empty());}
- assert((events==std::vector<int>{101,102}) && host.pendingDonorCount==0);
-}while(std::next_permutation(order,order+3));
+ std::vector<int> received;
+ for(auto id:order){
+  if(id==1 || id==2)received.push_back(100+id);
+  host.processKext(patcher,id,0,0);
+  if(!host.dependenciesSeen())assert(events.empty());
+  else assert(events==received);
+ }
+ assert(events==received && events.size()==2 && host.pendingDonorCount==0);
+}while(std::next_permutation(order,order+5));
 const char *names[]={nullptr,"IMEI","HECI","MEI"};
 for(unsigned firmware=0;firmware<2;++firmware)for(unsigned me=0;me<5;++me)for(unsigned test=0;test<6;++test){
  mei.name=names[me%4];mei.renames=0;gpu.name="GFX0";

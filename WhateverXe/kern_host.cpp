@@ -116,13 +116,14 @@ void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t a
    const auto fn=patcher.solveSymbol<mach_vm_address_t>(index,names[i],address,size);patcher.clearError();
    if(fn>=address && fn-address<size) {
     functions[i]=reinterpret_cast<const uint8_t *>(fn);
-    const auto remaining=size-(fn-address);lengths[i]=remaining<32?remaining:32;
+    const auto remaining=size-(fn-address);lengths[i]=remaining<64?remaining:64;
    }
   }
-  const auto layout=XELPNative::surfaceABI(functions,lengths);
-  xe.setHostSurfaceABI(static_cast<unsigned>(layout));
+  const auto fb=XELPNative::surfaceABI(functions,lengths,true);
+  const auto accel=XELPNative::surfaceABI(functions,lengths,false);
+  xe.setHostSurfaceABI(static_cast<unsigned>(fb),static_cast<unsigned>(accel));
   surfaceSeen=true;
-  uint32_t state=static_cast<uint32_t>(layout);
+  uint32_t state[]={static_cast<uint32_t>(fb),static_cast<uint32_t>(accel)};
   IORegistryEntry::getRegistryRoot()->setProperty("WEXHostSurfaceABI",&state,sizeof(state));
   flushDonors(patcher);
   return;

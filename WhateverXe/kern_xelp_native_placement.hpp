@@ -61,14 +61,14 @@ template<class Decode> size_t reachable(const uint8_t *bytes,size_t length,uint8
  }
  return end;
 }
-template<class Find> bool uniqueInstruction(const uint8_t *bytes,size_t length,const uint8_t *marks,
- const uint8_t *pattern,size_t count,size_t &offset,Find find) {
+template<class Find> bool findInstruction(const uint8_t *bytes,size_t length,const uint8_t *marks,
+ const uint8_t *pattern,size_t count,size_t &offset,Find find,bool requireUnique=true) {
  size_t cursor=0,hits=0;
  while(find(pattern,nullptr,count,bytes,length,&cursor)) {
   if(marks[cursor]==1 && (cursor+count==length || marks[cursor+count]==1)) {offset=cursor;++hits;}
   ++cursor;
  }
- return hits==1;
+ return requireUnique ? hits==1 : hits>0;
 }
 // Only canonical, side-effect-free alignment NOPs may separate the expected
 // instructions. Never scan past an unrecognised instruction to find a suffix.
@@ -85,7 +85,7 @@ struct Cursor {
  }
  bool skip(size_t count) {if(count>length-pos)return false;pos+=count;return true;}
 };
-enum class SurfaceABI { Unknown, Original, Attachment6A, Attachment6E };
+enum class SurfaceABI { Unknown, Original, Attachment6A, Attachment6E, RelocatedFields };
 // These exported getters are the meanings of the fields inlined by the fixed
 // donor. OS family names do not establish the host object layout.
 inline bool surfaceGetter(const uint8_t *bytes,size_t length,const char *load,size_t size) {
@@ -96,12 +96,18 @@ inline bool surfaceGetter(const uint8_t *bytes,size_t length,const char *load,si
  if(frame)c=framed;
  return c.take(load,size) && (!frame || c.take("\x5d",1)) && c.take("\xc3",1);
 }
-inline SurfaceABI surfaceABI(const uint8_t *const functions[4],const size_t lengths[4]) {
+inline SurfaceABI surfaceABI(const uint8_t *const functions[4],const size_t lengths[4],bool framebuffer) {
  const auto getter=[&](unsigned i,const char *load,size_t n){return surfaceGetter(functions[i],lengths[i],load,n);};
+ // Qualify only the fields this consumer reads. A matrix/plane change must
+ // not disable the framebuffer, nor an ID change disable the accelerator.
+ if(framebuffer) {
+  if(getter(0,"\x8b\x87\xa4\0\0\0",6) && getter(2,"\x8b\x47\x0c",3))return SurfaceABI::Original;
+  if(getter(0,"\x8b\x87\x80\0\0\0",6) && getter(2,"\x8b\x47\x10",3))return SurfaceABI::RelocatedFields;
+  return SurfaceABI::Unknown;
+ }
  if(getter(0,"\x8b\x87\xa4\0\0\0",6) && getter(1,"\x8b\x87\xb0\0\0\0",6) &&
-    getter(2,"\x8b\x47\x0c",3) && getter(3,"\x8b\x87\xb4\0\0\0",6))return SurfaceABI::Original;
- if(!getter(0,"\x8b\x87\x80\0\0\0",6) || !getter(1,"\x8b\x87\x98\0\0\0",6) ||
-    !getter(2,"\x8b\x47\x10",3))return SurfaceABI::Unknown;
+    getter(3,"\x8b\x87\xb4\0\0\0",6))return SurfaceABI::Original;
+ if(!getter(0,"\x8b\x87\x80\0\0\0",6) || !getter(1,"\x8b\x87\x98\0\0\0",6))return SurfaceABI::Unknown;
  if(getter(3,"\x48\x8b\x87\x78\x01\0\0\x0f\xb6\x40\x6a",11))return SurfaceABI::Attachment6A;
  if(getter(3,"\x48\x8b\x87\x78\x01\0\0\x0f\xb6\x40\x6e",11))return SurfaceABI::Attachment6E;
  return SurfaceABI::Unknown;

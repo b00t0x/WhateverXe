@@ -77,7 +77,7 @@ public:
     bool parkedDisplay13Framebuffer(IOService *fb) const;
     bool failedDSIWakeFor(IOService *fb) const;
     bool isIntelDonor(size_t index) const;
-    void setHostSurfaceABI(unsigned layout);
+    void setHostSurfaceABI(unsigned framebuffer,unsigned accelerator);
     void setHostSleepReady(bool ready) { hostSleepReady=ready; }
     void setHostWakeRecoveryReady(bool ready) { hostWakeRecoveryReady=ready; }
     void setHostFramebufferEvent(mach_vm_address_t event) { hostFramebufferEvent=event; }

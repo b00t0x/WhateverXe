@@ -35,7 +35,7 @@ def check(kernel, source, family, hde_source):
         '_pmap_enter_options', '_IOProtectCacheMode', '_pmap_verify_noncacheable', '_kernel_pmap_store', '_panic'))
     name = '' if family == 'BigSur' else family
     block = source.split('static void tglPrepare' + name + 'MMIOUC(')[1].split('\n}')[0]
-    patterns = re.findall(r'const bool (\w+)Ready=native.find\(\1,\1At\);', block)
+    patterns = re.findall(r'const bool (\w+)Ready=native.find\(\1,\1At(?:,false)?\);', block)
     assert len(patterns) >= 4
     abi = re.search(r'tglNativeProtectCall\(protect,fn,XELPNative::ProtectABI::(\w+)\)', block)[1]
     assert not re.search(r'fn\+0x|protect\+0x', block), 'fixed native instruction placement'
@@ -77,8 +77,9 @@ uint64_t copy(uint64_t from,uint64_t to,uint64_t n){if(from!=mapped)return 0;aut
     cpp+='for(unsigned shift:{0U,17U}){input=original;input.insert(input.begin(),shift,0x90);input.resize(original.size());mapped='+str(fn)+'ULL-shift;TGLNativePmapCode code(patcher,mapped);assert(code.length);\n'
     for key in patterns:
         values=re.search(r'const uint8_t '+key+r'\[\]\s*\{([^}]+)\}',block)[1]
-        cpp+='{const uint8_t pattern[]={'+values+'};size_t at=0;assert(code.find(pattern,at));\n'
-        cpp+='auto saved=input;input[at+sizeof(pattern)-1]^=1;{TGLNativePmapCode wrong(patcher,mapped);size_t ignored=0;assert(!wrong.find(pattern,ignored));}input=saved;}\n'
+        unique='false' if 'native.find('+key+','+key+'At,false)' in block else 'true'
+        cpp+='{const uint8_t pattern[]={'+values+'};size_t at=0;assert(code.find(pattern,at,'+unique+'));\n'
+        cpp+='auto saved=input;input[at+sizeof(pattern)-1]^=1;{TGLNativePmapCode wrong(patcher,mapped);size_t ignored=0;assert(!wrong.find(pattern,ignored,'+unique+'));}input=saved;}\n'
     cpp+='}\n'
     cpp+='uint8_t protection[]={'+literal(read(protect,512))+'},accessor[]={'+literal(read(target,64))+'};\n'
     cpp+=f'assert(XELPNative::protectCall(protection,sizeof(protection),{protect}ULL,{fn}ULL,XELPNative::ProtectABI::{abi},tglNativeInstructionSize));\n'

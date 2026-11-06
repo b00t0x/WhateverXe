@@ -17,8 +17,12 @@ uint32_t XE::wrapDisplay13SetPowerState(IOService *fb,uint32_t state) {
     } callback{busy};
     // Keep WSAA out of the native queue wait whenever this callback cannot
     // finish hardware restoration or its notification obligation. This covers
-    // early failures too, not only the post-resume cadence diagnostic.
-    if(busy && state==2)__atomic_store_n(&callbackXE->dsiWakeIncomplete,1U,__ATOMIC_RELEASE);
+    // early failures too, not only the post-resume cadence diagnostic. A
+    // startup readiness retry has no sleep/wake obligation and must not
+    // prevent the initial WindowServer acceleration handshake.
+    const bool restoring=callbackXE->dsiRuntimePower.sleeping || callbackXE->dsiRuntimePower.failed ||
+        callbackXE->dsiSystemWakeNotify || callbackXE->dsiPowerOffNotified;
+    if(busy && state==2 && restoring)__atomic_store_n(&callbackXE->dsiWakeIncomplete,1U,__ATOMIC_RELEASE);
     auto result=[&]() -> uint32_t {
         if(callbackXE->adlnOutputWiring.dsi) {
             if(!fb || fb->getMetaClass()->getClassSize()<0x4B90)return kIOReturnNotReady;
@@ -216,7 +220,7 @@ bool XE::processDisplay13NativeAttributes(KernelPatcher &patcher,size_t index,ma
     }
     // Native prepareToExitSleep / prepareToEnterWake call the same imported
     // IOFramebuffer::handleEvent with DidWake(true) and DidPowerOn(nullptr).
-    // Resolve the linked call from the identified donor without an extra kext dependency.
+    // Compare the donor import with the host symbol validated in its Lilu callback.
     if(size>0x26F1C) {
         const uint8_t wake[]={0xBA,1,0,0,0,0x4C,0x89,0xF7,0xBE,4,0,0,0,0xE8};
         const uint8_t on[]={0x4C,0x89,0xEF,0xBE,8,0,0,0,0x31,0xD2,0xE8};
@@ -227,18 +231,11 @@ bool XE::processDisplay13NativeAttributes(KernelPatcher &patcher,size_t index,ma
             memcpy(&od,reinterpret_cast<const void *>(address+0x26814),sizeof(od));
             const auto imported=address+0x26F1C+wd;
             if(wd && od && imported==address+0x26818+od) {
-                auto target=imported;
-                // Only inspect a linkage stub and pointer slot inside this
-                // already-qualified donor image. A direct host call needs no
-                // dereference before comparing its resolved symbol identity.
-                if(target!=hostFramebufferEvent && target>=address && target-address<=size && size-(target-address)>=6) {
-                    const auto fn=reinterpret_cast<const uint8_t *>(target);
-                    if(fn[0]==0xFF && fn[1]==0x25) {
-                        const auto slot=XELPCall::relativeTarget(fn+2,target+6);
-                        if(slot>=address && slot-address<=size && size-(slot-address)>=sizeof(target))
-                            memcpy(&target,reinterpret_cast<const void *>(slot),sizeof(target));
-                    }
-                }
+                const auto target=XELPCall::importedTarget(imported,hostFramebufferEvent,
+                    [](uintptr_t from,void *to,size_t length) {
+                        return (from>>47)==0x1FFFF && tglVM.nofault &&
+                            tglVM.nofault(from,reinterpret_cast<uintptr_t>(to),length)==length;
+                    });
                 display13PagingLayoutKnown=hostFramebufferEvent && target==hostFramebufferEvent;
                 if(display13PagingLayoutKnown)display13FramebufferEvent=imported;
                 IORegistryEntry::getRegistryRoot()->setProperty("WEXDisplay13PagingContractReady",display13PagingLayoutKnown);
