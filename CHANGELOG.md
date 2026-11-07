@@ -7,7 +7,7 @@ Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphi
 ### Added
 
 - Add Raptor Lake-U graphics support.
-- Add experimental system sleep/wake for selected MIPI DSI laptop configurations, requiring suitable model-specific ACPI settings. Tested on Big Sur and Tahoe.
+- Add experimental system sleep/wake support, tested on MIPI DSI laptop configurations with Big Sur and Tahoe and model-specific ACPI settings.
 - Add an optional 60 Hz mode for matching MIPI DSI panels in MiniBook X N100 and U300.
 
 ### Fixed

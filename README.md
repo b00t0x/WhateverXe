@@ -100,7 +100,7 @@ The common regression checks cover Metal, OpenGL, OpenCL, hardware H.264 encode/
 
 MIPI DSI support is **experimental**, limited to the tested GPD MicroPC 2 and CHUWI MiniBook X N100/U300 panels. Do not expect it to work on other devices.
 
-System sleep/wake is **experimental** on MiniBook X N100/U300 with suitable model-specific ACPI configuration. Tested on Big Sur and Tahoe with the internal display alone or up to two external displays. Other models, OS versions and prolonged DarkWake cycles remain unverified.
+System sleep/wake support is **experimental**. Tested configurations are MiniBook X N100/U300 (MIPI DSI) on Big Sur and Tahoe with model-specific ACPI settings, using the internal display alone or up to two external displays. Other models, OS versions and prolonged DarkWake cycles remain unverified.
 
 ### Known issues and limits
 

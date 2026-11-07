@@ -100,7 +100,7 @@ BIOS/UEFIで設定できる場合は、**DVMT Pre-Allocatedを96MB**にします
 
 MIPI DSI対応は**試験的**で、検証したGPD MicroPC 2・CHUWI MiniBook X N100/U300の内蔵パネルに限ります。他の機器での動作を期待しないでください。
 
-システム全体のスリープ／復帰は、機種に合ったACPI設定を使用するMiniBook X N100/U300で**試験的**に対応します。Big Sur・Tahoeで内蔵単独と外部2画面までの構成を確認しました。他機種・他OSと長時間のDarkWake反復は未検証です。
+システム全体のスリープ／復帰対応は**試験的**です。実機確認済みの構成は、機種別ACPI設定を使用したMiniBook X N100/U300（MIPI DSI）のBig Sur・Tahoeで、内蔵単独と外部2画面までです。他機種・他OSと長時間のDarkWake反復は未検証です。
 
 ### 既知の問題と制限
 
