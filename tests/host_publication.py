@@ -233,6 +233,21 @@ for(bool loadOnly:{false,true})for(bool requested:{false,true}) {
  assert(host.xe.isIntelProvider(3)==(requested && !loadOnly));
  assert(!host.xe.isIntelProvider(99));
 }
+
+// The native loader may probe/start a donor as soon as this callback returns.
+// No later host notification is available to repair a missed installation.
+// Dependencies near the end of a valid kmod list are still loaded dependencies.
+for(unsigned prefix:{0U,510U,511U,512U,600U}){
+ std::vector<kmod_info_t> peers(prefix);std::vector<std::vector<char>> ids(prefix,std::vector<char>(64));
+ for(unsigned i=0;i<prefix;++i){snprintf(ids[i].data(),64,"org.example.dependency.%u",i);peers[i]={ids[i].data(),uintptr_t(0x10000+i*0x1000),0x1000,i+1<prefix?&peers[i+1]:modules};}
+ loadedHead=prefix?peers.data():modules;
+ XeHost host;host.active=host.xe.defer=host.xe.tglRequested=true;host.xe.requireProvider=true;events.clear();
+ host.processKext(patcher,1,0,0);
+ assert(host.surfaceSeen && host.providerSeen && host.xe.providerReady);
+ // This is the boundary oracle, not a copy of dependenciesSeen or queue state.
+ assert((events==std::vector<int>{101}));
+}
+loadedHead=nullptr;
 const char *names[]={nullptr,"IMEI","HECI","MEI"};
 for(unsigned firmware=0;firmware<2;++firmware)for(unsigned me=0;me<5;++me)for(unsigned test=0;test<6;++test){
  mei.name=names[me%4];mei.renames=0;gpu.name="GFX0";

@@ -104,8 +104,9 @@ void XeHost::processLoadedDependency(KernelPatcher &patcher,KernelPatcher::KextI
  // never infer an ABI from an OS/build name or scan arbitrary memory.
  auto list=reinterpret_cast<kmod_info_t **>(patcher.solveSymbol(KernelPatcher::KernelID,"_kmod"));
  patcher.clearError();if(!list)return;
- unsigned count=0;
- for(auto module=*list;module && count++<512;module=module->next) {
+ // XNU owns this finite list. Match Lilu's traversal; a module-count cap
+ // must not reject a valid dependency merely because it is late in the list.
+ for(auto module=*list;module;module=module->next) {
   if(strncmp(module->name,info.id,KMOD_MAX_NAME))continue;
   if(!module->address || module->size<32)return;
   const auto size=patcher.updateRunningInfo(info.loadIndex,module->address,module->size);
