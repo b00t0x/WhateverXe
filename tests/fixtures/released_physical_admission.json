@@ -1,0 +1,327 @@
+{
+  "schema": 1,
+  "scope": "Physical PCI/backend admission only; not a hardware validation claim.",
+  "releases": [
+    {
+      "tag": "0.2.2",
+      "commit": "c3fec934e7ac716d7ae52a70914403d63c802c01",
+      "physical_ids": [
+        {
+          "devices": [
+            "46d0",
+            "46d1",
+            "46d2",
+            "46d3",
+            "46d4"
+          ],
+          "revision_min": 0,
+          "revision_max": 0
+        },
+        {
+          "devices": [
+            "9a40",
+            "9a49",
+            "9a78"
+          ],
+          "revision_min": 0,
+          "revision_max": 255
+        }
+      ]
+    },
+    {
+      "tag": "0.2.3",
+      "commit": "61a449255d385aeb468f64e5d5042e126f387b90",
+      "physical_ids": [
+        {
+          "devices": [
+            "46d0",
+            "46d1",
+            "46d2",
+            "46d3",
+            "46d4"
+          ],
+          "revision_min": 0,
+          "revision_max": 0
+        },
+        {
+          "devices": [
+            "9a40",
+            "9a49",
+            "9a78"
+          ],
+          "revision_min": 0,
+          "revision_max": 255
+        }
+      ]
+    },
+    {
+      "tag": "0.3.0",
+      "commit": "c4881e36f28789a8103eeadcc7c3462e48acb37e",
+      "physical_ids": [
+        {
+          "devices": [
+            "46d0",
+            "46d1",
+            "46d2",
+            "46d3",
+            "46d4"
+          ],
+          "revision_min": 0,
+          "revision_max": 0
+        },
+        {
+          "devices": [
+            "9a40",
+            "9a49",
+            "9a78"
+          ],
+          "revision_min": 0,
+          "revision_max": 255
+        }
+      ]
+    },
+    {
+      "tag": "0.4.0",
+      "commit": "59bbe3cf436272d3a9aa575bdb178afc8fb5cbe0",
+      "physical_ids": [
+        {
+          "devices": [
+            "46d0",
+            "46d1",
+            "46d2",
+            "46d3",
+            "46d4"
+          ],
+          "revision_min": 0,
+          "revision_max": 0
+        },
+        {
+          "devices": [
+            "9a40",
+            "9a49",
+            "9a78"
+          ],
+          "revision_min": 0,
+          "revision_max": 255
+        }
+      ]
+    },
+    {
+      "tag": "0.5.0",
+      "commit": "c6cd8ec5ec5bd64ad3c8a852a30d1f537d819fb1",
+      "physical_ids": [
+        {
+          "devices": [
+            "4680",
+            "4682",
+            "4688",
+            "468a",
+            "468b",
+            "4690",
+            "4692",
+            "4693",
+            "46d0",
+            "46d1",
+            "46d2",
+            "46d3",
+            "46d4",
+            "9a40",
+            "9a49",
+            "9a60",
+            "9a68",
+            "9a70",
+            "9a78",
+            "a780",
+            "a781",
+            "a782",
+            "a783",
+            "a788",
+            "a789",
+            "a78a",
+            "a78b"
+          ],
+          "revision_min": 0,
+          "revision_max": 255
+        }
+      ]
+    },
+    {
+      "tag": "0.6.0",
+      "commit": "7b6b246dd425ff4847ba31dd66c89740e9c712c0",
+      "physical_ids": [
+        {
+          "devices": [
+            "4680",
+            "4682",
+            "4688",
+            "468a",
+            "468b",
+            "4690",
+            "4692",
+            "4693",
+            "46a3",
+            "46a6",
+            "46a8",
+            "46aa",
+            "46b3",
+            "46c3",
+            "46d0",
+            "46d1",
+            "46d2",
+            "46d3",
+            "46d4",
+            "9a40",
+            "9a49",
+            "9a60",
+            "9a68",
+            "9a70",
+            "9a78",
+            "a780",
+            "a781",
+            "a782",
+            "a783",
+            "a788",
+            "a789",
+            "a78a",
+            "a78b",
+            "a7a0",
+            "a7a1",
+            "a7a8",
+            "a7a9",
+            "a7aa",
+            "a7ab",
+            "a7ac",
+            "a7ad"
+          ],
+          "revision_min": 0,
+          "revision_max": 255
+        }
+      ]
+    },
+    {
+      "tag": "0.6.1",
+      "commit": "68a24273ea9ba668e7bb029ed60fd775c45b16d1",
+      "physical_ids": [
+        {
+          "devices": [
+            "4680",
+            "4682",
+            "4688",
+            "468a",
+            "468b",
+            "4690",
+            "4692",
+            "4693",
+            "46a3",
+            "46a6",
+            "46a8",
+            "46aa",
+            "46b3",
+            "46c3",
+            "46d0",
+            "46d1",
+            "46d2",
+            "46d3",
+            "46d4",
+            "9a40",
+            "9a49",
+            "9a60",
+            "9a68",
+            "9a70",
+            "9a78",
+            "a780",
+            "a781",
+            "a782",
+            "a783",
+            "a788",
+            "a789",
+            "a78a",
+            "a78b",
+            "a7a0",
+            "a7a1",
+            "a7a8",
+            "a7a9",
+            "a7aa",
+            "a7ab",
+            "a7ac",
+            "a7ad"
+          ],
+          "revision_min": 0,
+          "revision_max": 255
+        }
+      ]
+    },
+    {
+      "tag": "0.7.0",
+      "commit": "d0b7fb6275ca51fde088fa7e91595462bd457ec9",
+      "physical_ids": [
+        {
+          "devices": [
+            "4626",
+            "4628",
+            "462a",
+            "4680",
+            "4682",
+            "4688",
+            "468a",
+            "468b",
+            "4690",
+            "4692",
+            "4693",
+            "46a0",
+            "46a1",
+            "46a2",
+            "46a3",
+            "46a6",
+            "46a8",
+            "46aa",
+            "46b0",
+            "46b1",
+            "46b2",
+            "46b3",
+            "46c0",
+            "46c1",
+            "46c2",
+            "46c3",
+            "46d0",
+            "46d1",
+            "46d2",
+            "46d3",
+            "46d4",
+            "9a40",
+            "9a49",
+            "9a59",
+            "9a60",
+            "9a68",
+            "9a70",
+            "9a78",
+            "9ac0",
+            "9ac9",
+            "9ad9",
+            "9af8",
+            "a720",
+            "a721",
+            "a780",
+            "a781",
+            "a782",
+            "a783",
+            "a788",
+            "a789",
+            "a78a",
+            "a78b",
+            "a7a0",
+            "a7a1",
+            "a7a8",
+            "a7a9",
+            "a7aa",
+            "a7ab",
+            "a7ac",
+            "a7ad"
+          ],
+          "revision_min": 0,
+          "revision_max": 255
+        }
+      ]
+    }
+  ]
+}

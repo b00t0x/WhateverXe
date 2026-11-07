@@ -13,6 +13,7 @@ struct Boot {
     uint32_t version {1};BootStatus status {BootStatus::Unavailable};
     Readout source;XELPMemory::Layout memory;XELPGeometry::Linear geometry;
     uint32_t poweredPipes {},control {},stride {},size {},surface {},dpt {},verifiedPages {};
+    bool clipped {};
     bool usable() const {return status==BootStatus::Candidate || status==BootStatus::Complete;}
     bool complete() const {return status==BootStatus::Complete;}
 };
@@ -50,10 +51,10 @@ template<class IO> bool bootUnchanged(IO &io,const Boot &boot,const XELPMemory::
     const uint32_t expected[]={boot.dpt,boot.control,boot.stride,boot.size,boot.surface,boot.surface,0,0};
     for(unsigned i=0;i<sizeof(regs)/sizeof(regs[0]);++i)
         if(!io.readable(regs[i]) || io.read(regs[i])!=expected[i])return false;
-    return sourceUnchanged(io,boot.source);
+    return (!boot.clipped || (io.readable(0x6001C) && XELPGeometry::insideCanvas(boot.geometry,boot.source.htotal,boot.source.vtotal,io.read(0x6001C)))) && sourceUnchanged(io,boot.source);
 }
 template<class IO> void captureBoot(IO &io,const AlderLakeN::DisplayReadout &normal,
-                                    const Profile &profile,const XELPMemory::Layout &memory,bool admitted,Boot &r) {
+                                    const Profile &profile,const XELPMemory::Layout &memory,bool admitted,Boot &r,bool mirrorPrepared=false) {
     r={};if(!admitted || !profile.valid())return;
     r.status=BootStatus::Memory;
     if(!memory.valid || !memory.reservationKnown || !memory.bytes || memory.bytes%4096 ||
@@ -76,7 +77,9 @@ template<class IO> void captureBoot(IO &io,const AlderLakeN::DisplayReadout &nor
     r.dpt=words[0];r.control=words[1];r.stride=words[2];r.size=words[3];r.surface=words[4];
     r.geometry=XELPGeometry::linear(r.control,r.stride,r.size,words[6],words[7]);
     // LINEAR uses byte GGTT offsets even with global DPT-disable clear.
-    if(!XELPGeometry::timing(r.geometry,r.source.htotal,r.source.vtotal) || r.surface!=words[5] ||
+    r.clipped=mirrorPrepared && !XELPGeometry::timing(r.geometry,r.source.htotal,r.source.vtotal) &&
+        io.readable(0x6001C) && XELPGeometry::insideCanvas(r.geometry,r.source.htotal,r.source.vtotal,io.read(0x6001C));
+    if((!r.clipped && !XELPGeometry::timing(r.geometry,r.source.htotal,r.source.vtotal)) || r.surface!=words[5] ||
        !memory.range(r.surface,r.geometry.bytes,true))return;
     r.status=BootStatus::Candidate;
     if(!bootUnchanged(io,r,memory))r.status=BootStatus::Changed;

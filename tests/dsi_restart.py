@@ -22,7 +22,7 @@ PROFILE_FIXTURE
 struct Sim:IO {
  bool owned=true,dropPLLDisable=false,dropPLLPower=false,dropPLLLock=false,dropBuffer=false,dropLink=false;
  bool ulpsRequest=false;
- uint32_t drop=UINT32_MAX,elapsed=0;
+ uint32_t drop=UINT32_MAX,elapsed=0,linkReadyAt=0;
  std::vector<uint32_t> gpioTrace;
  bool gpio(unsigned role,unsigned value){const auto r=Panel::gpio(*this,role,value);if(r.complete)gpioTrace.push_back(role*2+value);return r.complete;}
  bool ready(){return owned;}
@@ -50,7 +50,7 @@ struct Sim:IO {
   if(pll&(1U<<31)){if(!dropPLLLock)pll|=1U<<30;}else if(!dropPLLDisable)pll&=~(1U<<30);
   if(!dropBuffer){if(regs[0x64000]&(1U<<31))regs[0x64000]&=~0x80U;else regs[0x64000]|=0x80;}
   if(ulpsRequest)regs[0x6B0D8]|=1U<<16;
-  if(!dropLink && (regs[0x6B400]&(1U<<31)))regs[0x6B030]|=1U<<20;
+  if(!dropLink && elapsed>=linkReadyAt && (regs[0x6B400]&(1U<<31)))regs[0x6B030]|=1U<<20;
  }
 };
 struct Fixture {
@@ -89,7 +89,7 @@ void panelCycle(Fixture &f,bool fail=false){
  assert(f.io.regs[0x70180]==0x94000008 && f.io.regs[0x7B008]==0xC0000000);
  assert(f.allocation.external[0]==1 && f.allocation.binding[0]==2);
 }
-void retainedCycle(Fixture &f,unsigned fault=0){
+void retainedCycle(Fixture &f,unsigned fault=0,bool cold=false){
  f.io.regs[0x7B008]=0xC0000000;f.io.regs[0x70180]=0x94001000;f.io.regs[0x7019C]=f.io.regs[0x701AC]=0x44E00000;
  f.io.regs[0x42084]=1U<<30;f.io.regs[0x6001C]=0x0437077F;f.io.regs[0x6B010]=f.io.regs[0x6B00C];
  f.io.regs[0xC7204]=15;f.io.regs[0xC4030]=0x84;f.source.mux=f.io.regs[0x164280];
@@ -105,7 +105,16 @@ void retainedCycle(Fixture &f,unsigned fault=0){
  assert(Restart::stopQuiesced(f.io,f.source,f.p,stopped,f.allocation,1,f.state));
  assert(f.state.stopped && !f.io.regs[0x46014] && f.allocation.external[0]==1 && f.allocation.binding[0]==2);
  Panel::Result panel;Lifecycle lifecycle{f.allocation,f.state};
- Panel::cycle(f.io,f.source,f.p,0x94001000,0x44E00000,panel,lifecycle,&shutdown);
+ Panel::cycle(f.io,f.source,f.p,0x94001000,0x44E00000,panel,lifecycle,&shutdown,nullptr,cold);
+ if(cold){
+  size_t ready=0,timing=0,video=0;
+  for(size_t i=count;i<f.io.writes.size();++i){
+   if(f.io.writes[i]==0x6B400)ready=i;
+   if(f.io.writes[i]==0x6B00C)timing=i;
+   if(f.io.writes[i]==0x7B008)video=i;
+  }
+  assert(ready<timing && timing<video);
+ }
  if(!panel.complete())fprintf(stderr,"resume stage=%u error=%u reg=%x host=%u restart=%u/%u\n",unsigned(panel.stage),unsigned(panel.error),panel.reg,unsigned(panel.host.error),unsigned(f.state.stage),unsigned(f.state.error));
  assert(panel.complete() && f.state.started && Surface::source(f.io,panel.source));
  assert(f.io.regs[0x70180]==0x94001000 && f.io.regs[0x7019C]==0x44E00000 && f.io.regs[0x701AC]==0x44E00000 && f.io.regs[0x46014]==0xCC000000);
@@ -137,6 +146,11 @@ void successful(Fixture &f){
  assert(rebuilt.matches(f.p) && rebuilt.afeKHz==811529);
 }
 int main(int argc,char **argv){
+ for(unsigned selected=0;selected<2;++selected) {
+  Fixture f;assert(f.stop());f.io.regs[0x6B094]=selected;f.io.writes.clear();
+  assert(Restart::start(f.io,f.allocation,1,f.state,true)==bool(selected));
+  for(auto reg:f.io.writes)assert(reg!=0x6B094);
+ }
  for(unsigned fault=0;fault<7;++fault){Fixture f;
   assert(!Restart::retainedStopped(f.io,f.source,f.allocation,1,f.state));
   assert(f.stop());const auto count=f.io.writes.size();const auto state=f.state;
@@ -164,6 +178,9 @@ int main(int argc,char **argv){
   assert(link.matches(f.p)); // program/read back, not just calculate a PLL
  }
  {Fixture f;successful(f);}
+ {Fixture f;retainedCycle(f,0,true);}
+ {Fixture f;assert(f.stop());f.io.linkReadyAt=f.io.elapsed+3000;
+  assert(f.start() && f.io.elapsed>=f.io.linkReadyAt);}
  for(unsigned fault=0;fault<4;++fault){Fixture f;retainedCycle(f,fault);}
  {Fixture f;panelCycle(f);}
  {Fixture f;panelCycle(f,true);}
@@ -195,7 +212,7 @@ int main(int argc,char **argv){
   assert(!f.start() && f.state.error!=Restart::Error::None);
   const auto count=f.io.writes.size();assert(!f.start() && f.io.writes.size()==count);
   assert(f.allocation.external[0]==1 && f.allocation.binding[0]==2 && !f.io.regs[0x7B008]);
-  assert(f.io.elapsed<5000);
+  assert(f.io.elapsed<(fault==3?12500U:5000U));
  }
  if(argc==2){
   {Fixture f;std::ifstream in(argv[1],std::ios::binary);assert(in);f.vbt=Bytes{std::istreambuf_iterator<char>(in),{}};

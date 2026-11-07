@@ -14,7 +14,8 @@ published=re.search(r'static bool dsiPublishedTarget\(.*?\n\}',s,re.S)[0]
 q=(root/'tests/dsi_quiesce_adapter.py').read_text()
 q=q.split("code=r'''",1)[1].split("'''.replace",1)[0]
 prelude='#define DSI_SURFACE_REPLAY\n'+q[:q.index('struct XE {')]
-prelude=prelude.replace('#include "kern_dsi_boot.hpp"','#include "kern_dsi_boot.hpp"\n#include "kern_dsi_surface.hpp"\n#include "kern_dsi_native_backing.hpp"\n#include "kern_display13_clock.hpp"')
+prelude=prelude.replace('return Display13Clock::Variant::RPLU;', 'return Display13Clock::Variant::ADLP;')
+prelude=prelude.replace('#include "kern_dsi_boot.hpp"','#include "kern_dsi_boot.hpp"\n#include "kern_dsi_surface.hpp"\n#include "kern_dsi_native_backing.hpp"')
 b=(root/'tests/dsi_boot.cpp').read_text();prelude=prelude.replace('FIXTURE',b[b.index('struct IO {'):b.index('Boot capture(')])
 prelude=prelude.replace('bool armedOwner=false,failNativeRetire=false;unsigned nativeRetires=0;IOService *pendingFB=nullptr;bool dsiPendingTarget(IOService *fb){return fb && pendingFB==fb;}',state+'\nDSIPendingBackingOwner dsiPendingBacking;\nbool dsiPendingTarget(IOService *fb){return fb && dsiPendingBacking.framebuffer==fb;}')
 prelude=prelude.replace('#include "kern_dsi_native_backing.hpp"','#include "kern_dsi_native_backing.hpp"\n#include "kern_dsi_native_mode.hpp"')

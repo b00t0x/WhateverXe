@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.0
+
+Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) package with this update.
+
+### Added
+
+- Add Raptor Lake-U graphics support.
+- Add experimental system sleep/wake support, tested on MIPI DSI laptop configurations with Big Sur and Tahoe and model-specific ACPI settings.
+- Add an optional 60 Hz mode for matching MIPI DSI panels in MiniBook X N100 and U300.
+
+### Fixed
+
+- Fix a regression introduced in 0.7.0 that disabled graphics acceleration on some supported Tiger Lake configurations.
+- Fix restart and shutdown with the supported MIPI DSI panels, and accelerated startup with USB-C displays already connected.
+- Fix rotated MIPI DSI display-mode selection and improve display restoration after sleep.
+- Improve compatibility with supported macOS updates when kernel or system-driver code placement changes.
+
 ## 0.7.0
 
 Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) package with this update.

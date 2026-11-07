@@ -22,7 +22,7 @@ PROFILE_FIXTURE
 struct Sim:IO {
  uint32_t expectedDuty=UINT32_MAX;
  bool owned=true,freezeFrame=false,stuckStop=false,stuckStart=false,stuckCommand=false;
- uint32_t drop=UINT32_MAX,elapsed=0,headers=0,payload=0,videoCommandDelay=0,creditRelease=0;unsigned irqDepth=0;
+ uint32_t drop=UINT32_MAX,elapsed=0,headers=0,payload=0,videoCommandDelay=0,initCommandDelay=0,creditRelease=0;unsigned irqDepth=0;
  std::vector<uint32_t> packets,gpioTrace;
  bool ready(){return owned && (regs[0x45404]&0x403)==0x403;}
  uint32_t read(uint32_t reg){
@@ -38,6 +38,7 @@ struct Sim:IO {
   assert(!irqDepth);
   if(reg==0x6B100){++headers;packets.push_back(value);
    if(regs[0x7B008]&(1U<<31))creditRelease=elapsed+videoCommandDelay;
+   else if((value&0x3f)==0x39)creditRelease=elapsed+initCommandDelay;
    return;}
   if(reg==0x6B104){++payload;return;}
   if(reg==0x7B008){regs[reg]=(value&~(1U<<30))|(regs[reg]&(1U<<30));return;}
@@ -89,6 +90,11 @@ void stop(Fixture &f,bool success=true) {
  assert(f.io.regs[0x71180]==0x94000000 && f.io.regs[0x64100]==0x80000000);
 }
 int main(int argc,char **argv){
+ for(bool stalled:{false,true}){
+  Fixture f;f.io.initCommandDelay=stalled?200000:1500;
+  f.run();assert(f.result.complete()==!stalled);
+  if(stalled)assert(f.result.stage==Panel::Stage::Init && f.result.host.error==HostError::CreditTimeout);
+ }
  for(bool stalled:{false,true}) {
   Fixture f;f.io.videoCommandDelay=stalled?200000:1000;
   f.seq[3]={1,5,0,5,1,0,0x11,2,4,0xA0,0x86,1,0,1,5,0,5,1,0,0x29,2,4,0xA0,0x86,1,0,0};

@@ -22,6 +22,8 @@ int main(int argc,char **argv) {
     }
     for(auto op:Bytes{4,5,6,7,255}){auto bad=ops;bad[0]=op;rejected(block(panel(bad)));}
     for(auto flags:Bytes{1,2,8,32,255}){auto bad=ops;bad[2]=flags;rejected(block(panel(bad)));}
+    assert(parse(block(panel(Bytes{1,6,0,0x29,2,0,0xde,0,0}))).valid());
+    rejected(block(panel(Bytes{1,4,0,0x29,0,0,0})));
     auto bad=ops;bad[3]=6;rejected(block(panel(bad))); // read unsupported
     bad=ops;bad[4]=2;rejected(block(panel(bad))); // wrong packet length
     bad=ops;bad.pop_back();rejected(block(panel(bad))); // no operation END

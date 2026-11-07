@@ -52,12 +52,18 @@ static void testDSIBacking() {
             auto i=f.registers.find(reg);if(i==f.registers.end())return false;v=i->second;return true;
         },38400);
     };
-    const auto inspect=[](Fixture &f,const XELP::DSI::Readout &source) {
+    const auto inspect=[](Fixture &f,const XELP::DSI::Readout &source,uint32_t cropped=0) {
         return Display13FBMemory::inspect(f,f.controller,sizeof(f.controller),f.framebuffer,sizeof(f.framebuffer),
-            0x10000000,memory,true,0,0,nullptr,nullptr,false,&source);
+            0x10000000,memory,true,0,0,nullptr,nullptr,false,&source,cropped);
     };
     Fixture good;const auto source=setup(good);assert(source.complete());
     auto result=inspect(good,source);assert(result.status==Status::Complete && result.verifiedPages==good.ptes.size());
+    for(bool drift:{false,true}) {
+        Fixture crop;setup(crop);crop.registers[0x70190]=0x04370437;
+        crop.registers[0x6001C]=0x0437077F;crop.registers[0x68180]=crop.registers[0x68280]=0;
+        if(drift)crop.changeRegister=0x6001C;
+        assert(inspect(crop,source,0x04370437).status==(drift?Status::StateChanged:Status::Complete));
+    }
     // The GOP has global DPT enabled, but its linear plane still addresses GGTT.
     // No acceptance of tiled/rotated geometry or a shortened pool follows.
     for(auto pair:std::map<uint32_t,uint32_t>{{0x70180,0x94000408},{0x70188,67},

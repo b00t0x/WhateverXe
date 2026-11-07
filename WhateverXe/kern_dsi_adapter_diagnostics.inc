@@ -69,7 +69,7 @@ bool XE::probeDSICommands(IOService *controller) {
 // the optional host trial rebuilds them before panel INIT_OTP. Neither path
 // releases shared resources or enables runtime power transitions.
 bool XE::probeDSIPanel(IOService *controller,bool prepareExternalClock) {
-    const bool restart=dsiHostTest || prepareExternalClock;
+    const bool restart=dsiHostTest || prepareExternalClock || dsi60HzClockKHz;
     auto &c=display13FBPower;auto &clock=comboClockTransaction;auto &irq=display13FBIRQ;
     if(!controller || !c.lock || !clock.lock || !irq.lock)return false;
     IORecursiveLockLock(clock.lock);IOLockLock(c.lock);
@@ -113,7 +113,13 @@ bool XE::probeDSIPanel(IOService *controller,bool prepareExternalClock) {
         void delayUs(unsigned us){IODelay(us);}
     } io{c.map,owned,irq.lock,restart,dsiBoot.source.identity.pll};
     Display13Clock::Change bootCDClock;
+    // Adopt and stop the firmware's original link first. Only the restart
+    // uses the new clock; panel commands and blanking stay firmware-derived.
+    auto target=dsiProfile;
+    if(dsi60HzClockKHz)target.mode.clockKHz=dsi60HzClockKHz;
+    const auto targetPlan=XELP::DSI::Restart::plan(target,dsiBoot.source.referenceKHz);
     struct Lifecycle {
+        const XELP::DSI::Restart::Plan &targetPlan;
         bool enabled,prepareExternal;XELPComboClock::ClockAllocation &allocation;uintptr_t owner;
         XELP::DSI::Restart::State &state;Display13Clock::Change &cdclk;
         bool stop(IO &io,const XELP::DSI::Readout &source,const XELP::DSI::Profile &profile) {
@@ -128,12 +134,12 @@ bool XE::probeDSIPanel(IOService *controller,bool prepareExternalClock) {
             if(prepareExternal) {
                 auto &c=display13FBPower;
                 Display13FBClockIO clockIO {c.map};
-                const auto current=Display13Clock::read(clockIO);
+                const auto current=Display13Clock::read(clockIO,display13ClockVariant());
                 cdclk.before=current;cdclk.requestedHz=current.nativeMaxHz();
                 const bool stopped=io.ready() && state.stopped && !state.started &&
                     !c.engineEnabled && Display13FBIRQ::consumersStopped(io,7,c.transcoders);
                 if(!stopped || current.status!=Display13Clock::Status::Complete)return false;
-                cdclk=Display13Clock::set(clockIO,current.nativeMaxHz(),{true,true,0});
+                cdclk=Display13Clock::set(clockIO,current.nativeMaxHz(),{true,true,0},display13ClockVariant());
                 if(cdclk.status!=Display13Clock::ChangeStatus::Complete) {
                     adlnFault(c.clockFaulted,__LINE__);return false;
                 }
@@ -142,12 +148,13 @@ bool XE::probeDSIPanel(IOService *controller,bool prepareExternalClock) {
                 *reinterpret_cast<uint64_t *>(reinterpret_cast<uint8_t *>(controller)+0xE98)=cdclk.after.nativeHz();
                 *reinterpret_cast<uint64_t *>(reinterpret_cast<uint8_t *>(controller)+0xEA0)=cdclk.after.nativeHz();
             }
+            state.config=targetPlan;
             if(!XELP::DSI::Restart::start(io,allocation,owner,state))return false;
             source=XELP::DSI::Restart::expected(source,state);return source.complete();
         }
-    } lifecycle{restart,!dsiPanelOnly,clock.allocation,reinterpret_cast<uintptr_t>(controller),dsiHostRestart,bootCDClock};
+    } lifecycle{targetPlan,restart,!dsiPanelOnly,clock.allocation,reinterpret_cast<uintptr_t>(controller),dsiHostRestart,bootCDClock};
     uint64_t record[32] {1};
-    record[1]=io.ready() && !dsiPanelTrial.attempted && dsiProfile.valid() &&
+    record[1]=(!restart || targetPlan.valid) && io.ready() && !dsiPanelTrial.attempted && dsiProfile.valid() &&
         !dsiCommandHost.faulted && !dsiCommandHost.pending &&
         c.bridge.outputHeld(io,0,0) && XELP::DSI::bootUnchanged(io,dsiBoot,xelpMemory);
     if(record[1]) {
@@ -165,7 +172,8 @@ bool XE::probeDSIPanel(IOService *controller,bool prepareExternalClock) {
         auto nextBoot=dsiBoot;
         if(dsiPanelTrial.complete())nextBoot.source=dsiPanelTrial.source;
         record[30]=io.ready() && dsiPanelTrial.complete() && XELP::DSI::bootUnchanged(io,nextBoot,xelpMemory);
-        if(record[30]){dsiBoot=nextBoot;c.bootDSI=nextBoot.source;}
+        if(record[30] && !nextBoot.source.matches(target))record[30]=0;
+        if(record[30]){dsiBoot=nextBoot;c.bootDSI=nextBoot.source;dsiProfile.mode.clockKHz=target.mode.clockKHz;}
     }
     const auto &r=dsiPanelTrial;const auto &h=r.host;
     record[2]=static_cast<uint32_t>(r.stage);record[3]=static_cast<uint32_t>(r.error);
@@ -180,7 +188,26 @@ bool XE::probeDSIPanel(IOService *controller,bool prepareExternalClock) {
         host.reg,host.value,host.writes,host.waitUs,host.stopped,host.started,host.pll,
         p.pll.cfg0(),p.pll.cfg1(),p.link.clockTiming,p.link.dataTiming,p.hsTimeout,p.lpTimeout,p.taTimeout,
         record[30],complete};
+    uint64_t scan[6] {};
+    if(dsi60HzClockKHz && complete && checkKernelArgument("-wex-dsi-audit")) {
+        // Count physical pipe-A frame boundaries, even before WindowServer starts.
+        scan[0]=1;scan[1]=dsiBoot.source.afeKHz;scan[2]=dsiProfile.mode.clockKHz;
+        uint32_t first=io.read(0x70040),edge=first;uint64_t start=0;
+        for(unsigned us=0;us<140000 && io.ready();us+=100) {
+            const auto frame=io.read(0x70040);
+            if(frame==UINT32_MAX || first==UINT32_MAX)break;
+            if(!start && frame!=first){start=mach_absolute_time();edge=frame;}
+            if(start && uint32_t(frame-edge)>=5) {
+                scan[3]=uint32_t(frame-edge);
+                absolutetime_to_nanoseconds(mach_absolute_time()-start,&scan[4]);
+                scan[5]=XELP::DSI::sourceUnchanged(io,dsiBoot.source);
+                break;
+            }
+            io.delayUs(100);
+        }
+    }
     IOLockUnlock(c.lock);IORecursiveLockUnlock(clock.lock);
+    if(scan[0])IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIScanTiming",scan,sizeof(scan));
     IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIPanelTrial",record,sizeof(record));
     if(restart)IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIHostRestart",hostRecord,sizeof(hostRecord));
     if(restart && !dsiPanelOnly)

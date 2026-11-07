@@ -57,7 +57,7 @@ struct State {
     uint32_t refs[Count] {};
     // Requests set by this object, versus requests found already set. Never
     // clear firmware/predecessor driver requests without an explicit handoff.
-    uint32_t owned {}, borrowed {};
+    uint32_t owned {}, borrowed {}, deferredTC {};
     uint32_t initialDriver {}, initialDDI {}, initialAUX {}, initialFuses {};
 };
 struct Lease {
@@ -188,8 +188,8 @@ template<class IO> Result acquire(IO &io, State &s, Lease &lease, uint32_t domai
             if (r.status != Status::Complete) break;
         }
         if (!valid(io, control(d), value)) { r.status = Status::Unavailable; break; }
-        if (s.refs[d] && !(value & request(d))) { r.status = Status::RequestLost; break; }
-        if(tcAux(d) && !s.refs[d]) {
+        if (s.refs[d] && !(s.deferredTC & mask) && !(value & request(d))) { r.status = Status::RequestLost; break; }
+        if(tcAux(d) && (!s.refs[d] || (s.deferredTC&mask))) {
             r.status=enableTCAux(io,d);if(r.status!=Status::Complete)break;
         }
         if (!(value & request(d))) {
@@ -211,6 +211,7 @@ template<class IO> Result acquire(IO &io, State &s, Lease &lease, uint32_t domai
     }
     if (r.status == Status::Complete) {
         for (unsigned d = 0; d < Count; ++d) if (domains & (1U << d)) ++s.refs[d];
+        s.deferredTC &= ~domains;
         lease.owner = &s; lease.domains = domains;
         r.domain = Count;
         return r;
@@ -252,7 +253,7 @@ template<class IO> Result release(IO &io, State &s, Lease &lease) {
             r.status = clear(io, s, d, r);
             if (r.status != Status::Complete) { s.faulted = true; return r; }
         }
-        --s.refs[d];
+        if(!--s.refs[d])s.deferredTC &= ~(1U<<d);
         lease.domains &= ~(1U << d);
     }
     lease.owner = nullptr;
@@ -286,7 +287,7 @@ template<class IO> Result suspend(IO &io,State &s) {
 // Restore the current held scopes, in dependency order, without duplicate
 // gets. A request lost during power collapse is acquired anew and becomes
 // ours; a surviving borrowed request is never adopted merely by this call.
-template<class IO> Result restore(IO &io,State &s) {
+template<class IO,class PrepareDDIA> Result restore(IO &io,State &s,bool deferTC,PrepareDDIA prepareDDIA) {
     Result r;
     if(!s.ready || s.faulted)return r;
     uint32_t value;
@@ -294,15 +295,25 @@ template<class IO> Result restore(IO &io,State &s) {
     for(auto reg : registers)if(!valid(io,reg,value)) {
         r.status=Status::Unavailable;return r;
     }
-    for(unsigned d=0;d<Count;++d)if(s.refs[d] && tcAux(d) && !tcAuxSupported(io,0)) {
+    for(unsigned d=0;d<Count;++d)if(s.refs[d] && !deferTC && tcAux(d) && !tcAuxSupported(io,0)) {
         r.status=Status::UnqualifiedTCAUX;r.domain=d;return r;
     }
     r.status=Status::Complete;
     for(unsigned d=0;d<Count;++d)if(s.refs[d]) {
+        // A parked internal-only pipe needs no Type-C lane or AUX engine.
+        // A Type-C client reacquires its leaf after its port mode is ready.
+        if(deferTC && (tcDDI(d) || tcAux(d))) {
+            if(!valid(io,control(d),value)){r.status=Status::Unavailable;break;}
+            if(!(value&request(d))) {
+                s.deferredTC|=1U<<d;s.owned&=~(1U<<d);s.borrowed&=~(1U<<d);
+            }
+            continue;
+        }
         r.domain=d;
         if(!d)r.status=wait(io,Fuses,1U<<27,FuseTimeoutUs);
         if(r.status!=Status::Complete)break;
         if(!valid(io,control(d),value)) {r.status=Status::Unavailable;break;}
+        if(d==unsigned(Domain::DDIA) && !prepareDDIA(value)) {r.status=Status::Unavailable;break;}
         if(tcAux(d)) {r.status=enableTCAux(io,d);if(r.status!=Status::Complete)break;}
         if(!(value&request(d))) {
             if(!s.suspended) {r.status=Status::RequestLost;break;}
@@ -319,6 +330,9 @@ template<class IO> Result restore(IO &io,State &s) {
     if(r.status==Status::Complete) {s.suspended=false;r.domain=Count;}
     else s.faulted=true; // Keep partial restoration and its prerequisites.
     return r;
+}
+template<class IO> Result restore(IO &io,State &s,bool deferTC=false) {
+    return restore(io,s,deferTC,[](uint32_t){return true;});
 }
 }
 #endif

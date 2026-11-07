@@ -1,0 +1,14 @@
+[
+  {
+    "file": "released_topology_022.cpp",
+    "commit": "c3fec934e7ac716d7ae52a70914403d63c802c01",
+    "tag": "0.2.2",
+    "sha256": "e016a6a1352578c258d20a3505128fb4f4ebb467e36fe801b672ba272998521d"
+  },
+  {
+    "file": "released_topology_050.cpp",
+    "commit": "c6cd8ec5ec5bd64ad3c8a852a30d1f537d819fb1",
+    "tag": "0.5.0",
+    "sha256": "32d02829260873b2b8e190385cb007bb4c124f88f6a95909a824ed947defbb1c"
+  }
+]

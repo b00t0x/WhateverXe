@@ -54,17 +54,10 @@ inline bool decodeADLPGT(const uint32_t *fuses, GTResources &out) {
     return true;
 }
 
-// TGL U/Y shares Gen12 SSEU and L3-disable fuses with the existing reader.
-// Reuse only the established 48-EU/6-bank and 80/96-EU/8-bank URB shapes.
-// A PCI ID (including Linux's GT2 classification) does not determine capacity.
+// TGL U/Y uses the same fuse fields and donor resource backend as ADL-P.
+// Qualify each capacity independently: EU count does not determine L3 banks.
 inline bool decodeTGLGT2(const uint32_t *fuses, GTResources &out) {
-    GTResources decoded;
-    out={};
-    if(!decodeADLPGT(fuses,decoded))return false;
-    if(!((decoded.dss==3 && decoded.eus==48 && decoded.l3Banks==6) ||
-         ((decoded.dss==5 || decoded.dss==6) && decoded.eus==16*decoded.dss && decoded.l3Banks==8)))return false;
-    out=decoded;
-    return true;
+    return decodeADLPGT(fuses,out);
 }
 
 }

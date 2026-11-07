@@ -86,7 +86,7 @@ struct Shutdown {
 // IO::gpio serializes HPD writes; no delays may run under that IRQ lock.
 // A failed transaction is never retried and must retain all resources.
 template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const Profile &profile,
-                             uint32_t planeControl,uint32_t surface,Result &r,Lifecycle &lifecycle,const Shutdown *shutdown=nullptr,Backlight *backlight=nullptr) {
+                             uint32_t planeControl,uint32_t surface,Result &r,Lifecycle &lifecycle,const Shutdown *shutdown=nullptr,Backlight *backlight=nullptr,bool systemWake=false) {
     Readout current=link;
     if(r.attempted)return;
     r.attempted=true;
@@ -122,11 +122,16 @@ template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const P
     };
     const auto frame=[&]() {
         if(!read(0x70040,r.frameBefore))return false;
+        bool rebased=false;
         for(uint32_t us=0;;us+=1000) {
             if(!read(0x70040,r.frameAfter))return false;
             const auto n=uint32_t(r.frameAfter-r.frameBefore);
             if(n && n<0x80000000U)return true;
-            if(n || us>=3*period+1000){r.error=Error::Timeout;return false;}
+            // The first frame after a system power loss may reload the counter.
+            // Require actual forward progress from the new value as well.
+            if(systemWake && n>=0x80000000U && !rebased){r.frameBefore=r.frameAfter;rebased=true;}
+            else if(n){r.error=Error::Timeout;return false;}
+            if(us>=(systemWake?10:3)*period+1000){r.error=Error::Timeout;return false;}
             io.delayUs(1000);r.waitUs+=1000;
         }
     };
@@ -135,8 +140,11 @@ template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const P
         bool gpio(unsigned role,unsigned value){return this->io.gpio(role,value);}
     } port{io};
     const auto sequence=[&](unsigned id) {
-        const bool video=r.stage==Stage::BacklightOff || r.stage==Stage::TranscoderOn || r.stage==Stage::BacklightOn;
-        const auto budget=video?videoCreditBudgetUs(profile.mode):100;
+        // INIT can queue a full burst of LP payloads before its first delay.
+        // Wait for that burst to drain before the next panel operation.
+        const bool frameBudget=r.stage==Stage::Init || r.stage==Stage::BacklightOff ||
+            r.stage==Stage::TranscoderOn || r.stage==Stage::BacklightOn;
+        const auto budget=frameBudget?videoCreditBudgetUs(profile.mode):100;
         if(!r.host.run(port,profile.sequences,id,budget)){r.error=Error::Sequence;return false;}return true;
     };
     const auto delay=[&](unsigned index) {
@@ -176,6 +184,16 @@ template<class IO,class Lifecycle> void cycle(IO &io,const Readout &link,const P
     // Sequences drain before returning; never enable video over queued data.
     if(port.failed || r.host.pending || !held())return;
     r.stage=Stage::TranscoderOn;
+    if(systemWake) {
+        // After cold link training and INIT_OTP, the video timing bank is
+        // clocked but scanout is still off (icl_dsi.c, pre_enable step 6c).
+        // Reissue the timing writes here even when the shadow reads match.
+        if(!wait(0x7B008,0xC0000000U,0,0) || !wait(0x6B030,1U<<20,1U<<20,0))return;
+        const uint32_t timings[][2]={{0x6B000,current.htotal},{0x6B008,current.hsync},
+            {0x6B00C,current.vtotal},{0x6B014,current.vsync},{0x6B028,0},{0x6B010,current.vtotal}};
+        for(const auto &entry:timings)
+            if(!write(entry[0],entry[1]) || !wait(entry[0],UINT32_MAX,entry[1],0))return;
+    }
     if(!write(0x7B008,link.conf) || !wait(0x7B008,0xC0000000U,0xC0000000U,10000))return;
     if(!sequence(3))return;
     r.stage=Stage::PlaneOn;

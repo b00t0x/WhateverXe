@@ -14,6 +14,13 @@ int main() {
     auto offered=t;offered.reservedA[0]=0x80001000;offered.signalLevels=1;
     offered.pixelClock=offered.minPixelClock=offered.maxPixelClock=135260000;
     assert(AppleAdapter::clientTiming(t,offered,0));
+    {
+        auto fixed=t;fixed.pixelClock=fixed.minPixelClock=fixed.maxPixelClock=165920000;
+        auto os=fixed;os.numLinks=2;os.reservedA[0]=0x8000300E;
+        assert(AppleAdapter::clientTiming(fixed,AppleAdapter::panelOffer(os,fixed),0));
+        os.horizontalBlanking++;
+        assert(!AppleAdapter::clientTiming(fixed,AppleAdapter::panelOffer(os,fixed),0));
+    }
     for(unsigned offset=4;offset<sizeof(offered);++offset) {
         auto corrupt=offered;reinterpret_cast<uint8_t*>(&corrupt)[offset]^=0x80;
         assert(!AppleAdapter::clientTiming(t,corrupt,0));

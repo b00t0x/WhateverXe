@@ -39,6 +39,8 @@ struct State {
     struct Released {bool valid {};Range primary,cursor;} released[3];
     uint32_t capacity {}; // Optional board capacity: reserve B/C banks before either path attaches.
     uint32_t selected {},updating {},unretired {}; // Updating is a per-pipe transaction mask.
+    uint32_t restorePending {}; // Retained allocations whose hardware was lost in system sleep.
+    uint32_t creditSaved {},credit[3] {}; // Writable MBUS fetch-credit fields of selected, powered pipes.
 };
 inline Status fail(State &s,Status status) {s.faulted=true;return status;}
 inline uint32_t tracked(const State &s) {
@@ -296,6 +298,63 @@ template<class IO> Status power(IO &io,State &s,uint32_t wanted,uint32_t consume
     }
     s.consumers=consumers;return Status::Complete;
 }
+constexpr uint32_t CreditMask=0x01FFDF0F;
+// Snapshot while the display owner lock still protects the selected pipes.
+// Never read an unpowered bank. Native later enable restores arbitration
+// slots separately; these MBUS credits also need the pre-sleep allocation.
+template<class IO> Status captureCredits(IO &io,State &s) {
+    if(s.faulted)return Status::Faulted;
+    if(!s.begun)return Status::Unavailable;
+    s.creditSaved&=s.selected; // Keep banks already powered down by earlier callbacks.
+    // A probe may get/put PG before native allocation restore. Its reset bank
+    // is not a new snapshot and must not replace the retained credits.
+    const auto wells=io.read(0x45404);
+    if(wells==UINT32_MAX)return fail(s,Status::Power);
+    for(unsigned p=0;p<3;++p)if((s.selected&(1U<<p)) && !(s.restorePending&(1U<<p)) && Display13FBIRQ::powered(wells,p)) {
+        const auto value=io.read(0x7003C+0x1000*p);
+        if(value==UINT32_MAX)return fail(s,Status::Readback);
+        s.credit[p]=value&CreditMask;s.creditSaved|=1U<<p;
+    }
+    return Status::Complete;
+}
+// The caller records total display power loss, with all timing engines off.
+// Restore only an existing allocation, before its native mode/WM programming.
+// An unpowered bank stays pending until its regular native PG acquisition.
+template<class IO> Status restoreAllocation(IO &io,State &s,unsigned index) {
+    if(s.faulted)return Status::Faulted;
+    if(!s.begun || index>=3)return Status::Unavailable;
+    const auto bit=1U<<index,bank=0x1000*index;
+    if(!(s.restorePending&bit))return Status::Complete;
+    if(!(s.selected&bit) || s.updating)return fail(s,Status::Conflict);
+    if(!Display13FBIRQ::powered(io.read(0x45404),index))return Status::Power;
+    if(io.read(0x4438C)!=s.mbus || !Display13FBIRQ::consumersStopped(io,bit,s.transcoders))return fail(s,Status::Conflict);
+    const auto &a=s.pipe[index];
+    const auto primary=hardwareRaw(s,index,a.primary),cursor=hardwareRaw(s,index,a.cursor);
+    if(primary==UINT32_MAX || cursor==UINT32_MAX || overlap(a.primary,a.cursor) ||
+       overlapsOther(s,index,a.primary) || overlapsOther(s,index,a.cursor) ||
+       ((slices(a.primary)|slices(a.cursor))&~allowed(s,index)))return fail(s,Status::Range);
+    const uint32_t addresses[]={0x7027C+bank,0x7017C+bank},values[]={primary,cursor};
+    // A lost bank is zero or already restored to this owner's exact value.
+    // Do not overwrite a different allocation even with a pending sleep tag.
+    for(unsigned n=0;n<2;++n) {
+        if(!io.readable(addresses[n]))return Status::Unavailable;
+        const auto before=io.read(addresses[n]);
+        if(before==UINT32_MAX)return fail(s,Status::Readback);
+        if(before && before!=values[n])return fail(s,Status::Conflict);
+    }
+    for(unsigned n=0;n<2;++n) {
+        if(io.read(addresses[n])!=values[n])io.write(addresses[n],values[n]);
+        if(io.read(addresses[n])!=values[n])return fail(s,Status::Readback);
+    }
+    if(s.creditSaved&bit) {
+        const auto reg=0x7003C+bank,before=io.read(reg);
+        if(before==UINT32_MAX)return fail(s,Status::Readback);
+        const auto value=(before&~CreditMask)|s.credit[index];
+        if(before!=value)io.write(reg,value);
+        if(io.read(reg)!=value)return fail(s,Status::Readback);
+    }
+    s.restorePending&=~bit;return Status::Complete;
+}
 // Add a native bound path only after the caller proves its FB/plane identity.
 // A fresh stopped bank must have empty DDB shadow entries; this read-only
 // operation never hides a stale allocation or clears a foreign owner.
@@ -304,7 +363,7 @@ template<class IO> Status bindOffPipe(IO &io,State &s,unsigned index) {
     if(!s.begun)return Status::Unavailable;
     if(index>=3 || s.joined)return fail(s,Status::Topology);
     const auto bit=1U<<index,bank=0x1000*index;
-    if(s.selected&bit)return Status::Complete;
+    if(s.selected&bit)return restoreAllocation(io,s,index);
     if(!Display13FBIRQ::powered(io.read(0x45404),index))return fail(s,Status::Power);
     if(!Display13FBIRQ::consumersStopped(io,bit,s.transcoders))return fail(s,Status::Conflict);
     if(!io.readable(0x7027C+bank) || !io.readable(0x7017C+bank))return Status::Unavailable;
@@ -319,11 +378,14 @@ template<class IO> Status bindOffPipe(IO &io,State &s,unsigned index) {
     }
     s.pipe[index]=next;s.released[index]={};s.selected|=bit;syncMasks(s);return Status::Complete;
 }
-// Read-only admission for a retained, powered allocation. Global startup
-// preflights every eligible pipe before it makes any shared slice request.
+// Admission for a retained, powered allocation. Restore a proven lost bank
+// first; ordinary engine restart remains read-only here. Global startup
+// checks every eligible pipe before it makes any shared slice request.
 template<class IO> Status resumeProof(IO &io,State &s,unsigned index) {
     if(s.faulted)return Status::Faulted;
     if(!s.begun || index>=3 || !(s.selected&(1U<<index)))return Status::Unavailable;
+    const auto restored=restoreAllocation(io,s,index);
+    if(restored!=Status::Complete)return restored;
     if(s.updating&(1U<<index))return fail(s,Status::Conflict);
     auto &a=s.pipe[index];const auto bank=0x1000*index;
     if(!Display13FBIRQ::powered(io.read(0x45404),index))return fail(s,Status::Power);
@@ -416,7 +478,8 @@ template<class IO> Status detach(IO &io,State &s,unsigned index) {
     const auto &a=s.pipe[index];
     if(a.consumers || a.unretired || (s.updating&(1U<<index)))return fail(s,Status::Conflict);
     if(!Display13FBIRQ::powered(io.read(0x45404),index) || !Display13FBIRQ::consumersStopped(io,1U<<index,s.transcoders))return fail(s,Status::Conflict);
-    s.released[index]={true,a.primary,a.cursor};s.pipe[index]={};s.selected&=~(1U<<index);syncMasks(s);return Status::Complete;
+    s.released[index]={true,a.primary,a.cursor};s.pipe[index]={};s.selected&=~(1U<<index);
+    s.restorePending&=~(1U<<index);s.creditSaved&=~(1U<<index);syncMasks(s);return Status::Complete;
 }
 // Global display-engine/clock teardown still proves every powered bank is
 // stopped, including unbound/foreign consumers. No per-pipe ACK substitutes it.
@@ -439,6 +502,7 @@ template<class IO> Status stop(IO &io,State &s) {
             if(ctl==UINT32_MAX || (ctl&(Request|1)))return fail(s,Status::Conflict);
         }
     }
+    const auto captured=captureCredits(io,s);if(captured!=Status::Complete)return captured;
     PipeAllocation old[3];
     for(unsigned p=0;p<3;++p) {old[p]=s.pipe[p];s.pipe[p].consumers=s.pipe[p].unretired=0;s.pipe[p].heldPrimary=s.pipe[p].heldCursor={};}
     syncMasks(s);const auto result=power(io,s,0,0);

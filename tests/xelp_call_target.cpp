@@ -4,6 +4,36 @@
 #include <stdio.h>
 
 int main() {
+ // KC common stub/GOT precede the donor, as well as ordinary in-image stubs.
+ for(uintptr_t base:{0x100000U,0x400000U}) {
+  const uintptr_t donor=base+0x174000,entry=base+0x1462a,slot=base+0x18838;
+  const uintptr_t expected=0xffffff8001000000ULL;uintptr_t pointer=expected;
+  uint8_t stub[]={0xff,0x25,0x08,0x42,0,0};bool readable=true;
+  auto read=[&](uintptr_t from,void *to,size_t n){
+   if(!readable)return false;
+   if(from==entry && n==sizeof(stub)){memcpy(to,stub,n);return true;}
+   if(from==slot && n==sizeof(pointer)){memcpy(to,&pointer,n);return true;}
+   return false;
+  };
+  assert(entry<donor && slot<donor);
+  assert(XELPCall::importedTarget(entry,expected,read)==expected);
+  assert(XELPCall::importedTarget(expected,expected,read)==expected);
+  pointer++;assert(!XELPCall::importedTarget(entry,expected,read));pointer--;
+  stub[0]=0x90;assert(!XELPCall::importedTarget(entry,expected,read));stub[0]=0xff;
+  stub[2]++;assert(!XELPCall::importedTarget(entry,expected,read));stub[2]--;
+  readable=false;assert(!XELPCall::importedTarget(entry,expected,read));
+  assert(!XELPCall::importedTarget(0,expected,read));
+  assert(!XELPCall::importedTarget(UINTPTR_MAX-3,expected,read));
+ }
+ // Duplicate idempotent argument stores are not an ambiguous patch site.
+ const uint8_t stores[]={0x44,0x89,0x4d,0xb4,0x44,0x89,0x4d,0xb4,0xc3};
+ const uint8_t boundaries[]={1,2,2,2,1,2,2,2,1};size_t offset=0;
+ auto search=[](const void *p,const void*,size_t n,const void *data,size_t len,size_t *at){
+  for(;*at+n<=len;++*at)if(!memcmp(static_cast<const uint8_t*>(data)+*at,p,n))return true;
+  return false;
+ };
+ assert(XELPNative::findInstruction(stores,sizeof(stores),boundaries,stores,4,offset,search,false));
+ assert(!XELPNative::findInstruction(stores,sizeof(stores),boundaries,stores,4,offset,search,true));
  uint8_t accessor[]={0x55,0x48,0x89,0xe5,0x48,0xb8,0,0,0,0,0,0x80,0xff,0xff,0x48,0x01,0xf0,
   0x48,0xc1,0xe8,0x30,0x3d,0xff,0xff,0,0,0x0f,0x82,0xc1,0,0,0,0x48,0x8b,0x47,0x50};
  assert(XELPNative::rootAccessor(accessor,sizeof(accessor)));

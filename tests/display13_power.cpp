@@ -253,6 +253,16 @@ int main() {
      assert(ok(acquire(io,s,a,BootHDMIA)) && ok(acquire(io,s,b,bit(Domain::PipeB)|bit(Domain::DDIB))));
      assert(ok(suspend(io,s)) && s.suspended);assert(ok(restore(io,s)) && !s.suspended && s.refs[0]==2 && io.regs[DDI]==0xf);
      assert(ok(release(io,s,b)) && ok(release(io,s,a)));empty(s);}
+    // The DSI selector runs with PW1 on and before the DDI A request.
+    for(bool select : {false,true}) {
+        IO io;State s;Lease a;assert(initialize(io,s,All));
+        assert(ok(acquire(io,s,a,BootHDMIA)) && ok(suspend(io,s)));
+        unsigned calls=0;
+        auto r=restore(io,s,true,[&](uint32_t ddi) {
+            ++calls;assert((io.regs[Driver]&3)==3 && !(ddi&3));return select;
+        });
+        assert(calls==1 && ok(r)==select && bool(io.regs[DDI]&2)==select);
+    }
     // A state failure rolls back A/PW_A/PW1, never a borrowed B request.
     {IO io;io.regs[DDI]=0xc;io.failedEnableReg=DDI;io.failedEnable=1;
      State s;Lease a;assert(initialize(io,s,All));auto r=acquire(io,s,a,BootHDMIA);

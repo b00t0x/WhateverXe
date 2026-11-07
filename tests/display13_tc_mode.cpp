@@ -43,6 +43,21 @@ struct IO {
     bool quiescent(uintptr_t,uintptr_t,unsigned d){return quiet && !(regs[0x64000+0x100*d]&0x80000000U);}
 };
 int main() {
+    // System power loss keeps leases but erases the PHY and AUX request.
+    // Reclaim PHY before AUX without accumulating logical references.
+    for(unsigned d=3;d<=6;++d) {
+        IO io(d);Mode m;assert(m.connect(io,1,2,d).status==Status::Complete);
+        const auto before=io.power;
+        io.regs[0x45404]=io.regs[0x45454]=io.regs[0x45444]=0;
+        io.regs[io.port.buffer]=0;m.notePowerLoss();io.power.suspended=true;
+        assert(Display13Power::restore(io,io.power,true).status==Display13Power::Status::Complete);
+        assert(!m.ownership.active && m.restorePending && !(io.regs[0x45444]&0xc0));
+        assert(m.connect(io,1,2,d).status==Status::Complete);
+        assert(m.ownership.active && !m.restorePending);
+        for(unsigned n=0;n<Display13Power::Count;++n)assert(before.refs[n]==io.power.refs[n]);
+        assert(io.native==4 && Display13Power::held(io,io.power,Display13Power::auxDomain(d)));
+        assert(m.disconnect(io,1,2,d).status==Status::Complete);
+    }
     for(unsigned d=3;d<=6;++d) {
         IO io(d);Mode m;assert(m.connect(io,1,2,d).status==Status::Complete);
         assert(m.phase==Mode::Phase::Active && io.native==4 && m.ownership.active && m.auxLease.owner==&io.power);
@@ -67,6 +82,13 @@ int main() {
         io.regs[p.pinAssignment()]=(physical==15?3U:4U)<<(4*(p.tc&1));
         assert(m.connect(io,1,2,d,3).status==Status::Complete && io.native==3);
         assert(m.lanes.mask==physical && m.lanes.count()==(physical==15?4:2));
+        const auto refs=io.power;
+        io.regs[0x45404]=io.regs[0x45454]=io.regs[0x45444]=0;io.regs[p.buffer]=0;
+        m.notePowerLoss();io.power.suspended=true;
+        assert(Display13Power::restore(io,io.power,true).status==Display13Power::Status::Complete);
+        assert(m.connect(io,1,2,d,3).status==Status::Complete && !m.restorePending);
+        assert(m.lanes.mask==physical && Display13Power::held(io,io.power,Display13Power::auxDomain(d)));
+        for(unsigned n=0;n<Display13Power::Count;++n)assert(refs.refs[n]==io.power.refs[n]);
         assert(m.connect(io,1,2,d,4).status==Status::Readback);
         auto writes=io.sequence.size();io.regs[0x44470]=0;
         assert(m.connect(io,1,2,d,3).status==Status::Readback && io.sequence.size()==writes);

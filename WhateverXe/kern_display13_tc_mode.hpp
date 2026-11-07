@@ -12,7 +12,7 @@ struct Mode {
         Display13Power::Result power;uint32_t native {};
     };
     uintptr_t controller {},object {};unsigned ddi {};
-    Phase phase {Phase::Idle};bool disconnectPending {};
+    Phase phase {Phase::Idle};bool disconnectPending {},restorePending {};
     Ownership ownership;
     unsigned selectedMode {};Lanes lanes;
     // ADLP: register/lane access -> ownership -> AUX cold block.
@@ -22,6 +22,11 @@ struct Mode {
     Display13Power::Lease accessLease,auxLease;
     static uint32_t accessDomains() {return Display13Power::bit(Display13Power::Domain::PW2);}
     Mode()=default;Mode(const Mode&)=delete;Mode& operator=(const Mode&)=delete;
+    // Only a caller which observed collapsed display power may invalidate
+    // the physical ownership witness. Logical leases and native mode survive.
+    void notePowerLoss() {
+        if(phase==Phase::Active) {restorePending=true;ownership.active=false;}
+    }
     static uint32_t domains(unsigned d) {
         Port p;return Port::resolve(d,p) ? Display13Power::ddiDomain(d)|
             Display13Power::auxDomain(d)|Display13Power::bit(Display13Power::Domain::PW2) : 0;
@@ -34,9 +39,24 @@ struct Mode {
         if(phase==Phase::Cleanup){r.status=Status::InUse;return r;}
         if(phase==Phase::Active) {
             if(wanted!=selectedMode || io.nativeMode()!=selectedMode ||
-               (wanted==3 && !lanes.unchanged(io,ownership.port))){r.status=Status::Readback;return r;}
+               (wanted==3 && !restorePending && !lanes.unchanged(io,ownership.port))){r.status=Status::Readback;return r;}
             r.phy=ownership.acquire(io,owner,identity,d,false,wanted);
-            r.status=r.phy.status;if(r.status==Status::Complete)disconnectPending=false;
+            r.status=r.phy.status;
+            if(r.status==Status::Complete && restorePending) {
+                // Restore the retained AUX leaf only after PHY ownership.
+                // A temporary reference rearms hardware without replacing or
+                // double-counting the native mode's original lease.
+                Display13Power::Lease temporary;
+                r.power=io.acquireDomains(temporary,Display13Power::auxDomain(d));
+                if(r.power.status==Display13Power::Status::Complete)r.power=io.releaseDomains(temporary);
+                if(r.power.status!=Display13Power::Status::Complete){r.status=Status::NoPower;return r;}
+                if(wanted==3) {
+                    lanes=Lanes::capture(io,ownership.port);
+                    if(!lanes.valid()){r.status=Status::NotReady;return r;}
+                }
+                restorePending=false;
+            }
+            if(r.status==Status::Complete)disconnectPending=false;
             return r;
         }
         if(io.nativeMode()!=0){r.status=Status::NeedsAdoption;return r;}
@@ -82,7 +102,7 @@ struct Mode {
             r.power=io.releaseDomains(accessLease);
             if(r.power.status!=Display13Power::Status::Complete){r.status=Status::NoPower;return r;}
         }
-        controller=object=0;ddi=selectedMode=0;lanes={};phase=Phase::Idle;disconnectPending=false;r.status=Status::Complete;return r;
+        controller=object=0;ddi=selectedMode=0;lanes={};phase=Phase::Idle;disconnectPending=restorePending=false;r.status=Status::Complete;return r;
     }
 };
 }

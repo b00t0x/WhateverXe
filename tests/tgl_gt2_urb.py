@@ -22,11 +22,11 @@ code=r'''#include "kern_xelp_platform.hpp"
 #include <cstring>
 #include <sys/mman.h>
 #include <initializer_list>
-void check(unsigned id,unsigned rev,unsigned dss,unsigned banks,unsigned media) {
+void check(unsigned id,unsigned rev,unsigned dss,unsigned banks,unsigned media,unsigned eu=0) {
  auto xeProfile=XELP::identify((id<<16)|0x8086,rev);
  bool display12SmallGTDetected=false;
  XELP::SmallGTResources display12SmallGT;
- uint32_t fuses[]={1,dss,0,banks,media};
+ uint32_t fuses[]={1,dss,eu,banks,media};
  assert(xeProfile.admitted() && XELP::tigerLakeGT2Device(xeProfile.identity));
  bool tglGT2Detected=true;XELP::GTResources tglGT2Resources;
  assert(XELP::decodeTGLGT2(fuses,tglGT2Resources));
@@ -64,15 +64,23 @@ int main() {
   check(id,rev,7,0xc0,video); // 48 EU, three DSS, six banks
   check(id,rev,0x3e,0,video); // 80 EU, five DSS, eight banks
   check(id,rev,0x3f,0,video); // 96 EU, six DSS, eight banks
+  check(id,rev,0x1f,0x88,video); // 80 EU, six banks; independent fused capacities
+  check(id,rev,0x3f,0xf0,video,0xc0); // 72 EU, four banks
  }
  XELP::GTResources resource;
  assert(!XELP::decodeTGLGT2(nullptr,resource));
  for(unsigned slice=0;slice<4;++slice)for(unsigned dss=0;dss<64;++dss)
- for(unsigned eu:{0U,0xc0U,0xf0U,0xffU})for(unsigned banks:{0U,0xc0U,0xf0U,0xffU}) {
+ for(unsigned eu:{0U,0xc0U,0xf0U,0xffU})for(unsigned banks=0;banks<256;++banks) {
   uint32_t f[]={slice,dss,eu,banks,0xe00fa};unsigned count=__builtin_popcount(dss);
-  bool expected=slice==1 && eu==0 && ((count==3 && banks==0xc0) || ((count==5 || count==6) && banks==0));
+  unsigned perDSS=2*(8-__builtin_popcount(eu)),enabledBanks=8-__builtin_popcount(banks);
+  bool expected=slice==1 && count && (perDSS==8 || perDSS==12 || perDSS==16) &&
+   (enabledBanks==4 || enabledBanks==6 || enabledBanks==8);
   assert(XELP::decodeTGLGT2(f,resource)==expected);
+  if(expected)assert(resource.nativeSubslices==2*count && resource.eus==perDSS*count &&
+                    resource.l3Banks==enabledBanks && resource.urbKiB==64*enabledBanks);
  }
+ uint32_t captured[]={1,0x1f,0,0x88,0xe00fa};
+ assert(XELP::decodeTGLGT2(captured,resource) && resource.eus==80 && resource.l3Banks==6);
  for(unsigned i=0;i<5;++i){uint32_t f[]={1,63,0,0,0xe00fa};f[i]=~0U;assert(!XELP::decodeTGLGT2(f,resource));}
  puts("PASS all eight TGL GT2 IDs, fuse-derived URB native stores, unsupported topology rejection");
 }'''.replace('BODY',body).replace('QUALIFICATION',qualification)

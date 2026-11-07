@@ -18,7 +18,8 @@ struct Result {
     uint32_t stage=0,writes=0,reg=0,value=0,pll=UINT32_MAX,sourcePLL=UINT32_MAX,frames=0;
 };
 template<class IO> Result transfer(IO &io,bool requested,const AlderLakeN::DisplayReadout &boot,
-                                   const XELPMemory::Layout &memory,unsigned hdmiMask) {
+                                   const XELPMemory::Layout &memory,unsigned hdmiMask,
+                                   Display13Clock::Variant variant=Display13Clock::Variant::ADLP) {
     Result r;
     if(!requested)return r;
     r.status=Status::Source;
@@ -48,7 +49,7 @@ template<class IO> Result transfer(IO &io,bool requested,const AlderLakeN::Displ
     for(unsigned i=0;i<memory.bytes/4096;++i)
         if(io.readPTE(0x800000+8*i)!=memory.pte(uint64_t(i)*4096))return r;
     r.status=Status::Clock;
-    const auto cdclk=Display13Clock::read(io);
+    const auto cdclk=Display13Clock::read(io,variant);
     if(cdclk.status!=Display13Clock::Status::Complete || cdclk.refKHz!=38400 || cdclk.cdclkKHz<148500)return r;
     const auto mux=read(0x164280);r.sourcePLL=mux&3;
     if(r.sourcePLL>=2 || (mux&(1U<<10)))return r;

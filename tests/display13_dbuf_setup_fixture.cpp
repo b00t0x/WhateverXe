@@ -115,6 +115,20 @@ void setup(Map &map){
 }
 int main(){
  using S=Display13WM::Status;using C=Display13WM::LatchCheck;
+ // Exercise the production default/optimized callback after a cold lost
+ // bank, including the deferred case where native PG powers it later.
+ for(unsigned p:{1U,2U})for(bool optimized:{false,true}) {
+  Map map;setup(map);auto &c=display13FBPower;Display13FBDBUFIO io{&map};
+  assert(Display13DBUF::bindOffPipe(io,c.dbuf,p)==Display13DBUF::Status::Complete);
+  const auto plan=Display13DBUF::plannedLayout(7,p);
+  c.dbuf.pipe[p].primary=plan.primary;c.dbuf.pipe[p].cursor=plan.cursor;
+  c.dbuf.restorePending=1U<<p;
+  XE::adlnSetupDBUFPipe(c.controller,(IOService*)fb[p],p,optimized);
+  assert(!c.dbuf.faulted && !c.dbuf.restorePending && !armCalls);
+  assert(records[p][2]==unsigned(Display13DBUF::Status::Complete));
+  assert(Display13DBUF::hardwareMatches(io,c.dbuf,p,plan.primary,plan.cursor));
+  assert(!ownerDepth && !fbDepth);
+ }
  // The caller really programs reservations, but a prepared primary or a
  // delayed live surface must retain them until a later successful arm.
  for(auto check:{C::AwaitingScanout,C::AwaitingFlip})for(bool optimized:{false,true})for(unsigned p=0;p<3;++p){

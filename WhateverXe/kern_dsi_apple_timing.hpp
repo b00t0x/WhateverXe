@@ -40,6 +40,12 @@ inline bool annotateMode(const Mode &m,ModeInformation &info,bool rotated=false,
     else info.flags&=~0x02000004U; // A scaled source is not the native/default mode.
     return true;
 }
+// A presentation mode reuses the bound DSI transport. CoreDisplay's
+// numLinks hint cannot select a different physical link in this path.
+inline Timing panelOffer(Timing t,const Timing &fixed) {
+    t.numLinks=fixed.numLinks;
+    return t;
+}
 // CoreDisplay can replace the reserved client IDs when rebuilding its mode
 // list. Treat reserved IDs as opaque: the complete
 // timing, not an assumed generation/index bit layout, qualifies this alias.

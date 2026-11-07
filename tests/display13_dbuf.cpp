@@ -18,6 +18,7 @@ struct IO {
             r[0x60400+pipe*0x1000]=0;
             if(pipe)r[0x7027C+pipe*0x1000]=r[0x7017C+pipe*0x1000]=0;
             r[0x70080+pipe*0x1000]=0;
+            r[0x7003C+pipe*0x1000]=0;
             for(unsigned d=0;d<3;++d)r[0x70B08+pipe*0x1000+d*0x100]=0;
             for(unsigned plane=pipe ? 0 : 1;plane<5;++plane)r[0x70180+pipe*0x1000+plane*0x100]=0;
         }
@@ -31,6 +32,50 @@ struct IO {
     void delayUs(unsigned us) {delays+=us;}
 };
 int main() {
+    // Port probing may briefly power a reset bank before the next modeset.
+    // A snapshot during that get/put must preserve the pre-sleep credits.
+    {
+        IO io;State s;assert(begin(io,s,7)==Status::Complete);
+        io.r[0x7003C]=0x01A50A05;
+        assert(captureCredits(io,s)==Status::Complete);
+        const auto saved=s.credit[0];assert(saved);
+        s.restorePending=1;io.r[0x7003C]=0;
+        assert(captureCredits(io,s)==Status::Complete && s.credit[0]==saved);
+        io.r[0x45404]&=~(3U<<10);
+        assert(captureCredits(io,s)==Status::Complete && (s.creditSaved&1) && s.credit[0]==saved);
+    }
+    // Reproduce system sleep with a retained external allocation but zeroed
+    // DDB shadows. Do not invent new ownership or drop pending retirements.
+    for(unsigned p:{1U,2U})for(unsigned variant=0;variant<8;++variant) {
+        IO io;State s;assert(begin(io,s,7)==Status::Complete);
+        assert(bindOffPipe(io,s,p)==Status::Complete);
+        const auto plan=plannedLayout(7,p);auto &a=s.pipe[p];
+        a.primary=plan.primary;a.cursor=plan.cursor;a.consumers=slices(a.primary)|slices(a.cursor);
+        syncMasks(s);s.restorePending=1U<<p;
+        const auto consumers=s.consumers,selected=s.selected,bank=0x1000*p;
+        const auto expectedP=hardwareRaw(s,p,a.primary),expectedC=hardwareRaw(s,p,a.cursor);
+        if(variant==1)io.r[0x70008+bank]=Request|On;
+        if(variant==2)io.r[0x7017C+bank]=0x00090001; // A different owner, even though primary is zero.
+        if(variant==3)s.updating=1;
+        if(variant==4)io.reject=0x7027C+bank;
+        if(variant==5)io.r[0x45404]&=~(3U<<(2*(5+p)));
+        if(variant==6)io.r[0x7027C+bank]=expectedP; // Idempotent partial restore.
+        if(variant==7)s.restorePending=0; // Ordinary mismatch is still rejected.
+        const auto result=bindOffPipe(io,s,p);
+        assert(s.selected==selected && s.consumers==consumers && a.primary.start==plan.primary.start);
+        if(variant==1 || variant==2 || variant==3)assert(result==Status::Conflict && !io.writes);
+        else if(variant==4)assert(result==Status::Readback && s.restorePending==(1U<<p));
+        else if(variant==5) {
+            assert(result==Status::Power && !io.writes && !s.faulted && s.restorePending==(1U<<p));
+            io.r[0x45404]|=3U<<(2*(5+p));
+            assert(resumeProof(io,s,p)==Status::Complete && !s.restorePending);
+        } else if(variant==7)assert(result==Status::Complete && pipeLayout(io,s,p).status==Status::Conflict && !io.writes);
+        else {
+            assert(result==Status::Complete && !s.restorePending);
+            assert(io.r[0x7027C+bank]==expectedP && io.r[0x7017C+bank]==expectedC);
+            assert(pipeLayout(io,s,p).status==Status::Complete);
+        }
+    }
     for(unsigned failure=0;failure<5;++failure) {
         IO io;State state;Display13Transcoder::Bindings dsi;dsi.dsi0Pipe=0;
         io.r[0x70008]=0;io.r[0x7B008]=0xC0000000;io.r[0x6B400]=0x80030006;

@@ -5,11 +5,14 @@ This checks instruction/register/flag semantics only, not native locking, TLBs,
 or GPU coherency.
 """
 from pathlib import Path
-import argparse,hashlib,re,struct,subprocess,tempfile
+import argparse,re,subprocess,tempfile
 R=Path(__file__).resolve().parents[1]
 s=(R/'WhateverXe/kern_xe.cpp').read_text()
-a=argparse.ArgumentParser();a.add_argument('--kernel',type=Path);a=a.parse_args()
+a=argparse.ArgumentParser();a.add_argument('--kernel',type=Path);a.add_argument('--hde-source',type=Path);a=a.parse_args()
 bridges='\n'.join(re.search(r'extern "C" __attribute__\(\(naked,used\)\) void tglPmap'+kind+r'Bridge\(\) \{.*?\n\}',s,re.S)[0] for kind in ['New','Update'])
+if a.kernel:
+ from pmap_kernel_contract import check
+ check(a.kernel,s,"BigSur",a.hde_source)
 cpp=r'''#include <stdint.h>
 #include <initializer_list>
 #include <string.h>
@@ -80,7 +83,7 @@ regs=['rax','rbx','rcx','rdx','rsp','rbp','rsi','rdi']+['r'+str(i) for i in rang
 capture='\n'.join('"movq %'+r+', _out+'+str(8*i)+'(%rip)\\n"' for i,r in enumerate(regs))
 load='\n'.join('"movq _in+'+str(8*i)+'(%rip), %'+r+'\\n"' for i,r in enumerate(regs) if r!='rsp')
 cpp=cpp.replace('BRIDGES',bridges).replace('CAPTURE',capture).replace('LOAD',load)
-with tempfile.TemporaryDirectory(prefix='ventura-pmap-') as temp:
+with tempfile.TemporaryDirectory(prefix='bigsur-pmap-') as temp:
  p=Path(temp);(p/'test.cpp').write_text(cpp)
  subprocess.run(['clang++','-arch','x86_64','-std=c++17','-O2',str(p/'test.cpp'),'-o',str(p/'test')],check=True)
  subprocess.run([str(p/'test')],check=True)

@@ -15,7 +15,7 @@ inline Packet packet(uint8_t type,Span data) {
     uint32_t parameters=0;
     if(type==0x05 && data.size==1)parameters=data.data[0];
     else if(type==0x15 && data.size==2)parameters=data.data[0]|uint32_t(data.data[1])<<8;
-    else if(type==0x39){parameters=uint32_t(data.size);p.payload=data;}
+    else if(longWrite(type)){parameters=uint32_t(data.size);p.payload=data;}
     else return p;
     // Fresh header: VC0, LP, no stale fence/flush or short-packet payload bit.
     p.header=(p.payload.data?1U<<31:0)|(1U<<30)|(parameters<<8)|type;

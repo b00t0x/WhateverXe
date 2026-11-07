@@ -72,6 +72,12 @@ void native(const char *path){
  assert(!munmap(image,size));puts("PASS exact donor setupPlane cache feeds the DSI Y surface transaction; X rejected before MMIO");
 }
 int main(int argc,char **argv){
+ {Fixture f;f.current.size=f.io.regs[0x70190]=0x04370437;
+  assert(f.run().status==Surface::Status::Input);
+  const auto result=Surface::change(f.io,f.session,f.link,f.p,f.current,f.next,f.backing,f.snapshot,true);
+  assert(result.status==Surface::Status::Complete && f.io.regs[0x70190]==0x077F0437);
+ }
+
  {Fixture f;const auto result=f.run();assert(result.status==Surface::Status::Complete && result.writes==17);
   assert(result.latch.status==Display13WM::Status::Complete && result.latch.frameBefore==100 && result.latch.frameAfter==101);
   assert(f.session.state==SessionState::Streaming && f.session.currentBacking==201 && f.session.retiredBacking==200 && f.session.lease==100);

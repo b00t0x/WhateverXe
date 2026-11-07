@@ -10,7 +10,7 @@ inline bool transportAttribute(uint32_t attribute) {
         // AGPM selectors belong to the shared GPU power implementation and
         // are not DSI transport requests. Do not filter them here.
         case 0x68646370U: // hdcp: DisplayPath::initHDCP (DDI/AUX)
-        case 0x73707772U: // spwr: controller hwShutdown, outside DSI stop
+        case 0x73707772U: // spwr: never run the donor DDI shutdown on the DSI panel
             return true;
         default:return false;
     }
