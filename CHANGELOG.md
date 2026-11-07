@@ -12,7 +12,9 @@ Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphi
 
 ### Fixed
 
-- Fix graphics acceleration on additional Tiger Lake configurations.
+- Fix a regression that disabled graphics acceleration on some Tiger Lake systems, including MI646.
+- Fix a graphics initialization regression that could cause boot panics when a required dependency was already loaded but its load notification was unavailable.
+- Fix graphics initialization failures on systems with larger sets of loaded kernel extensions.
 - Fix restart and shutdown with the supported MIPI DSI panels, and accelerated startup with USB-C displays already connected.
 - Fix rotated MIPI DSI display-mode selection and improve display restoration after sleep.
 - Improve compatibility with supported macOS updates when kernel or system-driver code placement changes.
