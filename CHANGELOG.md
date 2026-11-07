@@ -12,6 +12,7 @@ Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphi
 
 ### Fixed
 
+- Fix a boot panic when a loaded graphics dependency does not deliver a load notification.
 - Fix restart and shutdown with the supported MIPI DSI panels, and accelerated startup with USB-C displays already connected.
 - Fix rotated MIPI DSI display-mode selection and improve display restoration after sleep.
 - Improve compatibility with supported macOS updates when kernel or system-driver code placement changes.

@@ -1,5 +1,7 @@
 // Copyright © 2018 vit9696. Derived from WhateverGreen (BSD-3-Clause).
 #include "kern_host.hpp"
+#include "kern_donor.hpp"
+#include <mach/kmod.h>
 #include "kern_host_power_contract.hpp"
 #include "kern_xelp_native_placement.hpp"
 #include <Headers/kern_disasm.hpp>
@@ -94,17 +96,23 @@ void XeHost::processKernel(KernelPatcher &patcher) {
  if(!active || resetFramebuffer==FB_DETECT){resetFramebuffer=FB_NONE;if(!systemWakeRecovery)graphics.switchOff();}
  DeviceInfo::deleter(info);
 }
-void XeHost::flushDonors(KernelPatcher &patcher) {
- // Only the framebuffer consumes Compat exports. Accelerator probe admission
- // must be patched during its load callback, even before Compat is notified.
- // Keep queued framebuffer work while releasing independently ready donors.
- unsigned remaining=0;
- for(unsigned i=0;i<pendingDonorCount;++i) {
-  const auto p=pendingDonors[i];
-  if(dependenciesSeen(p.index))xe.processKext(patcher,p.index,p.address,p.size);
-  else pendingDonors[remaining++]=p;
+void XeHost::processLoadedDependency(KernelPatcher &patcher,KernelPatcher::KextInfo &info) {
+ if(info.loadIndex==KernelPatcher::KextInfo::Unloaded)return;
+ // A donor's OSBundleLibraries have loaded before its load callback. Some
+ // KC hosts (including IOSurface on Monterey) do not deliver a Lilu callback.
+ // Use the same named kmod list as Lilu, then its image/symbol machinery;
+ // never infer an ABI from an OS/build name or scan arbitrary memory.
+ auto list=reinterpret_cast<kmod_info_t **>(patcher.solveSymbol(KernelPatcher::KernelID,"_kmod"));
+ patcher.clearError();if(!list)return;
+ unsigned count=0;
+ for(auto module=*list;module && count++<512;module=module->next) {
+  if(strncmp(module->name,info.id,KMOD_MAX_NAME))continue;
+  if(!module->address || module->size<32)return;
+  const auto size=patcher.updateRunningInfo(info.loadIndex,module->address,module->size);
+  const bool ready=patcher.getError()==KernelPatcher::Error::NoError;
+  patcher.clearError();if(ready)processKext(patcher,info.loadIndex,module->address,size);
+  return;
  }
- pendingDonorCount=remaining;
 }
 void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
  if(!active)return;
@@ -114,7 +122,7 @@ void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t a
   // the one-shot framebuffer installer consumes them. Seen is not ABI-ready:
   // an incompatible provider still reaches the existing rejection guards.
   xe.processKext(patcher,index,address,size);
-  providerSeen=true;flushDonors(patcher);
+  providerSeen=true;
   return;
  }
  if(surface.loadIndex==index) {
@@ -135,7 +143,6 @@ void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t a
   surfaceSeen=true;
   uint32_t state[]={static_cast<uint32_t>(fb),static_cast<uint32_t>(accel)};
   IORegistryEntry::getRegistryRoot()->setProperty("WEXHostSurfaceABI",&state,sizeof(state));
-  flushDonors(patcher);
   return;
  }
  if(accelFamily.loadIndex==index) {
@@ -172,7 +179,7 @@ void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t a
    }
   }
   IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIDarkWakeReady",ready);
-  xe.setHostSleepReady(ready);accelSeen=true;flushDonors(patcher);
+  xe.setHostSleepReady(ready);accelSeen=true;
   return;
  }
  if(backlight.loadIndex==index) {
@@ -201,18 +208,25 @@ void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t a
    xe.setHostFramebufferEvent(paging?event:0);
    IORegistryEntry::getRegistryRoot()->setProperty("WEXHostPagingContractReady",paging);
    IORegistryEntry::getRegistryRoot()->setProperty("WEXDSIWakeRecoveryReady",ready);
-   graphicsSeen=true;flushDonors(patcher);
+   graphicsSeen=true;
   }
   if(resetFramebuffer==FB_NONE)return;
   gIOFBVerboseBootPtr=patcher.solveSymbol<uint8_t *>(index,"__ZL16gIOFBVerboseBoot",address,size);
   if(gIOFBVerboseBootPtr){KernelPatcher::RouteRequest route("__ZN13IOFramebuffer6initFBEv",wrapFramebufferInit,orgFramebufferInit);patcher.routeMultiple(index,&route,1,address,size);}
   patcher.clearError();return;
  }
- if(xe.isIntelDonor(index) && !dependenciesSeen(index)) {
-  for(unsigned i=0;i<pendingDonorCount;++i)if(pendingDonors[i].index==index)return;
-  if(pendingDonorCount<arrsize(pendingDonors))pendingDonors[pendingDonorCount++]={index,address,size};
-  else SYSLOG("wex","host dependency queue overflow");
-  return;
+ if(xe.isIntelDonor(index)) {
+  if(!surfaceSeen)processLoadedDependency(patcher,surface);
+  if(xe.isIntelFramebuffer(index) && xe.requiresIntelProvider() && !providerSeen)
+   processLoadedDependency(patcher,kextAppleIntelTGLCompat);
+  if(systemWakeRecovery) {
+   if(!graphicsSeen)processLoadedDependency(patcher,graphics);
+   if(!accelSeen)processLoadedDependency(patcher,accelFamily);
+  }
+  IORegistryEntry::getRegistryRoot()->setProperty("WEXHostDependenciesSeen",dependenciesSeen(index));
+  // Always install the donor's probe/start guards in this callback. Returning
+  // with queued work lets OSKext enter the unpatched native lifecycle. Unknown
+  // host ABIs remain rejected by the existing donor readiness gates.
  }
  xe.processKext(patcher,index,address,size);
 }

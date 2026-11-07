@@ -6,7 +6,7 @@ r=Path(__file__).resolve().parents[1]
 adapter=(r/'WhateverXe/kern_xelp_device.hpp').read_text();adapter=adapter[adapter.index('namespace XELP {'):adapter.rindex('#endif')]
 s=(r/'WhateverXe/kern_host.cpp').read_text();body=s[s.index('void XeHost::processKernel'):s.index('bool XeHost::wrapPanelSetDisplay')]
 header=(r/'WhateverXe/kern_host.hpp').read_text()
-host_state=header[header.index(' bool active'):header.index(' void flushDonors')]
+host_state=header[header.index(' bool active'):header.index(' void processLoadedDependency')]
 xe_source=(r/'WhateverXe/kern_xe.cpp').read_text()
 provider_classifier='\n'.join(re.search(r'bool XE::'+name+r'\(.*?\n\}',xe_source,re.S)[0]
                             for name in ['requiresIntelProvider','isIntelProvider','isIntelFramebuffer'])
@@ -48,20 +48,24 @@ struct DeviceInfo {
 };DeviceInfo DeviceInfo::value;
 namespace WIOKit {bool awaitPublishing(IOPCIDevice *){events.push_back(1);published=publish;return publish;}void renameDevice(IOPCIDevice *device,const char *name){device->name=name;++device->renames;events.push_back(5);}}
 // DEVICE_ADAPTER
+#define KMOD_MAX_NAME 64
+struct kmod_info_t {const char *name;uintptr_t address=0x1000;size_t size=0x1000;kmod_info_t *next=nullptr;};
+kmod_info_t *loadedHead=nullptr;bool validImage=true;unsigned imageUpdates=0;
 struct KernelPatcher {
- enum class Error {NoError}; Error getError(){return Error::NoError;}
+ struct KextInfo {static constexpr size_t Unloaded=0;const char *id=nullptr;size_t loadIndex=0;};
+ enum class Error {NoError,BadImage};Error error=Error::NoError;Error getError(){return error;}
  static constexpr int KernelID=0;
- uintptr_t solveSymbol(int,const char *){return 0;}
+ uintptr_t solveSymbol(int,const char *name){return !strcmp(name,"_kmod") && loadedHead ? reinterpret_cast<uintptr_t>(&loadedHead):0;}
+ size_t updateRunningInfo(size_t,uintptr_t,size_t size){++imageUpdates;error=validImage?Error::NoError:Error::BadImage;return size;}
  template<class T>T solveSymbol(size_t,const char*,mach_vm_address_t,size_t){return T{};}
  struct RouteRequest {template<class T>RouteRequest(const char*,T,uintptr_t&) {}};
  bool routeMultiple(size_t,RouteRequest*,unsigned,mach_vm_address_t,size_t){return true;}
  void routeBlock(uintptr_t,const uint8_t*,size_t){}
- void clearError(){}
+ void clearError(){error=Error::NoError;}
 };
 namespace XeDataAccess {bool processKext(KernelPatcher&,size_t,mach_vm_address_t,size_t){return false;}void processKernel(KernelPatcher &){assert(published);events.push_back(7);}}
-struct Graphics {size_t loadIndex=4;bool off=false;void switchOff(){off=true;}} graphics;
-struct {size_t loadIndex=6;}surface;struct {size_t loadIndex=5;}backlight;struct {size_t loadIndex=7;}accelFamily;
-struct {size_t loadIndex=3;}kextAppleIntelTGLCompat;
+struct Graphics:KernelPatcher::KextInfo {Graphics(size_t i=4){loadIndex=i;id="com.apple.iokit.IOGraphicsFamily";}bool off=false;void switchOff(){off=true;}} graphics;
+KernelPatcher::KextInfo surface{"com.apple.iokit.IOSurface",6},backlight{"com.apple.driver.AppleBacklight",5},accelFamily{"com.apple.iokit.IOAcceleratorFamily2",7},kextAppleIntelTGLCompat{"org.b00t0x.AppleIntelTGLCompat",3};
 using IOSimpleLock=int;int scopeLock=0;uintptr_t fakeThread=1;
 IOSimpleLock *IOSimpleLockAlloc(){return &scopeLock;}
 int IOSimpleLockLockDisableInterrupt(IOSimpleLock*){return 0;}
@@ -74,7 +78,7 @@ constexpr IOReturn kIOReturnSuccess=0,kIOReturnNotReady=-1;
 struct XeHost {
  static XeHost *callbackHost;
  HOST_STATE
- void flushDonors(KernelPatcher&);
+ void processLoadedDependency(KernelPatcher&,KernelPatcher::KextInfo&);
  uintptr_t sleepFBCount=0,sleepFBAt=0;uint32_t repeatedSleep=0,sleepNotifications=0,wakeNotifications=0;
  IOSimpleLock *sleepScopeLock=nullptr;
  struct SleepEntry {IOService *fb=nullptr;bool pending=false;};SleepEntry sleepEntries[3]{};
@@ -175,35 +179,54 @@ assert(exercised.sleepScopes==&outer && !outer.reached);
 assert(XeHost::wrapDisplayChange(nullptr,nullptr,&foreign,4,nullptr)==0);
 assert(*reinterpret_cast<uint32_t*>(machine+0x10c)==before);
 exercised.sleepScopes=nullptr;
-// Already-loaded notifications may arrive in any host dependency order.
-// Neither missing contracts nor a late callback may silently skip donor setup.
+// A donor imports loaded hosts, but a KC host can have no load notification.
+// All native dependencies exist before each donor callback. Notification order
+// must not defer entry guards past that callback or require an unrelated provider.
+kmod_info_t modules[]={
+ {surface.id,0x1000,0x1000,modules+1},
+ {kextAppleIntelTGLCompat.id,0x2000,0x1000,modules+2},
+ {graphics.id,0x3000,0x1000,modules+3},
+ {accelFamily.id,0x4000,0x1000,nullptr}};
+loadedHead=modules;
 unsigned order[]={1,2,3,4,6,7};do {for(bool display13:{false,true})for(bool validProvider:{false,true}) {
- XeHost host;host.active=host.systemWakeRecovery=host.xe.defer=true;events.clear();
+ XeHost host;host.active=host.xe.defer=true;events.clear();
  host.systemWakeRecovery=display13;
  host.xe.tglRequested=!display13;host.xe.display13FramebufferRequested=display13;
- host.xe.providerOK=validProvider;
- host.xe.requireProvider=true;
- std::vector<int> received,expected;bool seen[8]={},dispatched[3]={};
+ host.xe.providerOK=validProvider;host.xe.requireProvider=true;
+ std::vector<int> expected;
  for(auto id:order){
-  seen[id]=true;
-  if(id==1 || id==2)received.push_back(id);
-  // Independent consumer contract: both import IOSurface; only FB imports
-  // Compat. A newly loaded accelerator can be probed before Compat loads.
-  bool common=seen[6] && (!display13 || (seen[4] && seen[7]));
-  for(auto donor:received)if(!dispatched[donor] && common && (donor==2 || seen[3])) {
-   expected.push_back(100+donor);dispatched[donor]=true;
-  }
+  if(id==1 || id==2)expected.push_back(100+id);
   host.processKext(patcher,id,0,0);
   assert(events==expected);
-  if(id==2 && common)assert(dispatched[2] && std::find(events.begin(),events.end(),102)!=events.end());
+  if(id==1 || id==2){assert(host.surfaceSeen);if(display13)assert(host.graphicsSeen && host.accelSeen);}
  }
- assert(events==expected && events.size()==2 && host.pendingDonorCount==0);
+ assert(events==expected && events.size()==2);
  assert(host.xe.rejectedDonors==(validProvider?0U:1U));
- // A failed provider is observed and rejected by consumers. It must not
- // leave the framebuffer waiting forever or fabricate valid ABI exports.
  assert(host.providerSeen && host.xe.providerReady==validProvider);
  }
 }while(std::next_permutation(order,order+6));
+// No notifications for any dependency: both lifecycle installers still run
+// within the donor callbacks, after resolving loaded hosts through Lilu.
+for(bool display13:{false,true}){
+ XeHost host;host.active=host.xe.defer=true;host.xe.tglRequested=!display13;host.xe.display13FramebufferRequested=display13;
+ host.systemWakeRecovery=display13;host.xe.requireProvider=true;events.clear();
+ host.processKext(patcher,2,0,0);assert((events==std::vector<int>{102}));
+ assert(host.surfaceSeen && !host.providerSeen);
+ host.processKext(patcher,1,0,0);assert((events==std::vector<int>{102,101}));
+ assert(host.providerSeen && !host.xe.rejectedDonors);
+}
+// Missing/invalid metadata must not be used to fabricate an observed ABI.
+// The installer is still dispatched, so its existing fail-closed guard is
+// installed instead of leaving the native unpatched lifecycle reachable.
+for(unsigned failure=0;failure<4;++failure){
+ XeHost host;host.active=host.xe.defer=true;host.xe.tglRequested=true;host.xe.requireProvider=true;events.clear();
+ loadedHead=failure==0?nullptr:modules;validImage=failure!=1;
+ auto savedSize=modules[0].size;auto savedIndex=surface.loadIndex;
+ if(failure==2)modules[0].size=0;if(failure==3)surface.loadIndex=0;
+ host.processKext(patcher,2,0,0);assert((events==std::vector<int>{102}) && !host.surfaceSeen);
+ modules[0].size=savedSize;surface.loadIndex=savedIndex;
+}
+validImage=true;loadedHead=nullptr;
 for(bool loadOnly:{false,true})for(bool requested:{false,true}) {
  XeHost host;host.xe.adlpLoadOnly=loadOnly;host.xe.display13FramebufferRequested=requested;
  assert(host.xe.requiresIntelProvider()==(requested && !loadOnly));
