@@ -264,7 +264,7 @@ private:
     bool dsiPowerOffNotified {};
     uint32_t dsiPowerCallbackBusy {},dsiPowerOffEvents {},dsiPowerOnEvents {};
     uint32_t dsiRestoredEpoch {}; // Last shared reset consumed by this transport.
-    bool finishDisplay13SystemWake(IOService *);
+    bool finishDisplay13SystemWake(IOService *,bool nativePowerOn=false);
     uint32_t displayWakeEventEpoch {},displayWakeEventBusy {},displayWakeEventErrors {};
     uint8_t displayWakeEventPhase[3] {};
     static uint32_t wrapDSISetStream(IOService *,IOService *,OSObject *,const void *);

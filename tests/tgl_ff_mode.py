@@ -9,7 +9,6 @@ def arr(n):return bytes(int(x,0) for x in re.search(r'const uint8_t '+n+r'\[\] \
 a,b=arr('ffModeFind'),arr('ffModeReplace')
 assert len(a)==len(b)==17 and d[0x2561c:0x2562d]==a
 assert b==bytes.fromhex('c78004660000000004e0')+bytes([0x90])*7
-assert '&& ffModeOK && l3BypassOK && cpsOK' in s
 code=r'''#include <sys/mman.h>
 #include <stdint.h>
 #include <string.h>

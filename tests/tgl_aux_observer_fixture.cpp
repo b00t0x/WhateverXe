@@ -5,12 +5,15 @@
 #include <initializer_list>
 #define arrsize(a) (sizeof(a)/sizeof((a)[0]))
 #include <sys/mman.h>
+#include "kern_tgl_tc_boot.hpp"
+struct IOService;
 
 struct TGLAUXRecord { uint64_t ns, thread; uint32_t word[28]; };
 static_assert(sizeof(TGLAUXRecord) == 128, "AUX observation schema");
 int mutex; int *tglAUXLock = &mutex;
 TGLAUXRecord tglAUXFirst[9][256] {}, tglAUXLast[9][128] {};
-uint32_t tglAUXCounts[9] {};
+uint32_t tglAUXCounts[9] {},tglAUXControlCounts[9] {};
+TGLAUXRecord tglAUXControl[9][64] {};
 bool quiet;
 bool tglQuietTraining() { return quiet; }
 void clock_get_uptime(uint64_t *p) { *p = 42; }
@@ -19,6 +22,7 @@ void *current_thread() { return reinterpret_cast<void *>(7); }
 void IOSimpleLockLock(int *) {}
 void IOSimpleLockUnlock(int *) {}
 struct XE {
+ bool adlsDisplaySelected=false;struct {bool valid=false;unsigned dp=0,panel=0;}adlsWiring;
  // AUX_FIELDS
  uintptr_t tglPortByDDI, tglEnablePG, tglDisablePG;
  uintptr_t orgTGLEnableAUXPower, orgTGLDisableAUXPower;
@@ -85,8 +89,13 @@ int main() {
  XE::wrapTGLDisableAUXPower(power, 4);
  XE::wrapTGLDisableAUXPower(power, 4);
  assert(pgPuts == 2 && !accessible && ref(0x64) == 0);
- for (unsigned i = 0; i < 12; ++i)
-  checkRecord(tglAUXFirst[4][i], 4, i < 4 ? 5 : 6, i % 2);
+ unsigned boundaries=0;
+ for(unsigned i=0;i<tglAUXCounts[4] && i<256;++i){
+  const auto &record=tglAUXFirst[4][i];
+  if(record.word[1]!=5 && record.word[1]!=6)continue;
+  checkRecord(record,4,boundaries<4?5:6,boundaries%2);++boundaries;
+ }
+ assert(boundaries==12); // additional parent-PG telemetry does not replace boundaries
  // Every event/port is memory-only, even with an inaccessible manager.
  *reinterpret_cast<uint8_t **>(port + 0x578) = mmio;
  unsigned checked = 0;
@@ -101,10 +110,10 @@ int main() {
   }
  }
  const auto count = tglAUXCounts[8]; quiet = true;
- tglAUXRecord(port, 0, false, 0, 0, 0); assert(tglAUXCounts[8] == count); quiet = false;
+ tglAUXRecord(port, 0, false, 0, 0, 0); assert(tglAUXCounts[8] == count+1); quiet = false;
  tglAUXRecord(nullptr, 0, false, 0, 0, 0);
  config[0] = 9; tglAUXRecord(port, 0, false, 0, 0, 0);
- assert(tglAUXCounts[8] == count);
+ assert(tglAUXCounts[8] == count+1);
  munmap(mmio, apertureSize);
- printf("PASS: actual AUX power wrappers preserve 2 get/put pairs, EFI/unbalanced handling; %u port/event records with inaccessible MMIO/manager; record schema and suppression\n", checked);
+ printf("PASS: actual AUX power wrappers preserve 2 get/put pairs, EFI/unbalanced handling; %u port/event records with inaccessible MMIO/manager; record schema and quiet-training retention\n", checked);
 }

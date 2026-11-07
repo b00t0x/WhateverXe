@@ -125,6 +125,7 @@ python3 tools/test.py
 ```
 
 出力先は`build/`です。AppleIntelTGLCompatもここでビルドし、Graphicsで配布します。任意の実ドライバー再生試験には`--donor`・`--accelerator`で対応する原本を指定します。
+検査範囲、モード選択、必須入力、実行ごとの結果は[CPUテスト契約](tests/README.md)を参照してください。
 
 ## ライセンスとクレジット
 

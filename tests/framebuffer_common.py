@@ -5,19 +5,8 @@ import re,subprocess,tempfile,sys
 r=Path(__file__).resolve().parents[1];s=(r/'WhateverXe/kern_xe.cpp').read_text()
 names=['processFramebufferKext','processFramebufferCommon','wrapFramebufferStart']
 f='\n'.join(re.search(r'bool XE::'+n+r'\(.*?\n\}',s,re.S).group() for n in names)
-# The ABI entries have one installer and one trampoline owner. This checks
-# architecture, separately from the CPU/runtime behavioral fixtures below.
-for symbol in ['__ZN21AppleIntelFramebuffer4initEP31AppleIntelFramebufferControllerj',
- '__ZN14AppleIntelPort16computeLaneCountEPK29IODetailedTimingInformationV2jjPj',
- '__ZN31AppleIntelFramebufferController5startEP9IOService',
- '__ZN31AppleIntelFramebufferController12CallBackAGDCE31kAGDCRegisterLinkControlEvent_tmj',
- '__ZN21AppleIntelFramebuffer13newUserClientEP4taskPvjPP12IOUserClient']:
- enabled=re.sub(r'bool XE::processADLPLoadOnly\(.*?\n\}', '', s, flags=re.S)
- assert enabled.count('"'+symbol+'"')==1,symbol
-assert s.count('processFramebufferCommon(patcher,index,address,size)')==1
-assert s.count('tglInstallSonomaSurfaceABI(patcher,index,address,size,true)')==1
-assert s.count('xelpInstallNVRAMABI(patcher,index,address,size)')==1
-assert s.count('processFramebufferDonorRuntime(patcher,index,address,size)')==1
+# Ownership and repeated installation are checked below by executing the
+# installer and its start gate. Textual symbol/call counts are not behavior.
 code=r'''
 #include <cassert>
 #include "kern_xelp_combo_clock.hpp"

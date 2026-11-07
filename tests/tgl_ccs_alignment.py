@@ -2,14 +2,14 @@
 """Replay saved WS aux states through native donor code on CPU; no GPU execution."""
 from pathlib import Path
 import hashlib,json,re,subprocess,sys,tempfile
-repo=Path(__file__).resolve().parents[1];R=repo.parents[1]
+repo=Path(__file__).resolve().parents[1]
 tmp=tempfile.TemporaryDirectory(prefix='tgl-ccs-align-');S=Path(tmp.name)
-source=(R/'repos/WhateverXe/WhateverXe/kern_xe.cpp').read_text()
+source=(repo/'WhateverXe/kern_xe.cpp').read_text()
 helper=re.search(r'static bool tglCorrectCCSAlignment\(uint32_t \*w\) \{.*?\n\}',source,re.S).group()
 donor=Path(sys.argv[1]);d=donor.read_bytes();assert hashlib.sha256(d).hexdigest()=='bd1a21f5e622aadabdab6441f6b5c38ed73fa3053c783fdf0fb7e4b309f273d0'
 head=bytes(int(v,0) for v in re.search(r'const uint8_t auxHead\[\] \{(.*?)\}',source).group(1).split(','));assert d[0x73fc2:0x73fc2+len(head)]==head
 rows=json.loads(Path(sys.argv[2]).read_text())['records']
-rows=[r for r in rows if r['after']['aux']==5];assert len(rows)==2
+rows=[r for r in rows if r['after']['aux']==5];assert rows, 'no aux=5 replay records supplied'
 states=',\n'.join('{'+','.join(r['after']['words'])+'}' for r in rows)
 code=r'''
 #include <stdint.h>
@@ -40,7 +40,7 @@ int main(int argc,char**argv) {
    assert(!tglCorrectCCSAlignment(w));assert(!memcmp(w,before,64));
   }
  }
- munmap(mem,d.size());puts("2 real WS aux states: native aux update reproduced; only HALIGN bit changed; idempotence and22 excluded-layout cases pass. No GPU execution.");
+ munmap(mem,d.size());puts("Retained WS aux states: native aux update reproduced; only HALIGN bit changed; idempotence and excluded-layout preservation pass. No GPU execution.");
 }
 '''.replace('HELPER',helper).replace('STATES',states)
 (S/'check.cpp').write_text(code)

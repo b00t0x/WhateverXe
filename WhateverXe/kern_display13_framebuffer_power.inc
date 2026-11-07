@@ -5,6 +5,7 @@
 
 uint32_t XE::wrapDisplay13SetPowerState(IOService *fb,uint32_t state) {
     bool notifyWake=false;
+    bool nativePowerOn=false;
     recordDSIClient(fb,9,state,UINT32_MAX);
     // Subscribers can re-enter clients. Serialize this transport's callback,
     // without holding its FB mutex across notifications.
@@ -80,13 +81,28 @@ uint32_t XE::wrapDisplay13SetPowerState(IOService *fb,uint32_t state) {
             }
         }
         if(state==2 && !prepareDisplay13Wake(fb))return kIOReturnNotReady;
-        return FunctionCast(wrapDisplay13SetPowerState,callbackXE->orgDSIAttributes[2])(fb,state);
+        const bool enteringWake=state==2 && callbackXE->ownedDisplay13Framebuffer(fb) &&
+            Display13FBMemory::field<uint32_t>(fb,0x4284)!=2;
+        const auto status=FunctionCast(wrapDisplay13SetPowerState,callbackXE->orgDSIAttributes[2])(fb,state);
+        nativePowerOn=enteringWake && status==kIOReturnSuccess;
+        return status;
     }();
     // Preserve the notification obligation across a failed TC handshake or
     // subscriber event. Later power callbacks may retry it without rerunning
     // a completed DSI panel restart.
-    if(result==kIOReturnSuccess && state==2 && (notifyWake || callbackXE->dsiSystemWakeNotify)) {
-        if(callbackXE->finishDisplay13SystemWake(fb))callbackXE->dsiSystemWakeNotify=false;
+    // A native output can be the only wake entry on a controller without DSI.
+    // Its Sleep exit owns its own notifications, but parked Doze/Wake peers
+    // still need common completion. Only a real shared restore generation
+    // establishes that obligation; initial startup must not fabricate a wake.
+    bool nativeWake=false;
+    if(result==kIOReturnSuccess && state==2 && !busy && callbackXE->ownedDisplay13Framebuffer(fb)) {
+        auto &c=display13FBPower;
+        if(c.lock) {
+            IOLockLock(c.lock);nativeWake=c.restoreEpoch!=0;IOLockUnlock(c.lock);
+        }
+    }
+    if(result==kIOReturnSuccess && state==2 && (notifyWake || callbackXE->dsiSystemWakeNotify || nativeWake)) {
+        if(callbackXE->finishDisplay13SystemWake(fb,nativePowerOn))callbackXE->dsiSystemWakeNotify=false;
         else result=kIOReturnNotReady;
     } else if(result==kIOReturnSuccess && state==2 && busy && callbackXE->dsiPowerOffNotified) {
         // Display-only doze has no system DidWake obligation. Pair its off
@@ -111,7 +127,7 @@ bool XE::ownedDisplay13Framebuffer(IOService *fb) const {
         Display13FBMemory::field<IOService *>(adlnTopologyController,0xD60+8*Display13FBMemory::field<uint32_t>(fb,0x1DC))==fb;
 }
 
-bool XE::finishDisplay13SystemWake(IOService *caller) {
+bool XE::finishDisplay13SystemWake(IOService *caller,bool nativePowerOn) {
     if(!display13FramebufferEvent || !caller)return false;
     auto controller=Display13FBMemory::field<IOService *>(caller,0x1D0);
     if(!controller || controller!=adlnTopologyController || controller->getMetaClass()->getClassSize()<0x1C20)return false;
@@ -175,7 +191,12 @@ bool XE::finishDisplay13SystemWake(IOService *caller) {
                 if(events[4+2*index]!=kIOReturnSuccess)displayWakeEventErrors|=1U<<index;
             }
             if(phase==1) {
-                events[5+2*index]=event(fb,8,nullptr);
+                // prepareToEnterWake owns native DidPowerOn, including a
+                // Doze peer that has not run its callback yet. Complete only
+                // the missing DidWake in that case. An already-Wake parked
+                // peer has no future transition; DSI also owns its own pair.
+                const bool nativeOn=!internal && (nativePower==1 || (fb==caller && nativePowerOn));
+                events[5+2*index]=nativeOn ? kIOReturnSuccess : event(fb,8,nullptr);
                 phase=2;
                 if(internal && events[5+2*index]==kIOReturnSuccess && dsiPowerOffNotified) {
                     dsiPowerOffNotified=false;++dsiPowerOnEvents;

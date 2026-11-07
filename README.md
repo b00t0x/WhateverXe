@@ -125,6 +125,7 @@ python3 tools/test.py
 ```
 
 Output is under `build/`. AppleIntelTGLCompat is built here and distributed through Graphics. Optional exact-donor tests accept `--donor` and `--accelerator` paths.
+See [CPU test contracts](tests/README.md) for test scope, mode selection, required inputs and per-run results.
 
 ## License and credits
 

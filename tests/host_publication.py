@@ -10,6 +10,7 @@ host_state=header[header.index(' bool active'):header.index(' void processLoaded
 xe_source=(r/'WhateverXe/kern_xe.cpp').read_text()
 provider_classifier='\n'.join(re.search(r'bool XE::'+name+r'\(.*?\n\}',xe_source,re.S)[0]
                             for name in ['requiresIntelProvider','isIntelProvider','isIntelFramebuffer'])
+surface_setter=re.search(r'void XE::setHostSurfaceABI\(.*?\n\}',xe_source,re.S)[0]
 code=r'''
 #include <cstdint>
 #include <cstddef>
@@ -18,6 +19,9 @@ code=r'''
 #include <cstdio>
 #include <vector>
 #include <algorithm>
+#include <map>
+#include <string>
+#include <array>
 #define arrsize(x) (sizeof(x)/sizeof((x)[0]))
 #define SYSLOG(...) ((void)0)
 #include "kern_xelp_platform.hpp"
@@ -51,13 +55,15 @@ namespace WIOKit {bool awaitPublishing(IOPCIDevice *){events.push_back(1);publis
 #define KMOD_MAX_NAME 64
 struct kmod_info_t {const char *name;uintptr_t address=0x1000;size_t size=0x1000;kmod_info_t *next=nullptr;};
 kmod_info_t *loadedHead=nullptr;bool validImage=true;unsigned imageUpdates=0;
+std::map<std::string,uintptr_t> symbols;
+static XELPNative::SurfaceABI tglHostSurfaceABI[2]{};
 struct KernelPatcher {
  struct KextInfo {static constexpr size_t Unloaded=0;const char *id=nullptr;size_t loadIndex=0;};
  enum class Error {NoError,BadImage};Error error=Error::NoError;Error getError(){return error;}
  static constexpr int KernelID=0;
  uintptr_t solveSymbol(int,const char *name){return !strcmp(name,"_kmod") && loadedHead ? reinterpret_cast<uintptr_t>(&loadedHead):0;}
  size_t updateRunningInfo(size_t,uintptr_t,size_t size){++imageUpdates;error=validImage?Error::NoError:Error::BadImage;return size;}
- template<class T>T solveSymbol(size_t,const char*,mach_vm_address_t,size_t){return T{};}
+ template<class T>T solveSymbol(size_t,const char *name,mach_vm_address_t,size_t){return (T)symbols[name];}
  struct RouteRequest {template<class T>RouteRequest(const char*,T,uintptr_t&) {}};
  bool routeMultiple(size_t,RouteRequest*,unsigned,mach_vm_address_t,size_t){return true;}
  void routeBlock(uintptr_t,const uint8_t*,size_t){}
@@ -98,7 +104,7 @@ struct XeHost {
  bool isIntelFramebuffer(size_t)const;Graphics frame{1};Graphics *currentFramebuffer=&frame;
  bool requireProvider=false,providerReady=false,providerOK=true;unsigned rejectedDonors=0;
  bool tglRequested=false,display13FramebufferRequested=false,adlpLoadOnly=false;
- void setHostSurfaceABI(unsigned,unsigned){}
+ void setHostSurfaceABI(unsigned,unsigned);
  void setHostFramebufferEvent(uintptr_t){}
  void setHostSleepReady(bool){}
  void setHostWakeRecoveryReady(bool){}
@@ -116,7 +122,7 @@ struct XeHost {
  static void wrapPanelSetDisplay(){}static void wrapFramebufferInit(){}
  uintptr_t orgPanelSetDisplay=0,orgFramebufferInit=0;uint8_t *gIOFBVerboseBootPtr=nullptr;
 };
-'''.replace('// DEVICE_ADAPTER',adapter).replace('HOST_STATE',host_state)+provider_classifier.replace('XE::','XeHost::XE::')+body+r'''
+'''.replace('// DEVICE_ADAPTER',adapter).replace('HOST_STATE',host_state)+provider_classifier.replace('XE::','XeHost::XE::')+surface_setter.replace('XE::','XeHost::XE::')+body+r'''
 XeHost *XeHost::callbackHost;
 static IOReturn vendor(IOFramebuffer*,uint32_t,uint32_t){return 42;}
 int main(){KernelPatcher patcher;IOPCIDevice gpu,mei;
@@ -179,6 +185,34 @@ assert(exercised.sleepScopes==&outer && !outer.reached);
 assert(XeHost::wrapDisplayChange(nullptr,nullptr,&foreign,4,nullptr)==0);
 assert(*reinterpret_cast<uint32_t*>(machine+0x10c)==before);
 exercised.sleepScopes=nullptr;
+// The real host caller must read enough bytes and publish both consumer ABIs
+// through the real setter, not a fixture setter that silently discards them.
+// Synthesized leaf getters follow the retained IOSurface field contracts.
+for(bool original:{false,true})for(unsigned padding:{0U,17U,34U})for(bool framed:{false,true})
+for(unsigned bad=0;bad<4;++bad){
+ using A=XELPNative::SurfaceABI;
+ std::array<uint8_t,512> image{};symbols.clear();
+ const char *names[]={"__ZNK9IOSurface14getPixelFormatEv","__ZNK9IOSurface13getPlaneCountEv",
+  "__ZNK9IOSurface12getSurfaceIDEv","__ZNK9IOSurface14getYCbCrMatrixEv"};
+ const std::vector<uint8_t> old[]={{0x8b,0x87,0xa4,0,0,0},{0x8b,0x87,0xb0,0,0,0},
+  {0x8b,0x47,0x0c},{0x8b,0x87,0xb4,0,0,0}};
+ const std::vector<uint8_t> recent[]={{0x8b,0x87,0x80,0,0,0},{0x8b,0x87,0x98,0,0,0},
+  {0x8b,0x47,0x10},{0x48,0x8b,0x87,0x78,1,0,0,0x0f,0xb6,0x40,0x6a}};
+ for(unsigned i=0;i<4;++i){
+  std::vector<uint8_t> bytes(padding,0x90);if(framed)bytes.insert(bytes.end(),{0x55,0x48,0x89,0xe5});
+  const auto &load=original?old[i]:recent[i];bytes.insert(bytes.end(),load.begin(),load.end());
+  if(framed)bytes.push_back(0x5d);bytes.push_back(0xc3);
+  // Wrong ABI field, independently for the common and consumer-only getters.
+  if((bad==1 && i==0)||(bad==2 && i==1)||(bad==3 && i==2))bytes[padding+(framed?4:0)+2]^=1;
+  memcpy(image.data()+128*i,bytes.data(),bytes.size());
+  symbols[names[i]]=reinterpret_cast<uintptr_t>(image.data()+128*i);
+ }
+ XeHost host;host.active=true;host.processKext(patcher,6,reinterpret_cast<uintptr_t>(image.data()),image.size());
+ const auto fb=(bad==1 || bad==3)?A::Unknown:original?A::Original:A::RelocatedFields;
+ const auto accel=(bad==1 || bad==2)?A::Unknown:original?A::Original:A::Attachment6A;
+ assert(tglHostSurfaceABI[0]==fb && tglHostSurfaceABI[1]==accel);
+}
+symbols.clear();
 // A donor imports loaded hosts, but a KC host can have no load notification.
 // All native dependencies exist before each donor callback. Notification order
 // must not defer entry guards past that callback or require an unrelated provider.
