@@ -95,15 +95,16 @@ void XeHost::processKernel(KernelPatcher &patcher) {
  DeviceInfo::deleter(info);
 }
 void XeHost::flushDonors(KernelPatcher &patcher) {
- if(!dependenciesSeen())return;
- // Lilu enumerates already-loaded kmods in list order, not dependency order.
- // Flush synchronously within Lilu's load notification once hosts are known.
- // Keep the received donor order; never bypass Lilu's image validation by
- // resolving an unnotified host image ourselves.
+ // Only the framebuffer consumes Compat exports. Accelerator probe admission
+ // must be patched during its load callback, even before Compat is notified.
+ // Keep queued framebuffer work while releasing independently ready donors.
+ unsigned remaining=0;
  for(unsigned i=0;i<pendingDonorCount;++i) {
-  const auto &p=pendingDonors[i];xe.processKext(patcher,p.index,p.address,p.size);
+  const auto p=pendingDonors[i];
+  if(dependenciesSeen(p.index))xe.processKext(patcher,p.index,p.address,p.size);
+  else pendingDonors[remaining++]=p;
  }
- pendingDonorCount=0;
+ pendingDonorCount=remaining;
 }
 void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
  if(!active)return;
@@ -207,7 +208,7 @@ void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t a
   if(gIOFBVerboseBootPtr){KernelPatcher::RouteRequest route("__ZN13IOFramebuffer6initFBEv",wrapFramebufferInit,orgFramebufferInit);patcher.routeMultiple(index,&route,1,address,size);}
   patcher.clearError();return;
  }
- if(xe.isIntelDonor(index) && !dependenciesSeen()) {
+ if(xe.isIntelDonor(index) && !dependenciesSeen(index)) {
   for(unsigned i=0;i<pendingDonorCount;++i)if(pendingDonors[i].index==index)return;
   if(pendingDonorCount<arrsize(pendingDonors))pendingDonors[pendingDonorCount++]={index,address,size};
   else SYSLOG("wex","host dependency queue overflow");

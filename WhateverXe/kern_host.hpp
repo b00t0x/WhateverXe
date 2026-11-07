@@ -12,7 +12,8 @@ private:
  bool surfaceSeen {},graphicsSeen {},accelSeen {},providerSeen {};
  struct PendingDonor {size_t index;mach_vm_address_t address;size_t size;};
  PendingDonor pendingDonors[2] {};unsigned pendingDonorCount {};
- bool dependenciesSeen() const {return surfaceSeen && (!xe.requiresIntelProvider() || providerSeen) &&
+ bool dependenciesSeen(size_t index) const {return surfaceSeen &&
+  (!xe.isIntelFramebuffer(index) || !xe.requiresIntelProvider() || providerSeen) &&
   (!systemWakeRecovery || (graphicsSeen && accelSeen));}
  void flushDonors(KernelPatcher &);
  mach_vm_address_t sleepFBCount {};

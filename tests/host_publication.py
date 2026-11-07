@@ -9,7 +9,7 @@ header=(r/'WhateverXe/kern_host.hpp').read_text()
 host_state=header[header.index(' bool active'):header.index(' void flushDonors')]
 xe_source=(r/'WhateverXe/kern_xe.cpp').read_text()
 provider_classifier='\n'.join(re.search(r'bool XE::'+name+r'\(.*?\n\}',xe_source,re.S)[0]
-                            for name in ['requiresIntelProvider','isIntelProvider'])
+                            for name in ['requiresIntelProvider','isIntelProvider','isIntelFramebuffer'])
 code=r'''
 #include <cstdint>
 #include <cstddef>
@@ -91,6 +91,7 @@ struct XeHost {
  bool defer=false;bool isIntelDonor(size_t i)const{return defer && (i==1 || i==2);}
  bool isIntelProvider(size_t index)const;
  bool requiresIntelProvider()const;
+ bool isIntelFramebuffer(size_t)const;Graphics frame{1};Graphics *currentFramebuffer=&frame;
  bool requireProvider=false,providerReady=false,providerOK=true;unsigned rejectedDonors=0;
  bool tglRequested=false,display13FramebufferRequested=false,adlpLoadOnly=false;
  void setHostSurfaceABI(unsigned,unsigned){}
@@ -102,7 +103,7 @@ struct XeHost {
  void processKernel(KernelPatcher &,DeviceInfo *){events.push_back(8);}
  void processKext(KernelPatcher&,size_t index,mach_vm_address_t,size_t){
   if(index==3){providerReady=providerOK;return;}
-  if(requireProvider && isIntelDonor(index) && !providerReady)++rejectedDonors;
+  if(requireProvider && isIntelFramebuffer(index) && !providerReady)++rejectedDonors;
   events.push_back(100+index);
  }
  } xe;
@@ -182,17 +183,24 @@ unsigned order[]={1,2,3,4,6,7};do {for(bool display13:{false,true})for(bool vali
  host.xe.tglRequested=!display13;host.xe.display13FramebufferRequested=display13;
  host.xe.providerOK=validProvider;
  host.xe.requireProvider=true;
- std::vector<int> received;
+ std::vector<int> received,expected;bool seen[8]={},dispatched[3]={};
  for(auto id:order){
-  if(id==1 || id==2)received.push_back(100+id);
+  seen[id]=true;
+  if(id==1 || id==2)received.push_back(id);
+  // Independent consumer contract: both import IOSurface; only FB imports
+  // Compat. A newly loaded accelerator can be probed before Compat loads.
+  bool common=seen[6] && (!display13 || (seen[4] && seen[7]));
+  for(auto donor:received)if(!dispatched[donor] && common && (donor==2 || seen[3])) {
+   expected.push_back(100+donor);dispatched[donor]=true;
+  }
   host.processKext(patcher,id,0,0);
-  if(!host.dependenciesSeen())assert(events.empty());
-  else assert(events==received);
+  assert(events==expected);
+  if(id==2 && common)assert(dispatched[2] && std::find(events.begin(),events.end(),102)!=events.end());
  }
- assert(events==received && events.size()==2 && host.pendingDonorCount==0);
- assert(host.xe.rejectedDonors==(validProvider?0U:2U));
+ assert(events==expected && events.size()==2 && host.pendingDonorCount==0);
+ assert(host.xe.rejectedDonors==(validProvider?0U:1U));
  // A failed provider is observed and rejected by consumers. It must not
- // leave both donors waiting forever or fabricate valid ABI exports.
+ // leave the framebuffer waiting forever or fabricate valid ABI exports.
  assert(host.providerSeen && host.xe.providerReady==validProvider);
  }
 }while(std::next_permutation(order,order+6));

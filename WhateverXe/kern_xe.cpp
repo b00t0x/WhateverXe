@@ -4559,6 +4559,10 @@ bool XE::isIntelDonor(size_t index) const {
         (currentGraphics && currentGraphics->loadIndex==index);
 }
 
+bool XE::isIntelFramebuffer(size_t index) const {
+    return currentFramebuffer && currentFramebuffer->loadIndex==index;
+}
+
 bool XE::requiresIntelProvider() const {
     return !adlpLoadOnly && (tglRequested || display13FramebufferRequested);
 }
