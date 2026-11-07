@@ -4,6 +4,16 @@ This repository owns WhateverXe, AppleIntelTGLCompat, their shared contracts and
 standalone CPU tests. Preserve exact driver and physical identity guards. Keep
 refactoring separate from adding support for new hardware.
 
+## Next-release development
+
+Use the current tip of `codex/next-release` as the base for next-release task
+branches. Create a separate task branch/worktree; keep the shared integration
+checkout available for accepted changes. Before continuing an older task branch,
+bring in the current common base while preserving that task's work and history.
+Retain its test contracts and maintenance rules when resolving conflicts.
+Promoting a change to this base is distinct from release or hardware qualification.
+Temporary live-observation code and generated assets do not belong in the base.
+
 ## Documentation
 
 README is the user-facing entry point: purpose, current compatibility, required
