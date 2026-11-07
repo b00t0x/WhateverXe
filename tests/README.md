@@ -4,6 +4,81 @@ These tests check bounded CPU behavior, dependency metadata and selected driver
 instructions. Passing them does not establish GPU execution, physical display,
 firmware behavior or arbitrary kernel scheduling.
 
+## Maintaining test contracts
+
+Apply these rules to implementation changes and test additions, corrections,
+merges and removals. An existing passing test is not an approved specification.
+The [check inventory](#independent-expectations-and-boundaries) describes selected
+checks; it is not certification of every assertion or of the entire suite.
+
+Before a change, identify the intended behavior and retained behavior, then
+choose the production paths and tests needed to protect them. Keep a short
+description near the test, in this document or in the change description:
+
+| Record | What to identify |
+| --- | --- |
+| Contract and basis | Accepted capabilities, required effects, owner/order/failure rules; specification, reference implementation, exact donor caller/consumer or immutable positive history |
+| Tested path | Production entry, input producer, state propagation and consumer; explicitly modeled prerequisites and hardware/OS boundaries |
+| Counterexamples | Invalid rejection, missing work, wrong delegation, duplicate effects or another plausible error that must fail; valid inputs and meaning-preserving variations that must still pass |
+| Execution and limits | Required modes/inputs, tested source and result locations, omitted paths and conclusions the check cannot support |
+
+Reuse an existing description when it still applies. Do not create a separate
+form for every assertion or copy implementation conditions into an oracle.
+Synthetic cases need a contractual basis; retained readouts need provenance.
+Capacity, bit position, OS metadata and layout should vary independently where
+the consumer contract allows it. Previous positive inputs remain independent
+protections; previous negative inputs must not freeze an admission limit.
+
+WEX owns the required adaptation for target Xe-LP devices, including reused
+native paths. A branch declining work must reach another correct WEX handler
+or a native path expected to work for a stated reason. Preserve shared handling
+for the same contract and split confirmed differences. Test both responsibility
+gaps and wrong backend selection. Mismatch with an observed configuration,
+resource tuple, build metadata or fixture size alone is not a rejection reason.
+Preserve actual ownership, input-safety, ABI and fixed-donor identity guards.
+If a required operation or ABI cannot be established, keep the corresponding
+consumer unready and record the missing capability. Refusal is not completed
+support for that capability.
+
+Use real production code for the dependency decisions and state propagation
+being tested. A direct helper check does not prove its caller reaches it.
+An explicit `true` prerequisite is still a model assumption: identify how the
+real producer establishes it and test the connection where required. Do not
+auto-enable fields or dependencies discovered in production source. Check the
+effect at the consumer, including failure, retry, reentry and missing events
+where relevant. A successful return or internal ready flag need not mean that
+the requested work occurred. For shared notifications, model native ownership
+and delivery as well as WEX calls.
+
+On failure, compare both the test model and production against the independent
+contract. Fix the incorrect side, which can be both. Distinguish fixture API
+updates from changes to expected behavior; record the basis for the latter.
+Do not delete a valid input, add a success stub or skip a mode to make a known
+defect pass. Do not restore an obsolete candidate policy merely for an old test;
+establish whether its original requirement was valid and where it is protected.
+If the contract remains unresolved, keep that uncertainty visible.
+
+Before deleting or merging tests, identify each useful contract, boundary and
+counterexample and where its protection remains. Move unique protection first.
+Keep useful structural lint labeled as such; neither test counts nor source
+spelling can substitute for behavior checks.
+For important contract changes, demonstrate a relevant semantic fault failing
+at the intended behavior assertion. Reuse suitable existing counterexamples;
+extraction/compile failures are not evidence of detecting the intended defect.
+Do not require a global mutation score or a new framework.
+
+Register new scripts and modes in `tools/test.py`, with distinct job names,
+required inputs and correct kinds. Shared helpers need registered callers.
+Run the modes required by the affected contract with `--require`; the default
+CI command does not supply optional original inputs. Registration completeness
+does not prove requirement coverage. Keep per-run failures and omissions,
+including when a later run resolves them. Combine complementary runs only when
+their source, fixtures and input contracts correspond; do not select passing
+fragments to hide unresolved failures. Update the relevant descriptions when
+contracts, boundaries or modes change. Report those boundaries, required-mode
+results and limits before aggregate counts, and keep build and hardware claims
+separate from CPU assertions.
+
 ## Selecting and requiring checks
 
 ```sh
