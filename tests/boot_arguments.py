@@ -83,6 +83,9 @@ static bool adlnNativeRCSProfileRequested;
 using kern_return_t = int;
 struct kmod_info_t {};
 static constexpr int KERN_FAILURE=5, KERN_SUCCESS=0;
+// Activation is an established prerequisite here; compat_exports executes the
+// real publisher/consumer and rejects missing or incompatible activation.
+namespace WEXGraphicsActivation {bool ready(){return true;}}
 // ACTUAL_SOURCE
 // PREREQUISITES
 static XE boot(std::initializer_list<const char *> names, uint32_t pci=0x46D28086,uint32_t effective=0) {

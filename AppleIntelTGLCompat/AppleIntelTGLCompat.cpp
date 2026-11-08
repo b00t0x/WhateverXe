@@ -9,6 +9,7 @@
 #include "AppleIntelTGLCompatPortProbe.hpp"
 #include "kern_xelp_device.hpp"
 #include "kern_xelp_os.hpp"
+#include "kern_graphics_activation.hpp"
 
 extern "C" const char version[];
 
@@ -237,6 +238,10 @@ extern "C" uint32_t tglProbePort(void *port) {
 }
 
 extern "C" kern_return_t tglStart(kmod_info_t *, void *) {
+    if (!WEXGraphicsActivation::ready()) {
+        IOLog("AppleIntelTGLCompat: WEX inactive; leaving firmware graphics in control\n");
+        return KERN_FAILURE;
+    }
     if (XELP::kernelOS(version)==XELP::OS::Unknown)return KERN_FAILURE;
 
     // Backend selection is per physical owner/validated binding, not a global

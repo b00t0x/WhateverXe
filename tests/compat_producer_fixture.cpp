@@ -7,11 +7,6 @@ extern "C" const char version[]="Darwin Kernel Version 25.6.9: synthetic; root:x
 #include "kern_tgl_tc_boot.hpp"
 // Registry is an observation boundary; the real WEX method constructs and
 // delivers ProbeConfig directly to the real Compat export on the same objects.
-struct IORegistryEntry {
-    bool bound=false;unsigned publications=0;
-    static IORegistryEntry *getRegistryRoot(){static IORegistryEntry root;return &root;}
-    void setProperty(const char *name,bool value){assert(!strcmp(name,"XELPSharedProbeBound"));bound=value;++publications;}
-};
 struct XE {
     XELP::Profile xeProfile;
     XELP::ProbePort xelpProviderProbe=tglProbePort;

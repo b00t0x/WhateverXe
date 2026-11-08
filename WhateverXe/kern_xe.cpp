@@ -4554,6 +4554,11 @@ void XE::processKernel(KernelPatcher &patcher, DeviceInfo *info) {
 	}
 }
 
+bool XE::isGraphicsStack(size_t index) const {
+    return index!=KernelPatcher::KextInfo::Unloaded &&
+        (index==kextAppleIntelTGLCompat.loadIndex || index==kextIntelTGL.loadIndex || index==kextIntelTGLFb.loadIndex);
+}
+
 bool XE::isIntelDonor(size_t index) const {
     return (currentFramebuffer && currentFramebuffer->loadIndex==index) ||
         (currentGraphics && currentGraphics->loadIndex==index);

@@ -106,6 +106,29 @@ static void dsbFailure(const char *mode) {
     assert(tglSetupDSB(&m.controller)==kIOReturnSuccess);
 }
 int main(int argc,char **argv) {
+    if(argc==2 && !strcmp(argv[1],"plugin-off")) {
+        auto root=IORegistryEntry::getRegistryRoot();
+        assert(!WEXGraphicsActivation::ready());
+        assert(tglStart(nullptr,nullptr)==KERN_FAILURE);
+        OSObject foreign;root->activation=&foreign;
+        assert(tglStart(nullptr,nullptr)==KERN_FAILURE);
+        root->activation=&root->token;
+        for(unsigned abi:{0U,2U,0xFFFFFFFFU}) {
+            root->token.value=abi;
+            assert(tglStart(nullptr,nullptr)==KERN_FAILURE);
+        }
+        root->token.value=1;
+        for(unsigned bytes:{0U,1U,3U,5U,8U}) {
+            root->token.size=bytes;
+            assert(tglStart(nullptr,nullptr)==KERN_FAILURE);
+        }
+        assert(!hostStarts);
+        activateFixturePlugin();
+        assert(hostStarts==1 && WEXGraphicsActivation::ready());
+        assert(tglStart(nullptr,nullptr)==KERN_SUCCESS);
+        return 0;
+    }
+    activateFixturePlugin();
     assert(argc==2);const char *mode=argv[1];
     if(!strcmp(mode,"mmio32"))mmio32();
     else if(!strcmp(mode,"mmio64"))mmio64(false);

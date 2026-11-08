@@ -9,6 +9,7 @@
 #include <Headers/kern_api.hpp>
 
 #include "kern_host.hpp"
+#include "kern_graphics_activation.hpp"
 
 static XeHost host;
 
@@ -38,6 +39,7 @@ PluginConfiguration ADDPR(config) {
 	KernelVersion::Tahoe,
 	[]() {
 		host.init();
+		WEXGraphicsActivation::publish();
 	}
 };
 

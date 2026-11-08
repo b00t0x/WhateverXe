@@ -56,6 +56,8 @@ AMFIPassは本家版に代えてリンク先の**Mod版**を使用し、両方�
 
 Graphicsは`/Library`への配置とAuxKC生成を行い、Systemファイルやsnapshotにはパッチしません。旧Xe System patchは先に復元してください。他のroot patchのためにOCLPを使う場合は、同じMod署名に対応する[独自ビルド版OCLP](https://github.com/b00t0x/OpenCore-Legacy-Patcher)を使用します。
 
+アクセラレーションにはWEXとGraphicsの両方が必要です。導入順は問いません。WEXが未導入・無効・互換性不一致の場合、GraphicsはファームウェアのGOP描画を維持します。WEX単独でもファームウェア描画を維持します。
+
 ## 設定
 
 ### 必須ブート引数

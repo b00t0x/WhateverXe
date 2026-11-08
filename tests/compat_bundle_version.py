@@ -10,12 +10,13 @@ from check_compat_version import check
 
 
 class CompatVersionTests(unittest.TestCase):
-    def validate(self, current, minimum):
+    def validate(self, current, minimum, libraries=None):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'Info.plist'
             path.write_bytes(plistlib.dumps({
                 'CFBundleIdentifier': 'org.b00t0x.AppleIntelTGLCompat',
-                'CFBundleVersion': current, 'OSBundleCompatibleVersion': minimum}))
+                'CFBundleVersion': current, 'OSBundleCompatibleVersion': minimum,
+                'OSBundleLibraries': libraries or {}}))
             check(path)
 
     def test_release_bump_preserves_old_clients(self):
@@ -30,6 +31,10 @@ class CompatVersionTests(unittest.TestCase):
     def test_provider_too_old(self):
         with self.assertRaisesRegex(ValueError, 'no longer accepts'):
             self.validate('0.4.0', '0.4.0')
+
+    def test_efi_only_plugin_is_not_an_auxkc_dependency(self):
+        with self.assertRaisesRegex(ValueError, 'EFI-only WEX'):
+            self.validate('0.8.0', '0.5.0', {'org.b00t0x.WhateverXe': '0.8.0'})
 
 
 if __name__ == '__main__':

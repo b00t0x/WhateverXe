@@ -42,6 +42,8 @@ def check(path):
     info = plistlib.loads(path.read_bytes())
     if info['CFBundleIdentifier'] != 'org.b00t0x.AppleIntelTGLCompat':
         raise ValueError('wrong Compat bundle identifier')
+    if 'org.b00t0x.WhateverXe' in info.get('OSBundleLibraries', {}):
+        raise ValueError('Compat must not require EFI-only WEX when building AuxKC')
     # Existing Graphics framebuffer payloads request this ABI independently of
     # the provider's release version. Changing it requires coordinated clients.
     required = (0, 5, 0)

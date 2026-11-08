@@ -56,6 +56,8 @@ Use the linked **Mod** AMFIPass instead of upstream AMFIPass; do not load both. 
 
 Graphics installs under `/Library` and rebuilds AuxKC without patching System files or snapshots. Restore an old Xe System patch before installing. If you need OCLP for other root patches, use the [custom OCLP build](https://github.com/b00t0x/OpenCore-Legacy-Patcher) with the matching Mod signing chain.
 
+Acceleration requires both WEX and Graphics. Either component may be installed first. If WEX is missing, disabled or incompatible, Graphics leaves firmware GOP graphics active; WEX alone also leaves firmware graphics active.
+
 ## Configuration
 
 ### Required boot arguments

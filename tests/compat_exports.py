@@ -13,7 +13,7 @@ with tempfile.TemporaryDirectory(prefix='compat-exports-') as directory:
     exe = compile_fixture(directory, fixture)
     check_exports(exe, c_prefix='_' if sys.platform=='darwin' else '')
     failed = []
-    for mode in ['mmio32','mmio64','external64','gates','dsb','dsb-last','dsb-last-small','clock',
+    for mode in ['plugin-off','mmio32','mmio64','external64','gates','dsb','dsb-last','dsb-last-small','clock',
                  'alloc','short','null-bytes','zero-physical','unaligned','overflow',
                  'pte-window','pte-base','ggtt-alignment','fixed-size','page-size']:
         result = subprocess.run([str(exe), mode])

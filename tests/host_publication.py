@@ -4,12 +4,12 @@ from pathlib import Path
 import re,subprocess,tempfile
 r=Path(__file__).resolve().parents[1]
 adapter=(r/'WhateverXe/kern_xelp_device.hpp').read_text();adapter=adapter[adapter.index('namespace XELP {'):adapter.rindex('#endif')]
-s=(r/'WhateverXe/kern_host.cpp').read_text();body=s[s.index('void XeHost::processKernel'):s.index('bool XeHost::wrapPanelSetDisplay')]
+s=(r/'WhateverXe/kern_host.cpp').read_text();body=s[s.index('void XeHost::init'):s.index('bool XeHost::wrapPanelSetDisplay')]
 header=(r/'WhateverXe/kern_host.hpp').read_text()
 host_state=header[header.index(' bool active'):header.index(' void processLoadedDependency')]
 xe_source=(r/'WhateverXe/kern_xe.cpp').read_text()
 provider_classifier='\n'.join(re.search(r'bool XE::'+name+r'\(.*?\n\}',xe_source,re.S)[0]
-                            for name in ['requiresIntelProvider','isIntelProvider','isIntelFramebuffer'])
+                            for name in ['isGraphicsStack','requiresIntelProvider','isIntelProvider','isIntelFramebuffer'])
 surface_setter=re.search(r'void XE::setHostSurfaceABI\(.*?\n\}',xe_source,re.S)[0]
 code=r'''
 #include <cstdint>
@@ -69,9 +69,24 @@ struct KernelPatcher {
  void routeBlock(uintptr_t,const uint8_t*,size_t){}
  void clearError(){error=Error::NoError;}
 };
-namespace XeDataAccess {bool processKext(KernelPatcher&,size_t,mach_vm_address_t,size_t){return false;}void processKernel(KernelPatcher &){assert(published);events.push_back(7);}}
+bool PE_parse_boot_argn(const char*,void*,size_t){return false;}
+struct {
+ using PatcherCallback=void(*)(void*,KernelPatcher&);
+ std::vector<std::pair<PatcherCallback,void*>> kernelCallbacks;
+ void onPatcherLoadForce(PatcherCallback callback,void *user){kernelCallbacks.push_back({callback,user});}
+ template<class F>void onKextLoadForce(void*,unsigned,F,void*){}
+ void onKextLoadForce(KernelPatcher::KextInfo*){}
+} lilu;
+namespace XeDataAccess {
+ void init(){}
+ KernelPatcher::KextInfo sandbox{"com.apple.security.sandbox",8};unsigned installs=0;
+ KernelPatcher::KextInfo &dependency(){return sandbox;}
+ bool processKext(KernelPatcher&,size_t index,mach_vm_address_t,size_t){assert(index==8);++installs;return true;}
+ void processKernel(KernelPatcher &){assert(published);events.push_back(7);}
+}
 struct Graphics:KernelPatcher::KextInfo {Graphics(size_t i=4){loadIndex=i;id="com.apple.iokit.IOGraphicsFamily";}bool off=false;void switchOff(){off=true;}} graphics;
 KernelPatcher::KextInfo surface{"com.apple.iokit.IOSurface",6},backlight{"com.apple.driver.AppleBacklight",5},accelFamily{"com.apple.iokit.IOAcceleratorFamily2",7},kextAppleIntelTGLCompat{"org.b00t0x.AppleIntelTGLCompat",3};
+KernelPatcher::KextInfo kextIntelTGL{"com.apple.driver.AppleIntelTGLGraphics",2},kextIntelTGLFb{"com.apple.driver.AppleIntelTGLGraphicsFramebuffer",1};
 using IOSimpleLock=int;int scopeLock=0;uintptr_t fakeThread=1;
 IOSimpleLock *IOSimpleLockAlloc(){return &scopeLock;}
 int IOSimpleLockLockDisableInterrupt(IOSimpleLock*){return 0;}
@@ -98,8 +113,10 @@ struct XeHost {
  IOPCIDevice *backlightGPU=nullptr;
  struct vc_info{};vc_info consoleVinfo;bool gotConsoleVinfo=false;
  struct XE {
+ void init(){}
  bool defer=false;bool isIntelDonor(size_t i)const{return defer && (i==1 || i==2);}
  bool isIntelProvider(size_t index)const;
+ bool isGraphicsStack(size_t index)const;
  bool requiresIntelProvider()const;
  bool isIntelFramebuffer(size_t)const;Graphics frame{1};Graphics *currentFramebuffer=&frame;
  bool requireProvider=false,providerReady=false,providerOK=true;unsigned rejectedDonors=0;
@@ -117,6 +134,7 @@ struct XeHost {
   events.push_back(100+index);
  }
  } xe;
+ void init();
  void processKernel(KernelPatcher &);
  void processKext(KernelPatcher &,size_t,mach_vm_address_t,size_t);
  static void wrapPanelSetDisplay(){}static void wrapFramebufferInit(){}
@@ -126,6 +144,29 @@ struct XeHost {
 XeHost *XeHost::callbackHost;
 static IOReturn vendor(IOFramebuffer*,uint32_t,uint32_t){return 42;}
 int main(){KernelPatcher patcher;IOPCIDevice gpu,mei;
+// Execute actual registration as well as dispatch: the early kernel callback
+// must not initialize the GPU when there is no Graphics image.
+{XeHost host;events.clear();host.init();
+ for(auto callback:lilu.kernelCallbacks)callback.first(callback.second,patcher);
+ assert(events.empty() && !host.kernelProcessed && !host.active);
+}
+// Host-only notifications must not discover the GPU or mutate firmware state.
+for(unsigned id:{0U,4U,5U,6U,7U,8U,99U}) {
+ XeHost host;events.clear();published=false;
+ host.processKext(patcher,id,0,0);
+ assert(events.empty() && !host.kernelProcessed && !host.active);
+}
+// Either driver or its provider can be first in Lilu's loaded-image walk.
+for(unsigned id:{1U,2U,3U}) {
+ XeHost host;events.clear();publish=true;published=false;identity=0x9a498086;
+ DeviceInfo::value.videoBuiltin=&gpu;DeviceInfo::value.managementEngine=nullptr;
+ host.processKext(patcher,id,0,0);
+ assert(host.kernelProcessed && host.active && events.front()==1);
+ assert(std::count(events.begin(),events.end(),8)==1);
+ host.processKext(patcher,id,0,0);
+ assert(std::count(events.begin(),events.end(),8)==1);
+}
+events.clear();
 XeHost exercised;XeHost::callbackHost=&exercised;exercised.orgWSAAAttribute=reinterpret_cast<uintptr_t>(&vendor);
 assert(XeHost::wrapWSAAAttribute(&gpu,1,1)==42);exercised.xe.degraded=&gpu;
 assert(XeHost::wrapWSAAAttribute(&gpu,1,0x101)==kIOReturnNotReady && XeHost::wrapWSAAAttribute(&gpu,1,0)==kIOReturnNotReady);
@@ -207,7 +248,7 @@ for(unsigned bad=0;bad<4;++bad){
   memcpy(image.data()+128*i,bytes.data(),bytes.size());
   symbols[names[i]]=reinterpret_cast<uintptr_t>(image.data()+128*i);
  }
- XeHost host;host.active=true;host.processKext(patcher,6,reinterpret_cast<uintptr_t>(image.data()),image.size());
+ XeHost host;host.kernelProcessed=true;host.active=true;host.processKext(patcher,6,reinterpret_cast<uintptr_t>(image.data()),image.size());
  const auto fb=(bad==1 || bad==3)?A::Unknown:original?A::Original:A::RelocatedFields;
  const auto accel=(bad==1 || bad==2)?A::Unknown:original?A::Original:A::Attachment6A;
  assert(tglHostSurfaceABI[0]==fb && tglHostSurfaceABI[1]==accel);
@@ -220,10 +261,28 @@ kmod_info_t modules[]={
  {surface.id,0x1000,0x1000,modules+1},
  {kextAppleIntelTGLCompat.id,0x2000,0x1000,modules+2},
  {graphics.id,0x3000,0x1000,modules+3},
- {accelFamily.id,0x4000,0x1000,nullptr}};
+ {accelFamily.id,0x4000,0x1000,modules+4},
+ {backlight.id,0x5000,0x1000,modules+5},
+ {XeDataAccess::dependency().id,0x6000,0x1000,nullptr}};
 loadedHead=modules;
+// Dependencies notified before Graphics activation must be recovered, including
+// the Data-access sandbox and Display12 console/backlight hooks. A late duplicate
+// notification must not install a second trampoline.
+for(unsigned first:{1U,2U,3U}) {
+ XeHost host;host.xe.defer=host.xe.tglRequested=true;host.resetFramebuffer=XeHost::FB_COPY;
+ events.clear();published=false;XeDataAccess::installs=0;
+ DeviceInfo::value.videoBuiltin=&gpu;publish=true;identity=0x9a498086;
+ for(unsigned id:{4U,5U,6U,7U,8U})host.processKext(patcher,id,0,0);
+ assert(events.empty() && !XeDataAccess::installs);
+ host.processKext(patcher,first,0,0);
+ host.processKext(patcher,1,0,0);
+ assert(host.dataAccessSeen && host.backlightSeen && host.graphicsSeen && host.surfaceSeen);
+ assert(XeDataAccess::installs==1);
+ for(unsigned id:{4U,5U,8U})host.processKext(patcher,id,0,0);
+ assert(XeDataAccess::installs==1 && std::count(events.begin(),events.end(),8)==1);
+}
 unsigned order[]={1,2,3,4,6,7};do {for(bool display13:{false,true})for(bool validProvider:{false,true}) {
- XeHost host;host.active=host.xe.defer=true;events.clear();
+ XeHost host;host.kernelProcessed=true;host.active=host.xe.defer=true;events.clear();
  host.systemWakeRecovery=display13;
  host.xe.tglRequested=!display13;host.xe.display13FramebufferRequested=display13;
  host.xe.providerOK=validProvider;host.xe.requireProvider=true;
@@ -242,7 +301,7 @@ unsigned order[]={1,2,3,4,6,7};do {for(bool display13:{false,true})for(bool vali
 // No notifications for any dependency: both lifecycle installers still run
 // within the donor callbacks, after resolving loaded hosts through Lilu.
 for(bool display13:{false,true}){
- XeHost host;host.active=host.xe.defer=true;host.xe.tglRequested=!display13;host.xe.display13FramebufferRequested=display13;
+ XeHost host;host.kernelProcessed=true;host.active=host.xe.defer=true;host.xe.tglRequested=!display13;host.xe.display13FramebufferRequested=display13;
  host.systemWakeRecovery=display13;host.xe.requireProvider=true;events.clear();
  host.processKext(patcher,2,0,0);assert((events==std::vector<int>{102}));
  assert(host.surfaceSeen && !host.providerSeen);
@@ -253,7 +312,7 @@ for(bool display13:{false,true}){
 // The installer is still dispatched, so its existing fail-closed guard is
 // installed instead of leaving the native unpatched lifecycle reachable.
 for(unsigned failure=0;failure<4;++failure){
- XeHost host;host.active=host.xe.defer=true;host.xe.tglRequested=true;host.xe.requireProvider=true;events.clear();
+ XeHost host;host.kernelProcessed=true;host.active=host.xe.defer=true;host.xe.tglRequested=true;host.xe.requireProvider=true;events.clear();
  loadedHead=failure==0?nullptr:modules;validImage=failure!=1;
  auto savedSize=modules[0].size;auto savedIndex=surface.loadIndex;
  if(failure==2)modules[0].size=0;if(failure==3)surface.loadIndex=0;
@@ -275,7 +334,7 @@ for(unsigned prefix:{0U,510U,511U,512U,600U}){
  std::vector<kmod_info_t> peers(prefix);std::vector<std::vector<char>> ids(prefix,std::vector<char>(64));
  for(unsigned i=0;i<prefix;++i){snprintf(ids[i].data(),64,"org.example.dependency.%u",i);peers[i]={ids[i].data(),uintptr_t(0x10000+i*0x1000),0x1000,i+1<prefix?&peers[i+1]:modules};}
  loadedHead=prefix?peers.data():modules;
- XeHost host;host.active=host.xe.defer=host.xe.tglRequested=true;host.xe.requireProvider=true;events.clear();
+ XeHost host;host.kernelProcessed=true;host.active=host.xe.defer=host.xe.tglRequested=true;host.xe.requireProvider=true;events.clear();
  host.processKext(patcher,1,0,0);
  assert(host.surfaceSeen && host.providerSeen && host.xe.providerReady);
  // This is the boundary oracle, not a copy of dependenciesSeen or queue state.

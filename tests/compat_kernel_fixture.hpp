@@ -18,6 +18,18 @@ struct OSObject {
 };
 struct OSData:OSObject {uint32_t value{};size_t size=4;
     void *getBytesNoCopy(){return &value;} size_t getLength(){return size;}};
+struct IORegistryEntry {
+    OSData token;OSObject *activation=nullptr;bool bound=false;unsigned publications=0;
+    static IORegistryEntry *getRegistryRoot(){static IORegistryEntry root;return &root;}
+    OSObject *getProperty(const char *name){assert(!strcmp(name,"WhateverXeGraphicsABI"));return activation;}
+    void setProperty(const char *name,void *bytes,unsigned size) {
+        assert(!strcmp(name,"WhateverXeGraphicsABI") && size==4);
+        memcpy(&token.value,bytes,4);token.size=size;activation=&token;
+    }
+    void setProperty(const char *name,bool value) {
+        assert(!strcmp(name,"XELPSharedProbeBound"));bound=value;++publications;
+    }
+};
 struct IOService:OSObject {OSObject *provider{}; OSObject *getProvider(){return provider;}};
 struct IOPCIDevice:OSObject {uint32_t identity{};uint8_t revision{};OSObject *property{};
     OSObject *getProperty(const char *key){assert(!strcmp(key,"device-id"));return property;}
