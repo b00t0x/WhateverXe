@@ -3,7 +3,33 @@
 import argparse
 import plistlib
 import re
+import subprocess
 from pathlib import Path
+
+# Undefined imports of the fixed c004fc1a framebuffer donor. Keep independent
+# of provider source spelling: an accidentally renamed export breaks loading.
+DONOR_IMPORTS = {
+    '__ZN17AppleIntelPortHAL13probePortModeEv',
+    '__ZN21AppleIntelDisplayPath19DSBEngineBusyStatusE',
+    '__ZN31AppleIntelFramebufferController14ReadRegister32Em',
+    '__ZN31AppleIntelFramebufferController14ReadRegister64EPVvm',
+    '__ZN31AppleIntelFramebufferController15WriteRegister32Emj',
+    '__ZN31AppleIntelFramebufferController15WriteRegister64EPVvmy',
+    '__ZN31AppleIntelFramebufferController16hwSetupDSBMemoryEv',
+    '__ZN31AppleIntelFramebufferController9getPMTNowEv',
+}
+# Current WEX's processKext resolver and the retained ABI1 client entry.
+BINDING_EXPORTS = {'xelpConfigureDisplay', 'xelpProbeCapabilities', 'xelpConfigurePortProbe'}
+
+
+def check_exports(executable, c_prefix='_'):
+    symbols = subprocess.check_output(['nm', '-g', str(executable)], text=True)
+    defined = {parts[-1] for line in symbols.splitlines()
+               if len(parts := line.split()) >= 3 and parts[-2].upper() != 'U'}
+    required = DONOR_IMPORTS | {c_prefix+name for name in BINDING_EXPORTS}
+    missing = required - defined
+    if missing:
+        raise ValueError('Compat is missing client imports: '+', '.join(sorted(missing)))
 
 
 def version(value):
@@ -29,4 +55,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
     for build in args.builds:
         check(build / 'AppleIntelTGLCompat.kext/Contents/Info.plist')
+        check_exports(build / 'AppleIntelTGLCompat.kext/Contents/MacOS/AppleIntelTGLCompat')
     print('PASS: built Compat bundles accept the shipped framebuffer dependency')

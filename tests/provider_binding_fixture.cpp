@@ -5,26 +5,9 @@
 #include <vector>
 #include "AppleIntelTGLCompatPortProbe.hpp"
 #include "kern_display13_clock.hpp"
-struct Meta {unsigned size=0x1C20;unsigned getClassSize(){return size;}};
-struct OSObject {
- virtual ~OSObject()=default;
- alignas(8) uint8_t storage[0x1C20] {};
- Meta meta;unsigned retains=0;
- Meta *getMetaClass(){return &meta;}
- void retain(){++retains;}
-};
-struct OSData:OSObject {uint32_t value{};size_t size=4;void *getBytesNoCopy(){return &value;}size_t getLength(){return size;}};
-struct IOService:OSObject {OSObject *provider {};OSObject *getProvider(){return provider;}};
-struct IOPCIDevice:OSObject {uint32_t identity {};uint8_t revision {};OSObject *property {};
- OSObject *getProperty(const char *key){assert(!strcmp(key,"device-id"));return property;}
- uint32_t configRead32(unsigned r){assert(!r);return identity;}
- uint8_t configRead8(unsigned r){assert(r==8);return revision;}
-};
-struct IOMemoryMap:OSObject {uintptr_t address {};uint64_t bytes {};
- uintptr_t getVirtualAddress(){return address;}uint64_t getLength(){return bytes;}
-};
-#define OSDynamicCast(T,p) dynamic_cast<T *>(p)
-#define IOLog(...) ((void)0)
+#include "compat_kernel_fixture.hpp"
+extern "C" const char version[]="Darwin Kernel Version 25.6.9: synthetic; root:xnu-test/RELEASE_X86_64";
+#include "AppleIntelTGLCompat/AppleIntelTGLCompat.cpp"
 // PROVIDER_SOURCE
 int main(int argc,char **argv) {
  assert(XELP::display13ProbeCapable(xelpProbeCapabilities));
@@ -35,8 +18,9 @@ int main(int argc,char **argv) {
  assert(XELP::display13TCProbeCapable(+[](uint32_t,uint32_t)->uint32_t{return XELP::ProbeDisplay13FixedTC;}));
  assert(XELP::display13TCDPProbeCapable(xelpProbeCapabilities));
  assert(!XELP::display13TCDPProbeCapable(+[](uint32_t,uint32_t)->uint32_t{return 3;}));
- for(unsigned schema=0;schema<5;++schema)for(unsigned abi=0;abi<6;++abi)
-  assert(xelpProbeCapabilities(schema,abi)==(schema==1&&abi==3?(XELP::ProbeDisplay13ComboDP|XELP::ProbeDisplay13FixedTC|XELP::ProbeDisplay13FixedDP|XELP::ProbeDisplay13Panel|XELP::ProbeDisplay13DPAlt):0));
+ // Unknown schemas/ABIs cannot promise a consumer-compatible binding.
+ for(auto schema:{0U,2U})assert(!xelpProbeCapabilities(schema,XELP::ProbeABI));
+ for(auto abi:{0U,1U,2U,4U})assert(!xelpProbeCapabilities(XELP::ProbeCapabilityABI,abi));
  assert(!XELP::display13ProbeCapable(+[](uint32_t,uint32_t)->uint32_t{return 0;}));
  assert(!XELP::display13ProbeCapable(+[](uint32_t,uint32_t)->uint32_t{return 2;}));
  assert(argc==2 || argc==3);const bool adln=!strncmp(argv[1],"adln",4);
@@ -47,7 +31,7 @@ int main(int argc,char **argv) {
  const bool fake=strstr(argv[1],"fake")!=nullptr;
  const bool rejected=!strcmp(argv[1],"unknown");
  IOService controller;IOPCIDevice pci;OSObject access,port,foreign;IOMemoryMap map;
- std::vector<uint8_t> mmio(0x1000000);alignas(8) uint8_t platform[0x1C0] {};
+ std::vector<uint8_t> mmio(strstr(argv[1],"map-small")?0x200000:strstr(argv[1],"map-large")?0x2000000:0x1000000);alignas(8) uint8_t platform[0x1C0] {};
  pci.identity=adln?0x46D18086:0x9A498086;
  if(adls){pci.identity=0x46908086;pci.revision=12;}
  if(rpls){pci.identity=0xA7808086;pci.revision=!strcmp(argv[1],"rpls-revision")?8:4;}
@@ -107,6 +91,8 @@ int main(int argc,char **argv) {
  malformed=config;malformed.profile.display=XELP::Display::Unknown;assert(!xelpConfigureDisplay(&controller,&malformed));
  pci.identity^=0x10000;assert(!xelpConfigureDisplay(&controller,&config));pci.identity^=0x10000;
  map.address++;assert(!xelpConfigureDisplay(&controller,&config));map.address--;
+ map.bytes-=4;assert(!xelpConfigureDisplay(&controller,&config));map.bytes+=4;
+ const auto address=map.address;map.address=0;assert(!xelpConfigureDisplay(&controller,&config));map.address=address;
  assert(!controller.retains && !access.retains && !map.retains && !probeBindingState);
  if(fake) {
   auto lied=config;lied.profile.identity=0x99998086;assert(!xelpConfigureDisplay(&controller,&lied));
@@ -146,7 +132,18 @@ int main(int argc,char **argv) {
   if(adln){
    const uint32_t dp[]={d,d+1,1,0,0x400,0x201};memcpy(rec,dp,sizeof(dp));
    assert(tglProbePort(&port)==(d<2?1U:0U));
-   if(d<2)for(unsigned n=0;n<6;++n){rec[n]^=1;assert(!tglProbePort(&port));rec[n]^=1;}
+   if(d<2){
+    // Negative cases name the broken contract, rather than declaring every
+    // neighboring tuple invalid because it differs from one observation.
+    rec[0]=1-d;assert(!tglProbePort(&port));rec[0]=d; // foreign record identity
+    rec[1]=0xFF;assert(!tglProbePort(&port));rec[1]=d+1; // no matching native Combo bus
+    rec[2]=0;assert(!tglProbePort(&port));rec[2]=1; // panel role with a DP protocol
+    rec[3]=1;assert(!tglProbePort(&port));rec[3]=0; // TC backend on Combo
+    rec[4]=0x800;assert(!tglProbePort(&port));rec[4]=0x400; // HDMI encoding with DP role
+    rec[5]=0;assert(!tglProbePort(&port));rec[5]=0x201; // missing native DP flags
+    rec[2]=2;rec[4]=0x800;rec[5]=0xA502;
+    assert(tglProbePort(&port)==1); // unrelated HDMI flags preserve classification
+   }
   }
   field<void *>(&port,0x578)=&foreign;assert(!tglProbePort(&port));field<void *>(&port,0x578)=&access;
   field<void *>(&port,0x548)=reinterpret_cast<void *>(1);assert(!tglProbePort(&port));

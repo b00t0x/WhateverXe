@@ -3,6 +3,8 @@
 These tests check bounded CPU behavior, dependency metadata and selected driver
 instructions. Passing them does not establish GPU execution, physical display,
 firmware behavior or arbitrary kernel scheduling.
+The same contracts apply to WhateverXe, AppleIntelTGLCompat and their connection;
+separate source/bundle locations do not create a weaker quality boundary.
 
 ## Maintaining test contracts
 
@@ -118,14 +120,17 @@ eDRAM diagnostic. Its audit copy stays in that job's output and is not deployabl
 The outer-ring check uses current production source unless `--outer-source` is
 explicitly supplied. These input identities do not restrict runtime OS updates.
 
-Every standalone Python script has an enumerated mode. `production_source.py`
-and `pmap_kernel_contract.py` are shared helpers exercised by registered callers.
+Every standalone Python script has an enumerated mode. `production_source.py`,
+`pmap_kernel_contract.py` and `compat_test_support.py` are shared helpers exercised by registered callers.
 The registry contract checks that newly added scripts are not silently omitted.
 
 ## Independent expectations and boundaries
 
 | Check | Expectation and source | Boundary and exclusions |
 | --- | --- | --- |
+| `compat_exports.py` | Fixed `c004fc1a` donor imports, native DSB caller/field producers, mapped-memory extent, contiguous Gen12 PTE address encoding, DSB manager dispatch and zero-success return | Compiles the complete Compat translation unit with kernel/IOKit boundary mocks, retaining export asm names. Executes MMIO, DSB allocation/zeroing/PTE installation/publication, failure/retry, clock and lifecycle. Hardware DMA, the system mapper and actual DSB queue execution are outside this check |
+| `compat_producer.py` | Explicit board wiring and native port-mode roles: Combo=1, fixed TC=4, DP-alt=3; DSI remains WEX-owned | Real wiring conversion and WEX `xelpBindProbe` construct config delivered to complete Compat, then actual port probe on the same objects. Includes missing AUX/panel/DSI readiness and retry. Hook installation and DSI operation are prerequisites tested elsewhere, not simulated by successful bind |
+| `provider_binding.py` | Physical owner/ABI identity, immutable binding lifetime, port record ownership and semantic transport classification | Complete Compat translation unit; preserves physical ID/spoof and ABI1 history, pinning/idempotence and foreign/stale rejection. Replaces a mirrored capability truth table and tuple-bit rejection loop with consumer capability checks and named semantic violations/positive flag variation. Does not model arbitrary kernel scheduling |
 | `profile_admission.py` | Physical PCI family classifications from Linux `i915_pciids.h`, supported Darwin families and documented opt-outs; fixed mobile identities also preserve prior selections | Executes the complete production selector using real `Profile` values; checks selected backend/driver and noaccel behavior. Does not qualify physical fuses or native start |
 | `gen12_resource_cases.hpp`, `adlp_resources.cpp`, `tgl_gt2_urb.py` | Positive resource capacities and Gen12 SSEU bit meanings; Intel TGL PRM Vol. 4 and Linux `intel_sseu.c` | Separate EU/DSS/L3 populations and position permutations; native URB stores use independent expected capacities, including eight native subslices. Unlisted encodings are not automatically negative specifications |
 | `accelerator_resources.py` | Explicit capacities, forcewake ownership/readout prerequisites, resource failure visibility and refusal of native probe | Complete production profile selection, qualification, reporting and probe on the same object. Readout acquisition and other installers are explicit fixture prerequisites; their producers and the remainder of native start are outside this check |
@@ -139,6 +144,28 @@ The registry contract checks that newly added scripts are not silently omitted.
 | `test_runner_contract.py` | Missing required work fails, all modes are visible, failure stops execution, results cannot be overwritten | Exercises the actual runner's registration, omissions and stage handling |
 | AUX parent/observer replays | Reference ownership, inaccessible MMIO and memory-only telemetry retention, including quiet training | Old fixture declarations and qualification have been updated without changing the reference-balance expectation. Added PG telemetry is not required to occupy old record indices |
 | DKL and outer-ring replays | Linux coefficient tables and Gen12 PIPE_CONTROL bit meanings, respectively | Actual donor code runs with boundary leaves. Outer-ring comparison uses original bytes as baseline, not a candidate with one bit cleared |
+
+Compat's fixed donor identity is
+`c004fc1ac9ee4157e2e12736f40fa6639bde025a279326beeb9dd48c9b445731`.
+Its `FBMemMgr_Init` at `0x42e18` produces the 18-page DSB size, independently
+of observed machines. Native start at `0x3f903..0x3f938` produces a 1/8 MiB
+PTE window at BAR0+8 MiB and records its extent at controller+CEC. The DSB
+caller at `0x4050f..0x40534` requires zero success and then maps the requested
+GGTT subrange. Tests check every PTE and neighboring word, zeroed backing,
+publication after validation, failure release and retry. The final complete
+word belongs to a mapping; the donor's own off-by-one comparisons are not an
+oracle overriding that memory extent contract.
+
+Probe binding's 2/16/32 MiB variations test an honest map/manager pair, not new
+native hardware support. Per-register read bounds determine probe readiness;
+the observed 16 MiB map size is not a probe ABI requirement. The donor's nine
+records and fixed class-layout offsets remain ABI guards. Generic Display12
+register/DSB access remains separate from Display13 binding. Explicit-base
+64-bit access preserves native manager dispatch for MMIO and direct stores for
+other bases; the caller still owns the external allocation's actual extent.
+The builder checks defined global symbols against the donor's eight retained
+imports and the current/ABI1 WEX binding exports, as well as the existing bundle compatibility floor. Synthetic plist
+unit cases alone do not establish loadability or full ABI correctness.
 
 The resource fixture distinguishes a retained raw readout from a synthetic
 encoding of a capacity. A patched driver field is not a physical fuse value.
