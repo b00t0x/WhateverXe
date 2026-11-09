@@ -101,6 +101,7 @@ BIOS/UEFIで設定できる場合は、**DVMT Pre-Allocatedを96MB**にします
 | Alder Lake-S | Big Sur〜Tahoe：UHD 770、HDMI/DP/USB-C、最大3画面、Safari動画。WidevineはBig Sur/Tahoeで確認 |
 
 MIPI DSI対応は**試験的**で、検証したGPD MicroPC 2・CHUWI MiniBook X N100/U300の内蔵パネルに限ります。他の機器での動作を期待しないでください。
+DSIのFBは8bit／10bitの選択を公開し、パネル信号の固定色深度とは別に扱います。
 
 システム全体のスリープ／復帰対応は**試験的**です。実機確認済みの構成は、機種別ACPI設定を使用したMiniBook X N100/U300（MIPI DSI）のBig Sur・Tahoeで、内蔵単独と外部2画面までです。他機種・他OSと長時間のDarkWake反復は未検証です。
 

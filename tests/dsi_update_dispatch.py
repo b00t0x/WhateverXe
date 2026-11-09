@@ -110,8 +110,8 @@ struct XE {
   return wakeOK;
  }
  bool dsiPanelOnly=false,publicationReady=false;bool publishDSINativeMode(IOService*){return publicationReady;}
- uint32_t setDSIPresentation(IOService *fb,uint32_t mode,const XELP::DSI::AppleAdapter::Timing &){
-  assert(fbLock.depth && !owner);memcpy(reinterpret_cast<uint8_t *>(fb)+0x4250,&mode,sizeof(mode));return 0;}
+ uint32_t setDSIPresentation(IOService *fb,uint32_t mode,const XELP::DSI::AppleAdapter::Timing &,uint32_t depth){
+  assert(fbLock.depth && !owner);memcpy(reinterpret_cast<uint8_t *>(fb)+0x4250,&mode,sizeof(mode));memcpy(reinterpret_cast<uint8_t *>(fb)+0x4254,&depth,sizeof(depth));return 0;}
  bool dsiNativeWriterHooksReady=true;uintptr_t orgDSICursor[2]{};
  uintptr_t orgDSIMode[6]{};
  static void recordDSIClient(IOService*,unsigned,uint64_t,uint32_t){};

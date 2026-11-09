@@ -306,7 +306,7 @@ private:
     mach_vm_address_t dsiComputeGeometry {},dsiModeCPU[4] {};
     bool publishDSINativeBacking();
     bool publishDSINativeMode(IOService *);
-    uint32_t setDSIPresentation(IOService *,uint32_t,const XELP::DSI::AppleAdapter::Timing &);
+    uint32_t setDSIPresentation(IOService *,uint32_t,const XELP::DSI::AppleAdapter::Timing &,uint32_t depth=0);
     bool releaseDSILogical(IOService *);
     bool probeDSIModeGeometry(IOService *);
     bool prepareDSINativeBacking(IOService *);
