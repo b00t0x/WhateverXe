@@ -51,6 +51,7 @@ namespace XELP { namespace DSI { struct Profile; } }
 class XE {
 public:
 	void init();
+    void captureFirmware(IOPCIDevice *,const XELP::Profile &);
     void selectProfile(const XELP::Profile &profile);
 	void deinit();
 
@@ -146,6 +147,8 @@ private:
     XELP::SmallGTResources display12SmallGT;
     XELP::Profile xeProfile;
     XELP::VBT::Ports firmwarePorts;
+    uint64_t firmwareOwnerID {};
+    XELP::Family firmwareFamily {};
     void xelpReadFirmware(IOPCIDevice *pci);
     void xelpLoadDisplayPool(IOService *provider);
     bool xelpInstallHostRPS(KernelPatcher &,size_t,mach_vm_address_t,size_t);

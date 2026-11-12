@@ -114,6 +114,7 @@ struct XeHost {
  struct vc_info{};vc_info consoleVinfo;bool gotConsoleVinfo=false;
  struct XE {
  void init(){}
+ void captureFirmware(IOPCIDevice*,const XELP::Profile&){events.push_back(10);}
  bool defer=false;bool isIntelDonor(size_t i)const{return defer && (i==1 || i==2);}
  bool isIntelProvider(size_t index)const;
  bool isGraphicsStack(size_t index)const;
@@ -136,6 +137,7 @@ struct XeHost {
  } xe;
  void init();
  void processKernel(KernelPatcher &);
+ void captureFirmware();
  void processKext(KernelPatcher &,size_t,mach_vm_address_t,size_t);
  static void wrapPanelSetDisplay(){}static void wrapFramebufferInit(){}
  uintptr_t orgPanelSetDisplay=0,orgFramebufferInit=0;uint8_t *gIOFBVerboseBootPtr=nullptr;
@@ -144,11 +146,18 @@ struct XeHost {
 XeHost *XeHost::callbackHost;
 static IOReturn vendor(IOFramebuffer*,uint32_t,uint32_t){return 42;}
 int main(){KernelPatcher patcher;IOPCIDevice gpu,mei;
-// Execute actual registration as well as dispatch: the early kernel callback
-// must not initialize the GPU when there is no Graphics image.
-{XeHost host;events.clear();host.init();
+// The early callback copies read-only firmware facts. GPU configuration,
+// hooks and native admission still wait for a Graphics image. Publication
+// failure cannot be bypassed even for the passive capture.
+for(bool available:{false,true}) {
+ XeHost host;events.clear();publish=available;published=false;
+ DeviceInfo::value.videoBuiltin=&gpu;DeviceInfo::value.managementEngine=&mei;
+ gpu.name="GFX0";mei.name="HECI";modelWrites=0;lilu.kernelCallbacks.clear();host.init();
  for(auto callback:lilu.kernelCallbacks)callback.first(callback.second,patcher);
- assert(events.empty() && !host.kernelProcessed && !host.active);
+ assert(!host.kernelProcessed && !host.active);
+ assert(gpu.name==std::string("GFX0") && mei.name==std::string("HECI") && !modelWrites);
+ assert(std::count(events.begin(),events.end(),10)==unsigned(available));
+ for(auto event:events)assert(event!=4 && event!=5 && event!=7 && event!=8 && event<100);
 }
 // Host-only notifications must not discover the GPU or mutate firmware state.
 for(unsigned id:{0U,4U,5U,6U,7U,8U,99U}) {

@@ -36,6 +36,9 @@ static const char *surfacePath[] { "/System/Library/Extensions/IOSurface.kext/Co
 static KernelPatcher::KextInfo surface { "com.apple.iokit.IOSurface",surfacePath,arrsize(surfacePath),{true},{},KernelPatcher::KextInfo::Unloaded };
 void XeHost::init() {
  callbackHost=this;
+ // Copy the firmware tables while the boot firmware still owns them. This
+ // performs no GPU initialization; native admission remains image-triggered.
+ lilu.onPatcherLoadForce([](void *u,KernelPatcher &){static_cast<XeHost *>(u)->captureFirmware();},this);
  PE_parse_boot_argn("gfxrst",&resetFramebuffer,sizeof(resetFramebuffer));
  if(resetFramebuffer>=FB_TOTAL)resetFramebuffer=FB_DETECT;
  lilu.onKextLoadForce(nullptr,0,[](void *u,KernelPatcher &p,size_t i,mach_vm_address_t a,size_t s){static_cast<XeHost *>(u)->processKext(p,i,a,s);},this);
@@ -45,6 +48,12 @@ void XeHost::init() {
  lilu.onKextLoadForce(&surface);
  xe.init();
  XeDataAccess::init();
+}
+void XeHost::captureFirmware() {
+ auto info=DeviceInfo::create();if(!info)return;
+ auto gpu=OSDynamicCast(IOPCIDevice,info->videoBuiltin);
+ if(gpu && WIOKit::awaitPublishing(gpu))xe.captureFirmware(gpu,XELP::deviceProfile(gpu));
+ DeviceInfo::deleter(info);
 }
 void XeHost::processKernel(KernelPatcher &patcher) {
  kernelProcessed=true;
