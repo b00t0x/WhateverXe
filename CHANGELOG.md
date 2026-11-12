@@ -6,7 +6,7 @@ Update WhateverXe and [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe
 
 ### Added
 
-- Add experimental 10-bit framebuffer support for the supported MIPI DSI panels. Hardware validation is pending.
+- Add experimental 10-bit framebuffer support for the supported MIPI DSI panels.
 
 ### Fixed
 

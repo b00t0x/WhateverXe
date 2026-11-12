@@ -56,8 +56,6 @@ AMFIPassは本家版に代えてリンク先の**Mod版**を使用し、両方�
 
 Graphicsは`/Library`への配置とAuxKC生成を行い、Systemファイルやsnapshotにはパッチしません。旧Xe System patchは先に復元してください。他のroot patchのためにOCLPを使う場合は、同じMod署名に対応する[独自ビルド版OCLP](https://github.com/b00t0x/OpenCore-Legacy-Patcher)を使用します。
 
-アクセラレーションにはWEXとGraphicsの両方が必要です。片方が未導入または無効でも、ファームウェア描画で起動できます。
-
 ## 設定
 
 ### 必須ブート引数
@@ -127,7 +125,6 @@ python3 tools/test.py
 ```
 
 出力先は`build/`です。AppleIntelTGLCompatもここでビルドし、Graphicsで配布します。任意の実ドライバー再生試験には`--donor`・`--accelerator`で対応する原本を指定します。
-検査範囲、モード選択、必須入力、実行ごとの結果は[CPUテスト契約](tests/README.md)を参照してください。
 
 ## ライセンスとクレジット
 

@@ -56,8 +56,6 @@ Use the linked **Mod** AMFIPass instead of upstream AMFIPass; do not load both. 
 
 Graphics installs under `/Library` and rebuilds AuxKC without patching System files or snapshots. Restore an old Xe System patch before installing. If you need OCLP for other root patches, use the [custom OCLP build](https://github.com/b00t0x/OpenCore-Legacy-Patcher) with the matching Mod signing chain.
 
-Acceleration requires both WEX and Graphics. With either component absent or disabled, the firmware display remains available.
-
 ## Configuration
 
 ### Required boot arguments
@@ -127,7 +125,6 @@ python3 tools/test.py
 ```
 
 Output is under `build/`. AppleIntelTGLCompat is built here and distributed through Graphics. Optional exact-donor tests accept `--donor` and `--accelerator` paths.
-See [CPU test contracts](tests/README.md) for test scope, mode selection, required inputs and per-run results.
 
 ## License and credits
 
