@@ -4,6 +4,16 @@ This repository owns WhateverXe, AppleIntelTGLCompat, their shared contracts and
 standalone CPU tests. Preserve exact driver and physical identity guards. Keep
 refactoring separate from adding support for new hardware.
 
+## Next-release development
+
+Use the current tip of `codex/next-release` as the base for next-release task
+branches. Create a separate task branch/worktree; keep the shared integration
+checkout available for accepted changes. Before continuing an older task branch,
+bring in the current common base while preserving that task's work and history.
+Retain its test contracts and maintenance rules when resolving conflicts.
+Promoting a change to this base is distinct from release or hardware qualification.
+Temporary live-observation code and generated assets do not belong in the base.
+
 ## Documentation
 
 README is the user-facing entry point: purpose, current compatibility, required
@@ -39,6 +49,21 @@ for validation are not the scope of a general fix. Credit reference repositories
 when their work informed a change.
 
 ## Build and test
+
+Before implementation or test changes, read and apply the
+[contract maintenance rules](tests/README.md#maintaining-test-contracts).
+Use independent expectations, preserve valid admission and test production
+entry-to-consumer behavior. A target excluded from one handler must reach
+another correct WEX handler or native behavior with an explicit compatibility
+basis. Unobserved hardware alone is not a rejection reason.
+When a test fails, compare both the model and production behavior against that
+contract before changing either. Do not change expectations merely to pass.
+For test removal, identify where each useful protection remains or document
+why the requirement was wrong or retired. Update mode registration and test
+documentation with changes; require the modes needed by the affected contract.
+Report tested boundaries and omissions before counts. Default CI success does
+not establish optional original-input execution, full functionality or hardware
+qualification. Apply these rules to existing tests as well as new tests.
 
 Build with `python3 tools/build.py`; run CPU tests with `python3 tools/test.py`.
 The builder checks each generated Compat plist, including both DEBUG and RELEASE

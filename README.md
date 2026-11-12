@@ -105,7 +105,7 @@ System sleep/wake support is **experimental**. Tested configurations are MiniBoo
 ### Known issues and limits
 
 - DisplayPort reconnection can cause black screens or freezes. Tiger Lake USB-C reconnection is also unreliable; Alder Lake-S DP output/reconnection can be slow.
-- Some image-conversion operations can crash applications; App Store video can freeze the GPU on Sequoia.
+- Some image-conversion operations can crash applications.
 - Safari video may occasionally drop frames. FairPlay-protected playback is unsupported.
 - Up to three displays are supported. Resolutions beyond the tested configurations remain unverified.
 - Some connector layouts and backlight methods, MST and Thunderbolt-managed outputs are unsupported.

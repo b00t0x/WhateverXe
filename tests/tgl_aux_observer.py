@@ -21,12 +21,14 @@ body = "\n".join(re.search(pattern, source, re.S).group() for pattern in pattern
 fixture = (repo / "tests/tgl_aux_observer_fixture.cpp").read_text()
 fields = header[header.index("\tbool tglAUXParentReady"):header.index("\tstatic void wrapTGLEnableAUXPower")]
 fixture = fixture.replace("// AUX_FIELDS", fields)
-fixture = fixture.replace("int main() {", "int main() {\n object.tglAUXParentReady = true;")
+setup="object.tglAUXParentReady=true;"
+if "tglTCWiring" in fields:setup+="object.tglTCWiring=TGLTCWiring::fromMasks(0x10,0,0);"
+fixture=fixture.replace("int main() {","int main() {\n "+setup)
 if "tglAUXParentRefs[9]" not in fields:
     fixture = fixture.replace("object.tglAUXParentRefs[4]", "object.tglAUXParentRefs")
 with tempfile.TemporaryDirectory(prefix="tgl-aux-observer-") as directory:
     tmp = Path(directory)
     (tmp / "check.cpp").write_text(fixture.replace("// PRODUCTION_FUNCTIONS", body))
     subprocess.run(["clang++", "-std=c++14", "-O1", "-g", "-fsanitize=address,undefined",
-        "-fno-omit-frame-pointer", str(tmp / "check.cpp"), "-o", str(tmp / "check")], check=True)
+        "-fno-omit-frame-pointer", "-I", str(repo/"WhateverXe"), str(tmp / "check.cpp"), "-o", str(tmp / "check")], check=True)
     subprocess.run([str(tmp / "check")], check=True)

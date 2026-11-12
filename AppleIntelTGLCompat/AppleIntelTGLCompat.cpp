@@ -9,6 +9,7 @@
 #include "AppleIntelTGLCompatPortProbe.hpp"
 #include "kern_xelp_device.hpp"
 #include "kern_xelp_os.hpp"
+#include "kern_graphics_activation.hpp"
 
 extern "C" const char version[];
 
@@ -39,7 +40,7 @@ static bool hardwareAllowed(void *controller) {
 
 static uint32_t read32(void *access, unsigned long offset) {
     const auto size = field<uint32_t>(access, 0x60);
-    if (size < 4 || offset >= size - 4) {
+    if (size < 4 || offset > size - 4) {
         IOLog("AppleIntelTGLCompat: invalid MMIO read offset=%lx size=%x\n", offset, size);
         return 0;
     }
@@ -64,8 +65,10 @@ extern "C" bool xelpConfigureDisplay(void *controller,const XELP::ProbeConfig *c
     auto platform=field<uint8_t *>(controller,0xD40);
     auto map=OSDynamicCast(IOMemoryMap,field<OSObject *>(controller,0xC70));
     if(!access || access->getMetaClass()->getClassSize()<0x68 || !platform || platform[0x12]!=9 ||
-        !map || map->getLength()!=0x1000000 || !map->getVirtualAddress() ||
+        !map || !map->getLength() || !map->getVirtualAddress() ||
         field<uintptr_t>(access,0x50)!=map->getVirtualAddress() || field<uint32_t>(access,0x60)!=map->getLength())return false;
+    // Binding needs an honest retained mapping, not an observed BAR size.
+    // ProbeIO checks the range of each generation-specific register read.
     const XELP::ProbeBinding candidate {reinterpret_cast<uintptr_t>(controller),reinterpret_cast<uintptr_t>(access),
         reinterpret_cast<uintptr_t>(platform),*config};
     if(__atomic_load_n(&probeBindingState,__ATOMIC_ACQUIRE)==2)return probeBinding.sameBinding(candidate);
@@ -120,7 +123,7 @@ extern "C" uint64_t tglRead64(void *controller, volatile void *base, unsigned lo
     if (!hardwareAllowed(controller)) return 0;
     auto access = manager(controller);
     const auto size = field<uint32_t>(access, 0x60);
-    if (base == field<volatile void *>(access, 0x50) && (size < 8 || offset >= size - 8)) {
+    if (base == field<volatile void *>(access, 0x50) && (size < 8 || offset > size - 8)) {
         IOLog("AppleIntelTGLCompat: invalid MMIO read64 offset=%lx\n", offset);
         return 0;
     }
@@ -138,7 +141,7 @@ extern "C" void tglWrite64(void *controller, volatile void *base, unsigned long 
         return;
     }
     const auto size = field<uint32_t>(access, 0x60);
-    if (size < 8 || offset >= size - 8) {
+    if (size < 8 || offset > size - 8) {
         IOLog("AppleIntelTGLCompat: invalid MMIO write64 offset=%lx\n", offset);
         return;
     }
@@ -170,10 +173,17 @@ extern "C" IOReturn tglSetupDSB(void *controller) {
     auto ptes = field<volatile uint8_t *>(controller, 0xca0);
     auto access = manager(controller);
     const auto mmioSize = field<uint32_t>(access, 0x60);
-    // Fixed input ABI and 18 pages. Do not program an unbounded GGTT span.
+    const auto mmioBase = field<uintptr_t>(access, 0x50);
+    const auto pteBytes = field<uint32_t>(controller, 0xcec);
+    // Exact donor FBMemMgr_Init produces 18 pages. Native start maps GGTT
+    // at BAR0+8 MiB and records its independently sized PTE window at +CEC.
+    // A full MMIO span is not the size of that GGTT window.
     if (page_size != 4096 || size != 0x12000 || (ggtt & 4095) || !ptes ||
-        ggtt > 0xffffffffULL - size || mmioSize < 8 ||
-        ((ggtt + size - 4096) >> 9) >= mmioSize - 8)
+        !mmioBase || mmioSize < 0x800000 || mmioBase > UINTPTR_MAX - mmioSize ||
+        reinterpret_cast<uintptr_t>(ptes) != mmioBase + 0x800000 ||
+        pteBytes < 8 || pteBytes > mmioSize - 0x800000 ||
+        ggtt > 0x100000000ULL - size ||
+        ((ggtt + size - 4096) >> 9) > pteBytes - 8)
         return kIOReturnBadArgument;
     auto buffer = IOBufferMemoryDescriptor::withOptions(0x90, size, page_size);
     if (!buffer) return kIOReturnNoMemory;
@@ -183,7 +193,7 @@ extern "C" IOReturn tglSetupDSB(void *controller) {
     auto bytes = buffer->getBytesNoCopy();
     constexpr uint64_t mask = 0x7ffffff000ULL;
     if (!bytes || length < size || !physical || (physical & 4095) ||
-        ((physical + size - 4096) & ~mask)) {
+        physical > mask || size - 4096 > mask - physical) {
         buffer->release();
         return kIOReturnNoResources;
     }
@@ -228,6 +238,10 @@ extern "C" uint32_t tglProbePort(void *port) {
 }
 
 extern "C" kern_return_t tglStart(kmod_info_t *, void *) {
+    if (!WEXGraphicsActivation::ready()) {
+        IOLog("AppleIntelTGLCompat: WEX inactive; leaving firmware graphics in control\n");
+        return KERN_FAILURE;
+    }
     if (XELP::kernelOS(version)==XELP::OS::Unknown)return KERN_FAILURE;
 
     // Backend selection is per physical owner/validated binding, not a global

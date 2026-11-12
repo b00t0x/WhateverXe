@@ -194,7 +194,7 @@ int main(){
  auto validations=calls[1];assert(XE::wrapDSIValidateMode(fb,mode+0x400,&description,&timing)==kIOReturnBadArgument);
  assert(!description && !timing && calls[1]==validations);
  ModeInformation info;assert(!XE::wrapDSIGetModeInformation(fb,mode,&info));
- assert(info.width==1080 && info.height==1920 && info.widthMM==86 && info.heightMM==154 && info.depth==0);
+ assert(info.width==1080 && info.height==1920 && info.widthMM==86 && info.heightMM==154 && info.depth==1);
  assert(!(info.flags&0x00400000));
  auto invalid=p.mode;invalid.width=0;assert(!annotateMode(invalid,info));
  assert(XE::wrapDSIGetModeInformation(fb,mode,nullptr)==kIOReturnBadArgument);
@@ -219,7 +219,7 @@ int main(){
  assert(XE::wrapDSIValidateMode(fb,static_cast<int32_t>(0x80001000),nullptr,&timing)==kIOReturnBadArgument);
  assert(!XE::wrapDSIGetModes(fb,&mode) && static_cast<uint32_t>(mode)==0x80001001);
  assert(!XE::wrapDSIGetCurrentMode(fb,&current,&depth) && static_cast<uint32_t>(current)==0x80001001);
- assert(!XE::wrapDSIGetModeInformation(fb,mode,&info) && info.width==1080 && info.height==1920 && !info.depth);
+ assert(!XE::wrapDSIGetModeInformation(fb,mode,&info) && info.width==1080 && info.height==1920 && info.depth==1);
  offeredData->bytes[64]^=1;
  assert(XE::wrapDSISetDetailedTimings(fb,list)==kIOReturnUnsupported && dsiFixedMode.clientMode==0x80001001);
  offered.reservedA[0]=0x80003000;

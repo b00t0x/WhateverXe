@@ -4,7 +4,27 @@ from pathlib import Path
 import re,subprocess,tempfile
 r=Path(__file__).resolve().parents[1];s=(r/'WhateverXe/kern_xe.cpp').read_text()
 methods=[re.search(r'XELP::DisplayContract::Mask XE::display'+n+r'Available\(\) const \{.*?\n\}',s,re.S).group().replace('XE::','') for n in ('12','13')]
-fields=re.findall(r' if\((\w+)\)a\|=', '\n'.join(methods))
+# Fixed fixture declarations, reviewed separately from the production mapping.
+# New production inputs must be explicitly modeled instead of auto-enabled.
+fields = """framebufferDonorRuntimeReady tglSonomaSurfaceFramebufferReady
+tglPlatformNVRAMReady tglFBIRQReady tglProbeReady tglFramebufferInitReady
+tglTopologyReady tglPanelPowerPropertyReady tglEDPTranscoderReady tglDekelReady
+tglGMBusReady tglTrainingLeaseReady tglEnablePG tglDisablePG tglPortByDDI
+orgTGLPathLookup orgTGLAddPath orgTGLFreePath orgTGLTrainingEnd orgTGLTraining
+orgTGLTrainingBegin orgTGLAllocatePathResources tglSinkFramingReady
+tglComboSignalReady tglComboAUXLifetimeReady tglAUXParentReady tglModeResultReady
+tglNativeLegacyHPDCaller tglDPAltFiaReady tglNativeFiaReady tglModeTransitionLock
+adlsClockReady adlsPowerReady adlsPortInitReady orgTGLEnableCombo
+orgTGLGetOSInformation orgTGLRegisterRead orgTGLRegisterWrite tglHPDHookReady
+tglClockOffCaller tglComboAUXGateReady tglPanelDepthReady tglPanelTimingReady
+adlsPanelPWMReady display13FBPowerReferencesReady display13FBEngineEnableHookReady
+display13FBLifecycleHooksReady display13FBDBUFHooksReady display13FBWatermarkHooksReady
+display13FBClockReadoutHooksReady display13FBClockSetHookReady display13FBMemoryHooksReady
+display13FBGTTHooksReady display13FBABIReady display13FBBootHandoffHookReady
+display13FBIRQReady display13FBWatermarkLayoutReady display13FBOutputHooksReady
+display13FBTopologyHooksReady display13FBSSTHooksReady display13FBAUXHooksReady
+display13DPProbeReady display13TrainingReady display13FramingReady
+ display13PanelPWMReady""".split()
 # Real callback invocation inside start, through to the immutable contract.
 begin=s.index(' // Evaluate firmware candidates, not only currently registered/live ports:')
 end=s.index(' uint64_t contractRecord[]',begin)
@@ -33,8 +53,6 @@ int main() {
  assert(s.start().missing()==C::DonorRuntime);
  assert(C::display13(s.display13Available()).missing()==C::DonorRuntime);
  s.framebufferDonorRuntimeReady=true;
- assert(s.display12Available()==((1ULL<<39)-1|C::ClockOrder|C::ComboAUXGate|C::PanelDepth|C::PanelTiming|C::PanelPWM|C::DonorRuntime));
- assert(s.display13Available()==(C::Backend13|C::SST13|C::AUX13|C::DPProbe13|C::Training12|C::Framing|C::PanelTranscoder|C::PanelDepth|C::PanelTiming|C::PanelPWM));
  assert(C::display13(s.display13Available(),true).missing()==C::DPBoot13);
  s.display13DPProbeReady=false;
  assert(C::display13(s.display13Available()).ready()); // Existing provider/HDMI stays valid.

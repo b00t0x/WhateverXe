@@ -38,7 +38,7 @@ struct XE {
  uint32_t displayWakeEventBusy=0,displayWakeEventEpoch=0,displayWakeEventErrors=0;
  uint32_t displayWakeEventPhase[3]{};
  bool restoreDisplay13Ports(IOService*){assert(!held);return true;}
- bool finishDisplay13SystemWake(IOService*);
+ bool finishDisplay13SystemWake(IOService*,bool=false);
 };
 FUNCTION
 template<class T> void put(IOService &fb,unsigned offset,T value){memcpy(fb.bytes+offset,&value,sizeof(value));}
@@ -69,6 +69,8 @@ int main(){
   assert(wakes[1]==unsigned(nativeFirst));
   if(!nativeFirst){event(&fb[1],4,reinterpret_cast<void*>(1));event(&fb[1],8,nullptr);put(fb[1],0x4284,2U);}
   assert(xe.finishDisplay13SystemWake(&fb[1]));
+  // Native Doze -> Wake owns DidPowerOn even though it emits no DidWake.
+  assert(wakes[2]==1 && ons[2]==0);event(&fb[2],8,nullptr);put(fb[2],0x4284,2U);
   for(unsigned i=0;i<3;++i)assert(wakes[i]==1 && ons[i]==1 && fb[i].refs==1);
  }
  // An inactive native client already parked in Wake also needs one wake;

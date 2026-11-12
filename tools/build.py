@@ -2,7 +2,7 @@
 """Build the standalone x86_64 Lilu plugin and donor symbol provider."""
 import argparse,hashlib,json,plistlib,subprocess
 from pathlib import Path
-from check_compat_version import check as check_compat_version
+from check_compat_version import check as check_compat_version, check_exports as check_compat_exports
 from check_boot_stack import check_objects as check_boot_stack
 ROOT=Path(__file__).resolve().parents[1]
 def run(cmd): subprocess.run([str(x) for x in cmd],check=True,cwd=ROOT)
@@ -19,7 +19,7 @@ def main():
  base+=['-fdebug-compilation-dir=.', '-ffile-prefix-map='+str(ROOT)+'=/WhateverXe',
         '-ffile-prefix-map='+str(sdk)+'=/MacKernelSDK', '-ffile-prefix-map='+str(lilu)+'=/Lilu']
  manifest={}
- for name,version,sources in [('WhateverXe','0.8.0',sorted((ROOT/'WhateverXe').glob('*.cpp'))+[lilu/'Library/plugin_start.cpp']),('AppleIntelTGLCompat','0.8.0',[ROOT/'AppleIntelTGLCompat/AppleIntelTGLCompat.cpp'])]:
+ for name,version,sources in [('WhateverXe','0.8.1',sorted((ROOT/'WhateverXe').glob('*.cpp'))+[lilu/'Library/plugin_start.cpp']),('AppleIntelTGLCompat','0.8.1',[ROOT/'AppleIntelTGLCompat/AppleIntelTGLCompat.cpp'])]:
   bundle=out/(name+'.kext')/'Contents';(bundle/'MacOS').mkdir(parents=True,exist_ok=True);objdir=out/name;objdir.mkdir(exist_ok=True)
   objects=[]
   for source in sources:
@@ -50,7 +50,9 @@ def main():
    # Keep the native policy class, scoped to its Intel client and independent of SMBIOS.
    info['IOKitPersonalities']=plistlib.loads((ROOT/'AppleIntelTGLCompat/GraphicsPolicy.plist').read_bytes())
   (bundle/'Info.plist').write_bytes(plistlib.dumps(info))
-  if name=='AppleIntelTGLCompat':check_compat_version(bundle/'Info.plist')
+  if name=='AppleIntelTGLCompat':
+   check_compat_version(bundle/'Info.plist')
+   check_compat_exports(exe)
   # Preserve DWARF before removing the linker's object-path records.
   if name=='WhateverXe':run(['xcrun','dsymutil',exe,'-o',out/(name+'.kext.dSYM')])
   run(['xcrun','strip','-S',exe])

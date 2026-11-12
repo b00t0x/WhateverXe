@@ -68,8 +68,8 @@ jobs:
         with:
           name: Test-results
           path: |
-            build/tests/*.log
-            build/tests/results.json
+            build/tests/**/test.log
+            build/tests/**/results.json
           if-no-files-found: ignore
           retention-days: 14
 

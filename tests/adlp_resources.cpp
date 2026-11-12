@@ -4,20 +4,14 @@
 #include <cassert>
 #include <cstdio>
 #include <initializer_list>
+#include "gen12_resource_cases.hpp"
 using namespace XELP;
 int main() {
     // Hardware captures: 46A6, six DSS, 96 EU, eight L3 banks, VCS0/2.
     uint32_t f[]={1,0x3f,0,0,0xe00fa};GTResources r;
     assert(decodeADLPGT(f,r) && r.dss==6 && r.nativeSubslices==12 && r.eus==96 && r.l3Banks==8 && r.urbKiB==512);
     assert(!decodeSmallGT(f,r));
-    for(unsigned mask=1;mask<64;++mask)for(unsigned eu=0;eu<256;++eu)for(unsigned l3=0;l3<256;++l3) {
-        uint32_t v[]={1,mask,eu,l3,0xe00fa};
-        const auto per=2*(8-__builtin_popcount(eu)),banks=8-__builtin_popcount(l3);
-        const bool expected=(per==8 || per==12 || per==16) && (banks==4 || banks==6 || banks==8);
-        assert(decodeADLPGT(v,r)==expected);
-        if(expected)assert(r.eus==unsigned(per*__builtin_popcount(mask)) && r.l3Banks==unsigned(banks));
-        else assert(!r.eus);
-    }
+    ResourceCases::check(decodeADLPGT);
     assert(!decodeADLPGT(nullptr,r));
     for(unsigned i=0;i<5;++i){auto save=f[i];f[i]=~0U;assert(!decodeADLPGT(f,r));f[i]=save;}
     for(unsigned bad:{0U,2U,3U}){f[0]=bad;assert(!decodeADLPGT(f,r));}f[0]=1;

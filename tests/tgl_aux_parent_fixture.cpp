@@ -7,6 +7,7 @@
 #include "kern_tgl_tc_boot.hpp"
 struct IOService;
 struct XE {
+ bool adlsDisplaySelected=false;struct {bool valid=false;unsigned dp=0,panel=0;}adlsWiring;
  // AUX_FIELDS
  uintptr_t tglPortByDDI, tglEnablePG, tglDisablePG;
  uintptr_t orgTGLEnableAUXPower, orgTGLDisableAUXPower;
@@ -85,7 +86,7 @@ int main() {
  // Other power objects cannot spend the original object's reference.
  get(4);native(other.data,4)=1;calls.clear();XE::wrapTGLDisableAUXPower(other.data,4);
  assert((calls==std::vector<unsigned>{3}) && owned(4)==1);checkSum();put(4);
- // Default admission remains TC2. Other valid DDIs retain native-only calls.
+ // This fixture qualifies only TC2. Other valid DDIs retain native-only calls.
  reset();for(unsigned d=0;d<9;++d)if(d!=4) {
   calls.clear();XE::wrapTGLEnableAUXPower(primary.data,d);XE::wrapTGLDisableAUXPower(primary.data,d);
   assert((calls==std::vector<unsigned>{2,3}) && owned(d)==0);

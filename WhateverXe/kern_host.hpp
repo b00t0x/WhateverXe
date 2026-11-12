@@ -9,6 +9,7 @@ private:
  static XeHost *callbackHost;
  XE xe;
  bool active {},systemWakeRecovery {};
+ bool kernelProcessed {},backlightSeen {},dataAccessSeen {};
  bool surfaceSeen {},graphicsSeen {},accelSeen {},providerSeen {};
  bool dependenciesSeen(size_t index) const {return surfaceSeen &&
   (!xe.isIntelFramebuffer(index) || !xe.requiresIntelProvider() || providerSeen) &&

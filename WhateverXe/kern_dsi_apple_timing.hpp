@@ -17,6 +17,10 @@ struct Timing {
 static_assert(sizeof(Timing)==160 && offsetof(Timing,pixelClock)==0x28 &&
               offsetof(Timing,horizontalActive)==0x40 && offsetof(Timing,pixelEncoding)==0x88,"Apple timing ABI");
 constexpr uint32_t FixedModeID=0x10000;
+// Donor depth indices: RGB8888=0, RGB2101010=1. Both occupy four bytes.
+// These describe framebuffer storage, independently of the DSI wire format.
+constexpr uint32_t MaxFramebufferDepth=1;
+inline bool framebufferDepth(int32_t depth) {return depth>=0 && uint32_t(depth)<=MaxFramebufferDepth;}
 struct ModeInformation {
     uint32_t width {},height {},refresh {},depth {},flags {};
     uint16_t widthMM {},heightMM {};
@@ -31,7 +35,7 @@ inline bool annotateMode(const Mode &m,ModeInformation &info,bool rotated=false,
         (m.htotal()*uint64_t(m.vtotal())));
     if(refresh>UINT32_MAX)return false;
     info.refresh=uint32_t(refresh);
-    info.depth=0; // the adopted DSI surface is RGB8 only
+    info.depth=MaxFramebufferDepth;
     info.widthMM=static_cast<uint16_t>(rotated?m.heightMM:m.widthMM);info.heightMM=static_cast<uint16_t>(rotated?m.widthMM:m.heightMM);
     // IOGraphics: valid/safe/default + built-in + native. Acceleration is a
     // separate runtime qualification, never inferred from a fixed mode.

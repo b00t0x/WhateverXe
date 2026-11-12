@@ -22,7 +22,8 @@ code=r'''#include "kern_xelp_platform.hpp"
 #include <cstring>
 #include <sys/mman.h>
 #include <initializer_list>
-void check(unsigned id,unsigned rev,unsigned dss,unsigned banks,unsigned media,unsigned eu=0) {
+#include "gen12_resource_cases.hpp"
+void check(unsigned id,unsigned rev,unsigned dss,unsigned banks,unsigned media,unsigned eu,unsigned expectedDSS,unsigned expectedBanks) {
  auto xeProfile=XELP::identify((id<<16)|0x8086,rev);
  bool display12SmallGTDetected=false;
  XELP::SmallGTResources display12SmallGT;
@@ -40,11 +41,11 @@ void check(unsigned id,unsigned rev,unsigned dss,unsigned banks,unsigned media,u
  memcpy(program,prefix,5);memcpy(program+5,urbReplacement,sizeof(urbFind));
  memcpy(program+5+sizeof(urbFind),done,3);memcpy(program+5+94,done,3);
  unsigned char state[0x1200];
- for(unsigned slice:{0U,1U,2U})for(unsigned ss:{0U,2U,4U,6U,10U,12U}) {
+ for(unsigned slice:{0U,1U,2U})for(unsigned ss:{0U,2U,4U,6U,8U,10U,12U}) {
   memset(state,0xa5,sizeof(state));
   reinterpret_cast<void(*)(void*,unsigned,unsigned)>(program)(state,slice,ss);
   unsigned result;memcpy(&result,state+0x1164,4);
-  assert(result==((slice==1 && ss==tglGT2Resources.nativeSubslices)?tglGT2Resources.l3Banks:0xa5a5a5a5U));
+  assert(result==((slice==1 && ss==2*expectedDSS)?expectedBanks:0xa5a5a5a5U));
   for(unsigned i=0;i<sizeof(state);++i)if(i<0x1164 || i>=0x1168)assert(state[i]==0xa5);
  }
  munmap(program,4096);
@@ -61,30 +62,18 @@ int main() {
  }
  for(auto id:{0x9a40U,0x9a49U,0x9a78U,0x9a59U,0x9ac0U,0x9ac9U,0x9ad9U,0x9af8U})
  for(auto rev:{0U,1U,2U,3U,4U,255U})for(auto video:{0xe00feU,0xe00faU}) {
-  check(id,rev,7,0xc0,video); // 48 EU, three DSS, six banks
-  check(id,rev,0x3e,0,video); // 80 EU, five DSS, eight banks
-  check(id,rev,0x3f,0,video); // 96 EU, six DSS, eight banks
-  check(id,rev,0x1f,0x88,video); // 80 EU, six banks; independent fused capacities
-  check(id,rev,0x3f,0xf0,video,0xc0); // 72 EU, four banks
+  for(const auto &input:ResourceCases::positive)
+   check(id,rev,input.fuses[1],input.fuses[3],video,input.fuses[2],input.dss,input.banks);
  }
  XELP::GTResources resource;
  assert(!XELP::decodeTGLGT2(nullptr,resource));
- for(unsigned slice=0;slice<4;++slice)for(unsigned dss=0;dss<64;++dss)
- for(unsigned eu:{0U,0xc0U,0xf0U,0xffU})for(unsigned banks=0;banks<256;++banks) {
-  uint32_t f[]={slice,dss,eu,banks,0xe00fa};unsigned count=__builtin_popcount(dss);
-  unsigned perDSS=2*(8-__builtin_popcount(eu)),enabledBanks=8-__builtin_popcount(banks);
-  bool expected=slice==1 && count && (perDSS==8 || perDSS==12 || perDSS==16) &&
-   (enabledBanks==4 || enabledBanks==6 || enabledBanks==8);
-  assert(XELP::decodeTGLGT2(f,resource)==expected);
-  if(expected)assert(resource.nativeSubslices==2*count && resource.eus==perDSS*count &&
-                    resource.l3Banks==enabledBanks && resource.urbKiB==64*enabledBanks);
- }
+ ResourceCases::check(XELP::decodeTGLGT2);
  uint32_t captured[]={1,0x1f,0,0x88,0xe00fa};
  assert(XELP::decodeTGLGT2(captured,resource) && resource.eus==80 && resource.l3Banks==6);
  for(unsigned i=0;i<5;++i){uint32_t f[]={1,63,0,0,0xe00fa};f[i]=~0U;assert(!XELP::decodeTGLGT2(f,resource));}
- puts("PASS all eight TGL GT2 IDs, fuse-derived URB native stores, unsupported topology rejection");
+ puts("PASS all eight TGL GT2 IDs, independent resource populations and native URB stores");
 }'''.replace('BODY',body).replace('QUALIFICATION',qualification)
 with tempfile.TemporaryDirectory(prefix='small-gt-urb-') as tmp:
  p=Path(tmp);(p/'test.cpp').write_text(code)
- subprocess.run(['clang++','-arch','x86_64','-std=c++17','-O1','-fsanitize=address,undefined','-I'+str(r/'WhateverXe'),str(p/'test.cpp'),'-o',str(p/'test')],check=True)
+ subprocess.run(['clang++','-arch','x86_64','-std=c++17','-O1','-fsanitize=address,undefined','-I'+str(r/'WhateverXe'),'-I'+str(r/'tests'),str(p/'test.cpp'),'-o',str(p/'test')],check=True)
  subprocess.run([str(p/'test')],check=True)

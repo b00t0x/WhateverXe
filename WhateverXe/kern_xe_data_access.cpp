@@ -75,6 +75,7 @@ int checkMap(void *cred, void *file, void *label, int prot, int flags, uint64_t 
 void XeDataAccess::init() {
     if (knownOS()) lilu.onKextLoadForce(&sandbox);
 }
+KernelPatcher::KextInfo &XeDataAccess::dependency() { return sandbox; }
 void XeDataAccess::processKernel(KernelPatcher &p) {
     if (!knownOS()) return;
     currentProcess = reinterpret_cast<decltype(currentProcess)>(p.solveSymbol(KernelPatcher::KernelID, "_current_proc"));

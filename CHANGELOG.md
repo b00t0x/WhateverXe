@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.1
+
+Update WhateverXe and [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) together.
+
+### Added
+
+- Add experimental 10-bit framebuffer support for the supported MIPI DSI panels.
+
+### Fixed
+
+- Preserve firmware display output when only one of the two graphics components is installed.
+- Correct missing or duplicate display wake notifications after system sleep.
+- Fix graphics memory mapping at buffer boundaries.
+
 ## 0.8.0
 
 Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) package with this update.
