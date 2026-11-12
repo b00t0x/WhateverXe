@@ -95,7 +95,12 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          python3 tools/release_notes.py "$RELEASE_TAG" > release-notes.md
+          if gh release view "$RELEASE_TAG" --json isDraft,body \
+              --jq 'select(.isDraft == true) | .body' > release-notes.md && test -s release-notes.md; then
+            : # Preserve release text explicitly supplied with the draft.
+          else
+            python3 tools/release_notes.py "$RELEASE_TAG" > release-notes.md
+          fi
           cd dist
           sha256sum -c SHA256SUMS
           if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > release-state; then
