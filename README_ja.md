@@ -56,7 +56,7 @@ AMFIPassは本家版に代えてリンク先の**Mod版**を使用し、両方�
 
 Graphicsは`/Library`への配置とAuxKC生成を行い、Systemファイルやsnapshotにはパッチしません。旧Xe System patchは先に復元してください。他のroot patchのためにOCLPを使う場合は、同じMod署名に対応する[独自ビルド版OCLP](https://github.com/b00t0x/OpenCore-Legacy-Patcher)を使用します。
 
-アクセラレーションにはWEXとGraphicsの両方が必要です。導入順は問いません。WEXが未導入・無効・互換性不一致の場合、GraphicsはファームウェアのGOP描画を維持します。WEX単独でもファームウェア描画を維持します。
+アクセラレーションにはWEXとGraphicsの両方が必要です。片方が未導入または無効でも、ファームウェア描画で起動できます。
 
 ## 設定
 
@@ -101,14 +101,13 @@ BIOS/UEFIで設定できる場合は、**DVMT Pre-Allocatedを96MB**にします
 | Alder Lake-S | Big Sur〜Tahoe：UHD 770、HDMI/DP/USB-C、最大3画面、Safari動画。WidevineはBig Sur/Tahoeで確認 |
 
 MIPI DSI対応は**試験的**で、検証したGPD MicroPC 2・CHUWI MiniBook X N100/U300の内蔵パネルに限ります。他の機器での動作を期待しないでください。
-DSIのFBは8bit／10bitの選択を公開し、パネル信号の固定色深度とは別に扱います。
 
 システム全体のスリープ／復帰対応は**試験的**です。実機確認済みの構成は、機種別ACPI設定を使用したMiniBook X N100/U300（MIPI DSI）のBig Sur・Tahoeで、内蔵単独と外部2画面までです。他機種・他OSと長時間のDarkWake反復は未検証です。
 
 ### 既知の問題と制限
 
 - DisplayPortの再接続で黒画面・停止が起きる場合があります。Tiger LakeのUSB-C再接続にも未解決の問題があり、Alder Lake-SのDP表示開始・再接続は時間がかかる場合があります。
-- 一部の画像変換でアプリがクラッシュし、SequoiaのApp Store動画ではGPUが停止することがあります。
+- 一部の画像変換でアプリがクラッシュすることがあります。
 - Safari動画で時折コマ落ちします。FairPlay保護コンテンツは未対応です。
 - 同時表示は最大3画面です。検証構成を超える解像度は未検証です。
 - 一部の端子配線・輝度制御方式、MST、Thunderbolt管理の出力は未対応です。

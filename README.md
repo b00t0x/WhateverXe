@@ -56,7 +56,7 @@ Use the linked **Mod** AMFIPass instead of upstream AMFIPass; do not load both. 
 
 Graphics installs under `/Library` and rebuilds AuxKC without patching System files or snapshots. Restore an old Xe System patch before installing. If you need OCLP for other root patches, use the [custom OCLP build](https://github.com/b00t0x/OpenCore-Legacy-Patcher) with the matching Mod signing chain.
 
-Acceleration requires both WEX and Graphics. Either component may be installed first. If WEX is missing, disabled or incompatible, Graphics leaves firmware GOP graphics active; WEX alone also leaves firmware graphics active.
+Acceleration requires both WEX and Graphics. With either component absent or disabled, the firmware display remains available.
 
 ## Configuration
 
@@ -101,14 +101,13 @@ The common regression checks cover Metal, OpenGL, OpenCL, hardware H.264 encode/
 | Alder Lake-S | Big Sur–Tahoe: UHD 770, HDMI/DP/USB-C and up to three displays; Safari video, with Widevine checked on Big Sur/Tahoe |
 
 MIPI DSI support is **experimental**, limited to the tested GPD MicroPC 2 and CHUWI MiniBook X N100/U300 panels. Do not expect it to work on other devices.
-The DSI adapter exposes 8-bit and 10-bit framebuffer storage independently of the panel link's fixed color depth.
 
 System sleep/wake support is **experimental**. Tested configurations are MiniBook X N100/U300 (MIPI DSI) on Big Sur and Tahoe with model-specific ACPI settings, using the internal display alone or up to two external displays. Other models, OS versions and prolonged DarkWake cycles remain unverified.
 
 ### Known issues and limits
 
 - DisplayPort reconnection can cause black screens or freezes. Tiger Lake USB-C reconnection is also unreliable; Alder Lake-S DP output/reconnection can be slow.
-- Some image-conversion operations can crash applications; App Store video can freeze the GPU on Sequoia.
+- Some image-conversion operations can crash applications.
 - Safari video may occasionally drop frames. FairPlay-protected playback is unsupported.
 - Up to three displays are supported. Resolutions beyond the tested configurations remain unverified.
 - Some connector layouts and backlight methods, MST and Thunderbolt-managed outputs are unsupported.
