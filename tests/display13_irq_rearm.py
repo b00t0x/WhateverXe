@@ -43,9 +43,9 @@ struct XE {
 }*callbackXE;
 METHODS
 int main(){
- for(bool multi:{false,true})for(bool lost:{false,true})for(unsigned pipe:{0U,1U,2U}) {
-  if(!multi && pipe)continue;
-  IO io;IOService ctl,fb,other;OSObject path;XE xe;callbackXE=&xe;owner=&ctl;framebuffer=&fb;
+ for(bool allPowered:{false,true})for(bool multi:{false,true})for(bool lost:{false,true})for(unsigned pipe:{0U,1U,2U}) {
+  if((!multi || !allPowered) && pipe)continue;
+  IO io;if(!allPowered)io.wells=0xc0f;IOService ctl,fb,other;OSObject path;XE xe;callbackXE=&xe;owner=&ctl;framebuffer=&fb;
   xe.adlnOutputWiring.valid=true;xe.adlnOutputWiring.dp=multi?3:2;
   display13FBIRQ={};auto &c=display13FBIRQ;c.base=&io;c.admittedPipes=multi?7:1;
   for(unsigned p=0;p<3;++p)io.r[0x70008+0x1000*p]=p==pipe?0xc0000000:0;
