@@ -65,6 +65,42 @@ int main(){
   const auto before=io.writes.size();XE::wrapDisplay13FBConfigureVBL(&ctl,&fb,&path,true,true);
   assert(c.state.enabled && !c.state.faulted && io.writes.size()>=before);
  }
+ // Connector identity must not change the shared resume contract. Use a
+ // full stop/resume followed by an independently waking peer. The second
+ // callback must not ACK pending peer completions or reset a running bank.
+ for(unsigned transport=0;transport<5;++transport)for(unsigned first=0;first<3;++first)for(bool getLock:{false,true}) {
+  IO io;IOService ctl,fb;OSObject path;XE xe;callbackXE=&xe;owner=&ctl;framebuffer=&fb;
+  xe.adlnOutputWiring.valid=true;
+  switch(transport) {
+   case 0:xe.adlnOutputWiring.dp=3;break; // Combo DP
+   case 1:xe.adlnOutputWiring.hdmi=3;xe.adlnOutputWiring.ddc[0]=1;xe.adlnOutputWiring.ddc[1]=2;break;
+   case 2:xe.adlnOutputWiring.dp=0x18;xe.adlnOutputWiring.typeC=0x18;break;
+   case 3:xe.adlnOutputWiring.panel=1;xe.adlnOutputWiring.dp=8;break;
+   case 4:xe.adlnOutputWiring.dsi=1;xe.adlnOutputWiring.dp=8;break;
+  }
+  assert(xe.adlnOutputWiring.described());
+  display13FBIRQ={};auto &c=display13FBIRQ;c.base=&io;c.admittedPipes=7;
+  if(transport==4) {c.state.transcoders.dsi0Pipe=first;io.r[0x7B008]=0;io.r[0x6B400]=(first?first+4:0)<<12;}
+  for(unsigned p=0;p<3;++p)io.r[0x70008+0x1000*p]=0;
+  const auto reg=c.state.transcoders.control(first);
+  io.r[reg]=0xc0000000;if(transport==4)io.r[0x6B400]|=0x80000000;
+  assert(enable(io,c.state,0,NativeGT,1U<<first,xe.adlnOutputWiring.hotplug(),xe.adlnOutputWiring.typeC)==Status::Complete);
+  assert(!XE::wrapDisplay13FBDisableIRQ(&ctl));io.r[reg]=0;
+  assert(XE::wrapDisplay13FBEnableIRQ(&ctl)==kIOReturnNotReady && c.rearmPending && !c.state.faulted);
+  *reinterpret_cast<uint32_t*>(path.data+0x3640)=first;
+  auto vbl=[&](bool on){locked=!getLock;XE::wrapDisplay13FBConfigureVBL(&ctl,&fb,&path,on,getLock);if(!getLock){assert(locked);locked=false;}else assert(!locked);};
+  vbl(false);assert(!c.state.faulted && c.rearmPending && !c.state.enabled);
+  io.r[reg]=0xc0000000;vbl(true);assert(c.state.enabled && !c.state.faulted && !c.rearmPending);
+  const auto peer=(first+1)%3;io.r[0x70008+0x1000*peer]=0xc0000000;
+  io.r[PipeIIR(first)]|=8;io.r[DSBInterrupt(first,0)]|=2;
+  const auto peerMask=io.r[PipeIIR(first)-4],peerEnable=io.r[PipeIIR(first)+4];
+  const auto before=io.writes.size();*reinterpret_cast<uint32_t*>(path.data+0x3640)=peer;vbl(true);
+  assert(!c.state.faulted && c.state.enabled && c.state.active==((1U<<first)|(1U<<peer)));
+  assert(io.r[PipeIIR(first)]==8 && (io.r[DSBInterrupt(first,0)]&2));
+  assert(io.r[PipeIIR(first)-4]==peerMask && io.r[PipeIIR(first)+4]==peerEnable);
+  for(size_t n=before;n<io.writes.size();++n)assert(io.writes[n]!=Master && io.writes[n]!=GfxMaster && io.writes[n]!=0xC4008);
+  if(transport==4)assert(!(io.r[DDIControl]&8)); // DSI reset GPIO never becomes HPD-A.
+ }
  for(unsigned bad=0;bad<4;++bad) {
   IO io;State s;assert(enable(io,s)==Status::Complete);assert(disable(io,s)==Status::Complete);io.r[0x70008]=0;
   if(bad==0)io.wells=~0U;if(bad==1)io.wells=0;if(bad==2)io.r[0x70008]=~0U;if(bad==3)io.r[0x70008]=0x40000000;

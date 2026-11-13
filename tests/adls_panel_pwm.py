@@ -110,6 +110,20 @@ int main(int argc,char**argv){
   assert(XE::wrapADLSLightUpEDP(ctl,nullptr,nullptr,nullptr)==0x1234 && nativeLight==1);
   assert(field<uint32_t>(ctl,0xe60)==120000 && get==put && !refs);
  }
+ // Display12 PWM and native delegation remain independent of Display13's
+ // AUX backend. A Display13 call in this fixture is a hard failure above.
+ for(auto family:{XELP::Family::AlderLakeS,XELP::Family::RaptorLakeS}) {
+  XE legacy;setup(legacy);legacy.xeProfile.family=family;
+  assert(XE::wrapADLSLightUpEDP(ctl,nullptr,nullptr,nullptr)==0x1234);
+  assert(!XE::wrapADLSPanelBacklight(ctl,32768) && duty==60000);
+  XE::wrapADLSPanelPWMEnable(access);assert(control==0xa0000000);
+ }
+ for(bool adls:{false,true}) {
+  XE external;setup(external);external.adlsDisplaySelected=adls;external.adlsWiring.panel=0;
+  assert(XE::wrapADLSLightUpEDP(ctl,nullptr,nullptr,nullptr)==0x1234 && nativeLight==1);
+  assert(XE::wrapADLSPanelBacklight(ctl,100)==0x5678 && nativeBacklight==1);
+  assert(!reads && !writes && !get && !put);
+ }
  XE s;setup(s);assert(XE::wrapADLSLightUpEDP(ctl,nullptr,nullptr,nullptr)==0x1234&&nativeLight==1&&field<uint32_t>(ctl,0xe60)==120000);
  assert(get==put&&get==1&&!refs);const auto capturedReads=reads;
  for(unsigned v:{0U,1U,32768U,65535U}){assert(!XE::wrapADLSPanelBacklight(ctl,v));assert(duty==uint64_t(120000)*v/65535&&field<uint32_t>(ctl,0xe58)==v&&get==put&&!refs);}

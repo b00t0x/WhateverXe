@@ -36,9 +36,39 @@ std::map<uint32_t,uint8_t> sink;
 struct OSObject {void retain(){++portRefs;}void release(){assert(portRefs);--portRefs;}};
 constexpr uint32_t kIOReturnNotReady=0xe00002d8;
 #define FunctionCast(f,p) reinterpret_cast<decltype(&f)>(p)
+using mach_vm_address_t=uintptr_t;
+void *IOSimpleLockAlloc(){assert(false);return nullptr;}
+Lock *IOLockAlloc(){assert(false);return nullptr;}
+struct KernelPatcher {
+ enum class Error {NoError,Failed};Error error=Error::NoError;
+ unsigned blocks=0,routes=0,failBlock=0;uintptr_t routed=0;
+ struct RouteRequest {
+  uintptr_t handler,*original;
+  template<class F>RouteRequest(const char*,F f,uintptr_t &o):handler(reinterpret_cast<uintptr_t>(f)),original(&o){}
+ };
+ uintptr_t solveSymbol(size_t,const char*,uintptr_t address,size_t){return address+0x48652;}
+ void clearError(){error=Error::NoError;}Error getError(){return error;}
+ void routeBlock(uintptr_t address,const uint8_t *bytes,size_t size){
+  if(++blocks==failBlock){error=Error::Failed;return;}memcpy(reinterpret_cast<void*>(address),bytes,size);
+ }
+ bool routeMultipleShort(size_t,RouteRequest *r,unsigned count,uintptr_t address,size_t){
+  assert(count==1);++routes;routed=r->handler;*r->original=address+0x48652;return true;
+ }
+};
 struct XE {
  static XE *callbackXE;
- bool display13FramebufferRequested=true,display13PanelPowerReady=true;
+ void *tglAUXLock=reinterpret_cast<void*>(1);
+ bool tglEDPTranscoderReady=true,tglPanelDepthReady=true,tglPanelTimingReady=true,display13PanelPWMReady=true,tglSinkFramingReady=true;
+ // Common panel/clock installers are prerequisites covered by their own
+ // replays. The new Display13 installer and its generated call bridge run here.
+ void processNativePanel(KernelPatcher&,size_t,uintptr_t,size_t){}
+ void processDisplay13Panel(KernelPatcher&,size_t,uintptr_t,size_t);
+ bool display13FramebufferRequested=true,display13PanelPowerReady=true,adlsDisplaySelected=false;
+ struct {unsigned panel=0;}adlsWiring;XELP::PanelPWM adlsPanelPWM;
+ uintptr_t orgADLSLightUpEDP=0;
+ static bool adlsCapturePanelPWM(void*){assert(false);return false;}
+ static uint32_t wrapADLSLightUpEDP(void*,void*,void*,const void*);
+ static bool display13PanelHealthy();
  Display13OutputWiring adlnOutputWiring;XELP::VBT::Ports firmwarePorts;
  XELP::Profile xeProfile;void *adlnTopologyController=nullptr,*adlnPlatform=nullptr;
  uintptr_t orgDisplay13PanelPower=0;
@@ -205,10 +235,21 @@ int main(int argc,char **argv) {
   assert(!bytes.empty() && bytes.size()<0x400000);
   auto image=static_cast<uint8_t *>(mmap(nullptr,0x400000,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_ANON|MAP_PRIVATE,-1,0));assert(image!=MAP_FAILED);
   memcpy(image,bytes.data(),bytes.size());
-  assert(!memcmp(image+Display13Panel::PeriodSite,Display13Panel::periodBefore,sizeof(Display13Panel::periodBefore)));
-  memset(image+Display13Panel::PeriodSite,0x90,sizeof(Display13Panel::periodBefore));
-  auto site=image+Display13Panel::PeriodSite;site[0]=0x48;site[1]=0xb8;
-  auto period=reinterpret_cast<uintptr_t>(XE::display13PanelPWMPeriod);memcpy(site+2,&period,8);site[10]=0xff;site[11]=0xd0;
+  // Execute the production installer on the untouched exact donor. The
+  // replay consumes its actual bytes; it must not manufacture a second bridge.
+  for(unsigned fail=1;fail<=4;++fail) {
+   std::vector<uint8_t> rejected(bytes.begin(),bytes.end());KernelPatcher p;
+   f.xe.display13PanelPowerReady=false;
+   if(fail==4)rejected[0x507BD]^=1;else p.failBlock=fail;
+   f.xe.processDisplay13Panel(p,0,reinterpret_cast<uintptr_t>(rejected.data()),rejected.size());
+   assert(!f.xe.display13PanelPowerReady && !p.routes);
+  }
+  // Preserve the PWM owner while testing installer prerequisites.
+  XE::callbackXE=&f.xe;
+  KernelPatcher installer;f.xe.display13PanelPowerReady=false;
+  f.xe.processDisplay13Panel(installer,0,reinterpret_cast<uintptr_t>(image),bytes.size());
+  assert(f.xe.display13PanelPowerReady && installer.routes==1 && installer.routed==reinterpret_cast<uintptr_t>(XE::wrapDisplay13PanelPower));
+  std::vector<uint8_t> installed(image,image+bytes.size());
   jump(image+0x48652,reinterpret_cast<uintptr_t>(lightPower));jump(image+0x6ccb4,reinterpret_cast<uintptr_t>(lightClocks));
   jump(image+0x1ba02,reinterpret_cast<uintptr_t>(lightTrain));jump(image+0x1108,reinterpret_cast<uintptr_t>(lightPlane));
   jump(image+0x65fd4,reinterpret_cast<uintptr_t>(lightScaler));jump(image+0x48bb6,reinterpret_cast<uintptr_t>(lightPipe));
@@ -217,9 +258,8 @@ int main(int argc,char **argv) {
   alignas(8) uint8_t path[0x3730]{};put(path,0x3648,static_cast<void*>(path));
   auto light=reinterpret_cast<uint32_t(*)(void*,void*,void*,const void*)>(image+0x5063e);
   for(unsigned patched=0;patched<2;++patched) {
-   if(patched)for(const auto &patch:Display13Panel::lightPatches) {
-    assert(!memcmp(image+patch.offset,patch.before,patch.size));memcpy(image+patch.offset,patch.after,patch.size);
-   }
+   for(const auto &patch:Display13Panel::lightPatches)
+    memcpy(image+patch.offset,patched?installed.data()+patch.offset:reinterpret_cast<const uint8_t*>(bytes.data())+patch.offset,patch.size);
    for(unsigned power:{0U,0xe00002d8U})for(unsigned train:{0U,0xe00002d8U}) {
     lightStages.clear();powerResult=power;trainingResult=train;
     const auto result=light(f.ctl,nullptr,path,nullptr);
@@ -227,11 +267,18 @@ int main(int argc,char **argv) {
     else {assert(result==(power?power:train));assert(lightStages.size()==(power?1U:train?3U:8U));}
    }
   }
+  // Route the separately qualified enable call to the stage-recording leaf
+  // for BOTH old PWM and new AUX (adls_panel_pwm_native checks its installer).
+  auto enableSite=image+0x507e9;memset(enableSite,0x90,16);enableSite[0]=0x48;enableSite[1]=0xb8;
+  auto enable=reinterpret_cast<uintptr_t>(lightPWM);memcpy(enableSite+2,&enable,8);enableSite[10]=0xff;enableSite[11]=0xd0;
   // Replay the donor caller through the production power wrapper, including
   // its timing callback and PG owner. CDCLK hardware and training are leaves.
   Fixture cold;put(cold.access,0,vtable);realPanelPower=true;trainingResult=0;
+  assert(XE::display13PanelCapture(cold.ctl));cold.map.at(0xC8254)=0; // resume lost the PWM period
   display13FBPower.clockStopped=true;lightStages.clear();
-  assert(!light(cold.ctl,nullptr,path,nullptr));cold.balanced();
+  cold.xe.orgADLSLightUpEDP=reinterpret_cast<uintptr_t>(light);
+  assert(!XE::wrapADLSLightUpEDP(cold.ctl,nullptr,path,nullptr));cold.balanced();
+  assert(cold.map.at(0xC8254)==120000 && cold.map.at(0xC8250)==0xa0000000);
   assert(calls==1 && !display13FBPower.clockStopped && lightStages.size()==8);
   // Full donor tail now crosses both production PWM adapters and AUX level.
   Fixture aux;alignas(8) uint8_t port[0x600]{};uint32_t config[6]{};put(port,0x548,config);
@@ -241,10 +288,8 @@ int main(int argc,char **argv) {
   aux.map.at(0xC8250)=aux.map.at(0xC8254)=aux.map.at(0xC8258)=~0U;aux.map.at(0x45444)=3;
   sink={{0x700,3},{0x701,5},{0x702,6},{0x724,12},{0x720,0x82},{0x721,0},{0x722,0},{0x723,0}};
   put(aux.access,0,vtable);put(aux.ctl,0xE58,32768U);display13FBPower.clockStopped=true;
-  // Route the exact enable site as production does, preserving its call ABI.
-  auto enableSite=image+0x507e9;memset(enableSite,0x90,16);enableSite[0]=0x48;enableSite[1]=0xb8;
-  auto enable=reinterpret_cast<uintptr_t>(lightPWM);memcpy(enableSite+2,&enable,8);enableSite[10]=0xff;enableSite[11]=0xd0;
-  lightStages.clear();assert(!light(aux.ctl,nullptr,path,nullptr));aux.balanced();
+  aux.xe.orgADLSLightUpEDP=reinterpret_cast<uintptr_t>(light);
+  lightStages.clear();assert(!XE::wrapADLSLightUpEDP(aux.ctl,nullptr,path,nullptr));aux.balanced();
   assert(!portRefs && sink[0x720]==0x83 && sink[0x722]==7 && sink[0x723]==255);
   assert(aux.map.at(0xC8250)==~0U && aux.map.at(0xC8254)==~0U && aux.map.at(0xC8258)==~0U);
   realPanelPower=false;

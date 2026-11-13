@@ -56,22 +56,39 @@ struct XE {
 METHOD
 bool inGate(const IOWorkLoop*){return true;}bool tryGate(IOWorkLoop*){return true;}void openGate(IOWorkLoop*){}
 int main(){
- for(unsigned state=0;state<4;++state)for(bool active:{false,true}) {
+ for(unsigned binding:{UINT32_MAX,0U,1U,2U})for(unsigned state=0;state<4;++state)for(bool active:{false,true}) {
   Map map;IOWorkLoop loop;XE xe;callbackXE=&xe;
   alignas(8) uint8_t ctl[0x1c20]{},power[0x80]{};
   *reinterpret_cast<void**>(ctl+0xe00)=&loop;
   *reinterpret_cast<void**>(ctl+0xc40)=power;*reinterpret_cast<void**>(ctl+0xc8)=power;*reinterpret_cast<void**>(power+0x10)=ctl;
   auto &c=display13FBPower;c.~Context();new(&c)Context;c.controller=ctl;c.power=power;c.map=&map;c.workLoop=&loop;
-  c.bridge.begun=true;c.bridge.state.suspended=true;c.transcoders.dsi0Pipe=UINT32_MAX;
+  c.bridge.begun=true;c.bridge.state.suspended=true;c.transcoders.dsi0Pipe=binding;
   xe.adlnWorkLoopInGate=reinterpret_cast<uintptr_t>(inGate);xe.adlnWorkLoopTryClose=reinterpret_cast<uintptr_t>(tryGate);xe.adlnWorkLoopOpen=reinterpret_cast<uintptr_t>(openGate);
   map.regs[0x45404/4]=0xfc0f;map.regs[0x4438c/4]=c.dbuf.mbus;
   map.regs[0x42084/4]=state==1?0x40000123:state==2?UINT32_MAX:0x123;
-  map.regs[0x70008/4]=active?0xc0000000:0;reject=state==3;enables=0;
+  const auto pipe=binding<3?binding:2;
+  map.regs[c.transcoders.control(pipe)/4]=active?0xc0000000:0;
+  if(binding<3)map.regs[0x6B400/4]=((pipe?pipe+4:0)<<12)|(active?0x80000000:0);
+  reject=state==3;enables=0;
   const auto ready=xe.restoreDisplay13ResourcesLocked(power,true);
   const bool expected=!active && state<2;
   assert(ready==expected && enables==unsigned(expected) && c.restorePending==!expected);
   if(expected)assert(map.regs[0x42084/4]==0x40000123 && display13FBIRQ.powerLost && display13FBIRQ.rearmPending);
   if(active)assert(map.regs[0x42084/4]==(state==1?0x40000123:state==2?UINT32_MAX:0x123));
+  // A later caller retries the same lost-power generation. Busy consumers
+  // or transient register failure must not make retry permanently impossible.
+  const auto epoch=c.restoreEpoch;
+  map.regs[c.transcoders.control(pipe)/4]=0;
+  if(binding<3)map.regs[0x6B400/4]&=~0x80000000U;
+  reject=false;map.regs[0x42084/4]=0x123;
+  if(!ready){assert(xe.restoreDisplay13ResourcesLocked(power,false));assert(c.restoreEpoch==epoch && !c.restorePending);}
+  // Ordinary peer wake with retained engine/clock is a no-op, even if the
+  // GGTT register would fail readback. No shared reprogramming while live.
+  map.regs[c.transcoders.control(pipe)/4]=0xc0000000;
+  if(binding<3)map.regs[0x6B400/4]|=0x80000000;
+  map.regs[0x42084/4]=0x123;const auto oldEnables=enables;reject=true;
+  assert(xe.restoreDisplay13ResourcesLocked(power,true));
+  assert(enables==oldEnables && map.regs[0x42084/4]==0x123 && c.restoreEpoch==epoch);
  }
  puts("PASS production shared restore: stopped consumers, preserved bits, failed GGTT readback blocks engine and retains pending");
 }

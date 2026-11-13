@@ -17,6 +17,7 @@ code=r'''
 #include "kern_dsi_math.hpp"
 #include "kern_display13_firmware.hpp"
 #include "kern_display13_panel.hpp"
+#include "kern_alderlake_s.hpp"
 #include "firmware_panel_fixture.hpp"
 bool auditEnabled=false;
 bool checkKernelArgument(const char *arg){assert(!strcmp(arg,"-wex-dsi-audit"));return auditEnabled;}
@@ -95,15 +96,24 @@ void snapshotLifetime(){
 // Production capture -> owner cache -> wiring/PPS/PWM consumers. MMIO is
 // modeled; these checks do not establish that a firmware provides mailbox 5.
 void automaticPanel(){
- for(bool external:{false,true})for(bool pointers:{false,true}) {
+ for(unsigned id:{0x9a498086U,0x46808086U,0xa7808086U,0x46a68086U,0xa7a88086U,0x46d18086U})for(bool external:{false,true})for(bool pointers:{false,true}) {
   PanelFixture::Input f(pointers,true);opregion=f.op;externalVBT=f.vbt;
   if(external){opregion[23]=2;PanelFixture::w32(opregion,0x58,0x14);PanelFixture::w32(opregion,0x3ba,0x200000);PanelFixture::w32(opregion,0x3c2,externalVBT.size());memset(opregion.data()+0x400,0,externalVBT.size());}
-  XE x;IOPCIDevice pci;pci.asls=0x100000;x.xeProfile=XELP::identify(0x46a68086,12);
+  XE x;IOPCIDevice pci;pci.asls=0x100000;x.xeProfile=XELP::identify(id,12);
   x.xelpReadFirmware(&pci);assert(x.firmwarePorts.panel.type==9 && x.firmwarePorts.panel.valid);
   // Reclaim both source mappings before consuming the copied facts.
   opregion.assign(8192,0);externalVBT.clear();pci.asls=0;x.xelpReadFirmware(&pci);
-  const auto &v=x.firmwarePorts;auto wiring=XELP::VBT::display13Fixed(v,0x7b,x.xeProfile.family);
-  assert(wiring.panel==1 && wiring.hdmi==2 && pci.reads==1);
+  const auto &v=x.firmwarePorts;assert(pci.reads==1);
+  const auto adapter=XELP::displayAdapter(x.xeProfile.family);
+  if(adapter==XELP::DisplayAdapter::TGL) {
+   assert(v.hdmi(3).hdmi==2 && XELP::PanelPower::nativePPS0(v,x.xeProfile.family));
+   assert(TGLComboDP::fromFirmware(v,2)==0); // internal eDP retains the native panel route
+  } else if(adapter==XELP::DisplayAdapter::ADLS) {
+   const auto wiring=AlderLakeS::Wiring::fromFirmware(v);assert(wiring.panel==1 && wiring.hdmi==8); // ADL-S DVO HDMI-B is TC1, not Combo-B
+  } else {
+   const auto wiring=XELP::VBT::display13Fixed(v,0x7b,x.xeProfile.family);
+   assert(wiring.panel==1 && wiring.hdmi==2);
+  }
   const uint32_t native[5]={};auto timing=XELP::PanelPower::select(v.panel,native,0,0,0);
   assert(timing.valid && timing.fields[0]==911 && timing.fields[2]==910 && timing.fields[4]==2);
   struct IO {uint32_t read(uint32_t r){return r==0xc2014?256:0;}} io;

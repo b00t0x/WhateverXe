@@ -1,5 +1,6 @@
 #include "kern_vbt.hpp"
 #include "kern_display13_firmware.hpp"
+#include "kern_alderlake_s.hpp"
 #include "firmware_panel_fixture.hpp"
 #include <cassert>
 #include <cstdio>
@@ -7,6 +8,22 @@ using namespace XELP;
 using namespace XELP::VBT;
 Ports parseInput(PanelFixture::Input &f){return parse(f.vbt.data(),f.vbt.size(),Family::AlderLakeP,panelEDID(f.op.data(),f.op.size()));}
 int main(){
+ // Optional panel identity/backlight failures cannot remove HDMI-B. Check
+ // the shared parser with Display12 and Display13 consumers, not just ADL-P.
+ for(auto family:{Family::TigerLake,Family::AlderLakeS,Family::RaptorLakeS,Family::AlderLakeP,Family::RaptorLakeP,Family::AlderLakeN}) {
+  for(unsigned damaged=0;damaged<4;++damaged) {
+   PanelFixture::Input f;f.vbt[f.options]=4;
+   if(damaged==1)f.vbt[f.options]=0xff; // no matching identity below
+   if(damaged==2)f.vbt[f.backlight]=5; // malformed optional table
+   if(damaged==3)f.vbt[f.edp-2]=0xff; // malformed optional tail length
+   const auto p=parse(f.vbt.data(),f.vbt.size(),family);
+   assert(p.valid());
+   if(family==Family::AlderLakeS || family==Family::RaptorLakeS) {
+    const auto w=AlderLakeS::Wiring::fromFirmware(p);assert(w.hdmi==8);
+   } else assert(p.hdmi(3).hdmi==2 && p.hdmi(3).ddc[1]==2);
+   if(!damaged)assert(p.panel.valid && p.panel.type==4 && PanelPower::nativePPS0(p,family));
+  }
+ }
  for(bool ptr:{false,true})for(bool dup:{false,true}) {
   PanelFixture::Input f(ptr,dup);auto p=parseInput(f);
   assert(p.valid() && p.panel.valid && p.panel.type==9 && p.panel.pwmHz==209);
