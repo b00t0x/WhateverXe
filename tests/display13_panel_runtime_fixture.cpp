@@ -61,7 +61,8 @@ struct XE {
  bool tglEDPTranscoderReady=true,tglPanelDepthReady=true,tglPanelTimingReady=true,display13PanelPWMReady=true,tglSinkFramingReady=true;
  // Common panel/clock installers are prerequisites covered by their own
  // replays. The new Display13 installer and its generated call bridge run here.
- void processNativePanel(KernelPatcher&,size_t,uintptr_t,size_t){}
+ unsigned nativePanelCalls=0;
+ void processNativePanel(KernelPatcher&,size_t,uintptr_t,size_t){++nativePanelCalls;}
  void processDisplay13Panel(KernelPatcher&,size_t,uintptr_t,size_t);
  bool display13FramebufferRequested=true,display13PanelPowerReady=true,adlsDisplaySelected=false;
  struct {unsigned panel=0;}adlsWiring;XELP::PanelPWM adlsPanelPWM;
@@ -212,11 +213,13 @@ int main(int argc,char **argv) {
  // PPS/PWM use the PCH reference clock. LightUpEDP powers the panel before
  // its CDCLK callback, so an intentionally stopped CDCLK is a valid input.
  for(bool stopped:{false,true}) {
+  auxCalls=0;const auto previousSink=sink;
   Fixture cold;display13FBPower.clockStopped=stopped;
   assert(!XE::wrapDisplay13PanelPower(cold.ctl,2));cold.balanced();
   assert(calls==1 && cold.map.at(0xC7200)==0x80000000);
   assert(!XE::display13PanelBrightness(cold.ctl,32768));cold.balanced();
   assert(cold.map.at(0xC8258)==uint64_t(120000)*32768/65535);
+  assert(!auxCalls && sink==previousSink); // existing PWM never contacts an AUX sink
  }
  Fixture f;assert(XE::display13PanelCapture(f.ctl));
  assert(Display13FBMemory::field<unsigned>(f.ctl,0xE60)==120000);f.balanced();
@@ -235,6 +238,23 @@ int main(int argc,char **argv) {
   assert(!bytes.empty() && bytes.size()<0x400000);
   auto image=static_cast<uint8_t *>(mmap(nullptr,0x400000,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_ANON|MAP_PRIVATE,-1,0));assert(image!=MAP_FAILED);
   memcpy(image,bytes.data(),bytes.size());
+  // Non-eDP boards may still have unused panel facts in firmware. With
+  // DP-only, HDMI-only or DSI+external wiring, this eDP installer must leave
+  // the donor and common panel hooks completely untouched.
+  const auto savedWiring=f.xe.adlnOutputWiring;
+  for(unsigned transport=0;transport<3;++transport) {
+   f.xe.adlnOutputWiring={};f.xe.adlnOutputWiring.valid=true;
+   if(transport==0)f.xe.adlnOutputWiring.dp=0x18;
+   if(transport==1){f.xe.adlnOutputWiring.hdmi=2;f.xe.adlnOutputWiring.ddc[1]=2;}
+   if(transport==2){f.xe.adlnOutputWiring.dsi=1;f.xe.adlnOutputWiring.dp=8;}
+   assert(f.xe.adlnOutputWiring.described());
+   KernelPatcher untouched;const auto calls=f.xe.nativePanelCalls;
+   f.xe.display13PanelPowerReady=false;
+   f.xe.processDisplay13Panel(untouched,0,reinterpret_cast<uintptr_t>(image),bytes.size());
+   assert(!untouched.blocks && !untouched.routes && f.xe.nativePanelCalls==calls);
+   assert(!f.xe.display13PanelPowerReady && !memcmp(image,bytes.data(),bytes.size()));
+  }
+  f.xe.adlnOutputWiring=savedWiring;
   // Execute the production installer on the untouched exact donor. The
   // replay consumes its actual bytes; it must not manufacture a second bridge.
   for(unsigned fail=1;fail<=4;++fail) {

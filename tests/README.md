@@ -237,3 +237,12 @@ than Combo-B. Optional panel damage must preserve external HDMI wiring. The
 ADL/RPL-S PWM replay preserves level/polarity and native non-panel delegation;
 entering a Display13 helper in that fixture fails. These are CPU routing and
 lifecycle protections, not new Display12 AUX support or hardware qualification.
+
+For non-eDP regression isolation, `display13_panel_runtime_native` additionally
+calls the real eDP installer with DP-only, HDMI-only and DSI-plus-external wiring
+while stale panel firmware facts remain present. Neither donor bytes nor common
+panel hook setup may change. Removing the non-eDP guard must fail at this no-write
+boundary. The existing Display13 PWM branch also makes no AUX calls and preserves
+the modeled sink. `profile_admission` and `framebuffer_common[_native]` separately
+protect Display12 backend selection and installation dispatch; their combination
+is not a full kernel startup replay.
