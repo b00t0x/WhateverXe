@@ -7555,7 +7555,8 @@ bool XE::display13DeferClock(void *access,uint64_t reg,uint32_t value,uintptr_t 
  const bool selected=port && access==c.access;
  if(selected) {
   auto &deferred=display13DeferredClocks[pipe];
-  if(display13SSTPort(port) && c.bridge.pipeHeld(power,pipe) && !deferred.pending && !(value&0xf0000000U))deferred={port,value,true};
+  if(display13SSTPort(port) && c.bridge.pipeHeld(power,pipe) && !(value&0xf0000000U) &&
+     (!deferred.pending || (deferred.port==port && deferred.value==value)))deferred={port,value,true};
   else adlnFault(c.clockFaulted,__LINE__);
  }
  IOLockUnlock(c.lock);return selected;
@@ -13851,8 +13852,10 @@ bool XE::adlsPanelPWMTarget(void *controller,void *&access,void *&power) {
     !XELP::PanelPower::nativePPS0(s->firmwarePorts,s->xeProfile.family) || c[0x918] ||
     *reinterpret_cast<void **>(c+0xD0) || *reinterpret_cast<void **>(c+0xD40)!=s->tglPlatformCopy ||
     !s->orgTGLRegisterRead || !s->orgTGLRegisterWrite)return false;
+ // Native resetSoftwareState starts at mode0. The bound panel record and
+ // access owner already identify PPS/PWM before LightUpEDP sets mode1.
  auto port=static_cast<uint8_t *>(s->tglTCNativeFunctions.portByDDI(0));
- if(!port || port[0x117] || *reinterpret_cast<uint32_t *>(port+0x550)!=1 || !s->adlsWiring.boundPanel(s->tglPlatformCopy,*reinterpret_cast<uint32_t **>(port+0x548)))return false;
+ if(!port || port[0x117] || *reinterpret_cast<uint32_t *>(port+0x550)>1 || !s->adlsWiring.boundPanel(s->tglPlatformCopy,*reinterpret_cast<uint32_t **>(port+0x548)))return false;
  auto a=*reinterpret_cast<uint8_t **>(c+0xC40);auto p=*reinterpret_cast<uint8_t **>(c+0xC8);
  if(!a || !p || *reinterpret_cast<void **>(p+0x10)!=controller || p[0x18] ||
     *reinterpret_cast<void **>(p+0x78)!=a || *reinterpret_cast<void **>(port+0x578)!=a ||
