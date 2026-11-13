@@ -239,7 +239,7 @@ inline bool dpSource(const DisplayReadout &boot,unsigned pipe,unsigned ddi,const
     // payload-allocation bit. Firmware may leave bit8 set on an SST GOP;
     // preserve it and include it in the unchanged-source check, never clear it
     // on an enabled transcoder or infer an MST transport from that bit alone.
-    return (trans&0xFF700000U)==(0x82000000U|((ddi+1)<<27)) &&
+    return (trans&0xFF000000U)==(0x82000000U|((ddi+1)<<27)) && XELPGeometry::rgbLinkDepth(trans) &&
         !(trans&((1U<<15)|(1U<<9))) && !ctl2 &&
         (lanes==1 || lanes==2 || lanes==4) && ((buf>>1)&7)==lanes-1 &&
         (buf&(typeC && tc->ownershipOptional?0x80000080U:0x800000C0U))==
@@ -394,7 +394,7 @@ inline LinearStatus linearPlan(const DisplayReadout &r, LinearPlan &p,unsigned d
     if(protocol!=GOPProtocol::TMDS && !dpSource(r,p.pipe,ddi,tc,protocol==GOPProtocol::EDP))return LinearStatus::InvalidDPSource;
     p.geometry=XELPGeometry::linear(p.control,p.stride,p.size,p.position,p.offset);
     if(!p.geometry.valid || (p.surface&4095) || p.surface!=surfLive ||
-       ((trans>>20)&7)!=0 || (pipeConf&0xC0000000)!=0xC0000000 ||
+       !XELPGeometry::rgbLinkDepth(trans) || (pipeConf&0xC0000000)!=0xC0000000 ||
        !bootGeometry(r,p.pipe,p.geometry,htotal,vtotal))return LinearStatus::NotLinearFHD;
     // DPT disable is global on Display 13. Exclude all other active planes
     // and cursors, including planes on powered but inactive pipes.

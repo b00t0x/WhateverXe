@@ -177,7 +177,7 @@ template<class IO> Result normalize(IO &io,const AlderLakeN::DisplayReadout &boo
         }
         ports[p]=port;used|=1U<<port;
         uint32_t stride=0,size=0,position=0,offset=0,ht=0,vt=0,conf=0;
-        if(((trans>>20)&7) || !AlderLakeN::value(boot,0x70188+bank,stride) ||
+        if(!XELPGeometry::rgbLinkDepth(trans) || !AlderLakeN::value(boot,0x70188+bank,stride) ||
            !AlderLakeN::value(boot,0x70190+bank,size) || !AlderLakeN::value(boot,0x7018C+bank,position) ||
            !AlderLakeN::value(boot,0x701A4+bank,offset) || !AlderLakeN::value(boot,0x60000+bank,ht) ||
            !AlderLakeN::value(boot,0x6000C+bank,vt) || !AlderLakeN::value(boot,0x70008+bank,conf) ||

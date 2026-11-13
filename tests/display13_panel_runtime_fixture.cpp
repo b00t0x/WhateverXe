@@ -72,9 +72,12 @@ struct Fixture {
  }
  void balanced(){auto &c=display13FBPower;assert(c.bridge.nativeRefs(1)==1 && Display13FBMemory::field<unsigned>(power,0x20)==1 && !owner.held && !pps.held);}
 };
+bool realPanelPower=false;
 unsigned powerResult=0,trainingResult=0;std::vector<unsigned> lightStages;
-uint32_t lightPower(void*,uint32_t state){assert(state==2);lightStages.push_back(1);return powerResult;}
-void lightClocks(void*,void*,void*){lightStages.push_back(2);}
+uint32_t lightPower(void *controller,uint32_t state){assert(state==2);lightStages.push_back(1);return realPanelPower?XE::wrapDisplay13PanelPower(controller,state):powerResult;}
+void lightClocks(void*,void*,void*){lightStages.push_back(2);
+ if(realPanelPower){assert(display13FBPower.clockStopped && display13FBPower.map->at(0xC7200)==0x80000000);display13FBPower.clockStopped=false;}
+}
 uint32_t lightTrain(void*,void *request){assert(!request);lightStages.push_back(3);return trainingResult;}
 void lightPlane(void*,bool enabled){assert(!enabled);lightStages.push_back(4);}
 void lightScaler(void*,void*){lightStages.push_back(5);}
@@ -96,11 +99,20 @@ int main(int argc,char **argv) {
  for(unsigned bad=0;bad<10;++bad) {
   Fixture f;auto &c=display13FBPower;
   switch(bad){case 0:mapping=false;break;case 1:f.xe.adlnPlatform=nullptr;break;case 2:c.bridge.state.suspended=true;break;
-   case 3:c.clockStopped=true;break;case 4:f.xe.firmwarePorts.panel.controller=1;break;
+   case 3:c.clockFaulted=true;break;case 4:f.xe.firmwarePorts.panel.controller=1;break;
    case 5:f.xe.firmwarePorts.panel.backlightType=3;break;case 6:f.map.at(0xC8254)=~0U;break;
    case 7:put(f.ctl,0xD0,static_cast<void*>(f.power));break;case 8:f.map.at(0xC2020)=~0U;break;
    case 9:f.xe.adlnTopologyController=nullptr;break;}
   assert(XE::wrapDisplay13PanelPower(f.ctl,2)==kIOReturnNotReady && !calls);f.balanced();
+ }
+ // PPS/PWM use the PCH reference clock. LightUpEDP powers the panel before
+ // its CDCLK callback, so an intentionally stopped CDCLK is a valid input.
+ for(bool stopped:{false,true}) {
+  Fixture cold;display13FBPower.clockStopped=stopped;
+  assert(!XE::wrapDisplay13PanelPower(cold.ctl,2));cold.balanced();
+  assert(calls==1 && cold.map.at(0xC7200)==0x80000000);
+  assert(!XE::display13PanelBrightness(cold.ctl,32768));cold.balanced();
+  assert(cold.map.at(0xC8258)==uint64_t(120000)*32768/65535);
  }
  Fixture f;assert(XE::display13PanelCapture(f.ctl));
  assert(Display13FBMemory::field<unsigned>(f.ctl,0xE60)==120000);f.balanced();
@@ -136,6 +148,13 @@ int main(int argc,char **argv) {
     else {assert(result==(power?power:train));assert(lightStages.size()==(power?1U:train?3U:8U));}
    }
   }
+  // Replay the donor caller through the production power wrapper, including
+  // its timing callback and PG owner. CDCLK hardware and training are leaves.
+  Fixture cold;put(cold.access,0,vtable);realPanelPower=true;trainingResult=0;
+  display13FBPower.clockStopped=true;lightStages.clear();
+  assert(!light(cold.ctl,nullptr,path,nullptr));cold.balanced();
+  assert(calls==1 && !display13FBPower.clockStopped && lightStages.size()==8);
+  realPanelPower=false;
   munmap(image,0x400000);
   puts("PASS exact native LightUpEDP power/train failure exits; original donor counterexamples");
  }

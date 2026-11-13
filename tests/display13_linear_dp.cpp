@@ -37,8 +37,8 @@ static IO firmware(unsigned pipe,unsigned ddi,unsigned lanes,bool enhanced,unsig
 int main() {
     unsigned cases=0;
     for(unsigned pipe=0;pipe<3;++pipe)for(unsigned ddi=0;ddi<2;++ddi)for(unsigned lanes:{1U,2U,4U})
-    for(bool enhanced:{false,true})for(unsigned width:{1280U,1920U,2560U,3840U}) {
-        auto io=firmware(pipe,ddi,lanes,enhanced,width);auto boot=readDisplay(io,true);const auto before=io.regs;
+    for(unsigned depth:{0U,1U,2U,3U})for(bool enhanced:{false,true})for(unsigned width:{1280U,1920U,2560U,3840U}) {
+        auto io=firmware(pipe,ddi,lanes,enhanced,width);io.regs[0x60400+pipe*0x1000]|=depth<<20;auto boot=readDisplay(io,true);const auto before=io.regs;
         LinearPlan plan;
         assert(linearPlan(boot,plan,ddi)==LinearStatus::NotSingleHDMI);
         assert(linearPlan(boot,plan,ddi,GOPProtocol::DP)==LinearStatus::Ready && plan.pipe==pipe);
@@ -66,8 +66,8 @@ int main() {
             assert(r.status==LinearStatus::StateChanged && !r.restored && r.writes==(tick==1?0U:tick==3?2U:10U));
         }
     }
-    for(unsigned ddi=0;ddi<2;++ddi)for(unsigned pipe=0;pipe<3;++pipe)for(unsigned sr=0;sr<2;++sr) {
-        auto io=firmware(pipe,ddi,2,true);io.regs[0x60540+0x1000*pipe]|=sr<<6;
+    for(unsigned ddi=0;ddi<2;++ddi)for(unsigned pipe=0;pipe<3;++pipe)for(unsigned sr=0;sr<2;++sr)for(unsigned depth:{0U,1U,2U,3U}) {
+        auto io=firmware(pipe,ddi,2,true);io.regs[0x60400+pipe*0x1000]|=depth<<20;io.regs[0x60540+0x1000*pipe]|=sr<<6;
         auto boot=readDisplay(io,true);LinearPlan plan;
         assert(dpSource(boot,pipe,ddi)==!sr);
         assert(dpSource(boot,pipe,ddi,nullptr,true));
@@ -75,6 +75,13 @@ int main() {
         auto r=reinitializeLinear(io,boot,true,ddi,GOPProtocol::EDP);
         assert(r.status==LinearStatus::Success && dpSourceUnchanged(io,boot,pipe,ddi,0,nullptr,true));
         io.regs[0x60540+0x1000*pipe]^=64;assert(!dpSourceUnchanged(io,boot,pipe,ddi,0,nullptr,true));
+    }
+    // Intel TRANS_DDI_BPC: 8/10/6/12 are 0/1/2/3. 4..7 are reserved.
+    // This is the link format, independent of the four-byte RGB8 plane.
+    for(unsigned depth:{4U,5U,6U,7U}) {
+        auto io=firmware(0,0,4,true);io.regs[0x60400]|=depth<<20;
+        auto r=reinitializeLinear(io,readDisplay(io,true),true,0,GOPProtocol::EDP);
+        assert(r.status==LinearStatus::InvalidDPSource && io.writes.empty());
     }
     auto bad=firmware(0,0,4,true);bad.regs[0x60540]=0x80000000;
     auto r=reinitializeLinear(bad,readDisplay(bad,true),true,0,GOPProtocol::DP);

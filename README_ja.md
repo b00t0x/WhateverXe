@@ -134,4 +134,6 @@ Xeグラフィックスの取り組みを公開している[JulioNectar/XPS13Plu
 
 内蔵パネルの対応では、[WhateverXe-RaptorLakeP](https://github.com/samranahmad09/WhateverXe-RaptorLakeP)、[X1Carbon-G11](https://github.com/dssoftx/Hackintosh-X1Carbon-G11-IrisXe-Tahoe)、XPS13Plus、[Linux i915の表示ソース](https://github.com/torvalds/linux/tree/v6.12/drivers/gpu/drm/i915/display)も、ハードウェアの挙動と実装の比較に参照しています。
 
+eDPの起動引継ぎ・初期化の修正では、[ann0see](https://github.com/ann0see/WhateverXe/tree/522c0a1bd60b9beac66e00dfd7414823680639dd)、[belugaa-01](https://github.com/belugaa-01/WhateverXe-Patched)、[Thatisjigen](https://github.com/Thatisjigen/WhateverXe)、[zsz-of](https://github.com/zsz-of/WhateverXe)の報告とpatchも参照しています。
+
 MiniBook Xの任意設定60 Hzのパネルタイミングには、[minibookx-ctlの表示ガイド](https://github.com/ishad0w/minibookx-ctl/blob/main/docs/guide/display.md)も参照しています。

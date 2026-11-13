@@ -51,6 +51,7 @@ int main(){IORecursiveLock pool;
   lease.trainingThread=nullptr;assert(!XE::display13TrainingPath(f.path,d,p));lease.trainingThread=current_thread();
   lease.adopted=true;assert(!XE::display13TrainingPath(f.path,d,p));lease.adopted=false;
   put(f.fb,0x49e8,1U);assert(!XE::display13TrainingPath(f.path,d,p));put(f.fb,0x49e8,0U);
+  if(ddi<2)put(f.port,0x550,0U); // native constructor, before setPortMode
   assert(!XE::wrapDisplay13PortTraining(f.port,nullptr));assert(f.port[0x11a]==(cap&wanted));
   assert((map.regs[0x60540+0x1000*pipe]&0x40000U)==((cap&wanted)<<18));
   const auto clock=0x46140+4*pipe;assert(map.regs[clock]==((ddi+(ddi>=3?3:1))<<28));

@@ -7634,7 +7634,12 @@ uint8_t *XE::display13SSTPort(void *port) {
  auto p=static_cast<uint8_t *>(port);auto config=Display13FBMemory::field<uint32_t *>(p,0x548);
  if(!Display13FBTopology::selected(s->adlnPlatform,config,s->adlnOutputWiring) ||
     !(s->adlnOutputWiring.links()&(1U<<config[0])) || p[0x117] ||
-    Display13FBMemory::field<uint32_t>(p,0x120)!=config[0] || Display13FBMemory::field<uint32_t>(p,0x550)!=(config[0]>=3?((s->adlnOutputWiring.typeC&(1U<<config[0]))?3U:4U):1U) ||
+    Display13FBMemory::field<uint32_t>(p,0x120)!=config[0] ||
+    // The native constructor leaves Combo mode unset until setPortMode.
+    // Firmware handoff and the first link operation may precede that call.
+    // TC modes still require their actual negotiated owner (3/4).
+    (config[0]>=3 ? Display13FBMemory::field<uint32_t>(p,0x550)!=((s->adlnOutputWiring.typeC&(1U<<config[0]))?3U:4U) :
+                   Display13FBMemory::field<uint32_t>(p,0x550)>1U) ||
     Display13FBMemory::field<void *>(p,0x578)!=c.access)return nullptr;
  return p;
 }
@@ -9192,6 +9197,27 @@ void XE::wrapAlderLakeNClockSet(IOService *controller,uint64_t nativeHz) {
 	IORegistryEntry::getRegistryRoot()->setProperty("N97FBClockChange",&result,sizeof(result));
 }
 
+// Caller holds the display owner lock throughout this transaction.
+static void adlnSetColdClock(Display13FBClockIO &clockIO,uint64_t nativeHz,
+    Display13Clock::Change &result,uint64_t *evidence) {
+    auto &c=display13FBPower;
+    // Cold clock programming needs no peer framebuffer certificate.
+    // Keep the owner lock throughout: every WEX clock/WM/DBUF writer
+    // shares it. The guard additionally masks/drains IRQ handlers and
+    // checks every powered plane, cursor, DSB and transcoder, including
+    // unpublished consumers. Never wait for the workloop gate while a
+    // donor caller may hold a framebuffer mutex needed by that gate.
+    Display13FBClockGuard guard;
+    const bool idle=!Display13WM::busyPipes(c.pipe) && !c.dbuf.updating;
+    const bool cold=idle && adlnBeginClockGuard(guard);
+    evidence[14]=idle;evidence[15]=cold;
+    if(cold) {
+        result=Display13Clock::set(clockIO,nativeHz,{true,true,0},display13ClockVariant());
+        if(result.status==Display13Clock::ChangeStatus::Complete)adlnInvalidateWM();
+    }
+    adlnEndClockGuard(guard,result.status==Display13Clock::ChangeStatus::Complete || !result.writes);
+}
+
 // A shared crawl needs real WM certificates for every active native pipe.
 // Never wait for the controller gate or a peer FB mutex while a caller may
 // already own its own FB mutex. Single-output retains its established path.
@@ -9225,79 +9251,83 @@ void XE::adlnSetDualClock(IOService *controller,uint64_t nativeHz) {
             return true;
         };
         bool ready=valid && measure(active);evidence[3]=active;
-        loop=c.workLoop;
-        evidence[5]=ready && loop && Display13FBMemory::field<IOWorkLoop *>(controller,0xE00)==loop;
-        evidence[6]=callbackXE->adlnWorkLoopInGate && callbackXE->adlnWorkLoopTryClose && callbackXE->adlnWorkLoopOpen;
-        ready=ready && evidence[5] && evidence[6];
-        if(ready) {
-            evidence[7]=reinterpret_cast<bool (*)(const IOWorkLoop *)>(callbackXE->adlnWorkLoopInGate)(loop);
-            if(!evidence[7]) {
-                ready=reinterpret_cast<bool (*)(IOWorkLoop *)>(callbackXE->adlnWorkLoopTryClose)(loop);
-                if(ready) {acquired=loop;evidence[8]=1;}
-            }
-        }
-        if(ready)for(unsigned p=0;p<3;++p)if(active&(1U<<p)) {
-            auto fb=c.pipe[p].memoryFramebuffer;
-            if(!fb || fb->getMetaClass()->getClassSize()<0x4B90) {ready=false;break;}
-            for(unsigned q=0;q<p;++q)if(frames[q]==fb)ready=false;
-            if(!ready)break;
-            frames[p]=fb;fb->retain();mutexes[p]=Display13FBMemory::field<IORecursiveLock *>(fb,0x4220);
-            if(!mutexes[p]) {ready=false;break;}
-        }
-        IOLockUnlock(c.lock);
-        if(ready)for(unsigned p=0;p<3;++p)if(frames[p]) {
-            // TryLock also increments a caller-owned recursive mutex; balance
-            // only these successful invocations, never caller ownership.
-            locked[p]=IORecursiveLockTryLock(mutexes[p]);
-            if(!locked[p]) {ready=false;break;}
-            evidence[9]|=1U<<p;
-        }
-        IOLockLock(c.lock);
-        uint32_t actual=0;
-        ready=ready && controller==c.controller && loop==c.workLoop &&
-            Display13FBMemory::field<IOWorkLoop *>(controller,0xE00)==loop && measure(actual) && actual==active;
-        evidence[4]=actual;
-        if(ready) {
-            TGLFBBinding::PublishedPath paths[3];uintptr_t owners[3];
-            for(unsigned p=0;p<3;++p) {paths[p]=c.pipe[p].powerPath;owners[p]=reinterpret_cast<uintptr_t>(c.pipe[p].memoryFramebuffer);}
-            const auto map=TGLFBBinding::powerPipes(paths,owners,callbackXE->adlnOutputWiring.selected());
-            uint32_t published=0;for(unsigned d=0;d<7;++d)if(map.known&(1U<<d))published|=map.mask[d];
-            ready=map.valid && !(active&~published);
-            for(unsigned p=0;p<3 && ready;++p)if(active&(1U<<p)) {
-                auto fb=frames[p];auto path=Display13FBMemory::singlePath<OSObject *>(fb);
-                const auto binding=adlnInspectPathBinding(fb,path,callbackXE->adlnPlatform,callbackXE->adlnOutputWiring);
-                ready=fb==c.pipe[p].memoryFramebuffer && !c.pipe[p].destroyingPath &&
-                    TGLFBBinding::publish(paths[p],reinterpret_cast<uintptr_t>(fb),reinterpret_cast<uintptr_t>(path),binding,p);
-            }
-        }
-        const auto now=ready ? Display13Clock::read(clockIO,display13ClockVariant()) : Display13Clock::Readout {};
-        ready=ready && now.status==current.status && now.nativeHz()==current.nativeHz() &&
-            !c.bridge.state.faulted && !c.clockFaulted && !c.watermarkFaulted;
-        evidence[10]=ready;
-        Display13FBClockGuard guard;
-        if(ready) {
-            const bool idle=!Display13WM::busyPipes(c.pipe) && !c.dbuf.updating;
-            evidence[14]=idle;
-            const bool cold=idle && !active && adlnBeginClockGuard(guard);evidence[15]=cold;
-            const bool certified=idle && !c.dbuf.unretired && !c.dbuf.faulted &&
-                current.status==Display13Clock::Status::Complete && Display13WM::clockConsumersReady(c.pipe,active,current.nativeHz());
-            evidence[11]=certified;
-            if(certified)for(unsigned p=0;p<3;++p)if(active&(1U<<p)) {
-                before[p]=adlnVerifyWMLatch(frames[p],current.nativeHz(),nativeHz);
-                if(before[p].status==Display13WM::Status::Complete)evidence[12]|=1U<<p;
-            }
-            const bool activeReady=active && evidence[12]==active;
-            if(activeReady)for(unsigned p=0;p<3;++p)if(active&(1U<<p))c.pipe[p].watermarkClockHz=0;
-            result=Display13Clock::set(clockIO,nativeHz,{c.bridge.bootAdopted && (active || cold),idle && (cold || activeReady),active},display13ClockVariant());
-            if(cold && result.status==Display13Clock::ChangeStatus::Complete)adlnInvalidateWM();
-            if(activeReady && result.status==Display13Clock::ChangeStatus::Complete) {
-                for(unsigned p=0;p<3;++p)if(active&(1U<<p)) {
-                    after[p]=adlnVerifyWMLatch(frames[p],result.after.nativeHz(),nativeHz);c.pipe[p].wmLatch=after[p];
-                    if(after[p].status==Display13WM::Status::Complete) {c.pipe[p].watermarkClockHz=result.after.nativeHz();evidence[13]|=1U<<p;}
+        if(ready && !active) {
+            adlnSetColdClock(clockIO,nativeHz,result,evidence);
+        } else {
+            loop=c.workLoop;
+            evidence[5]=ready && loop && Display13FBMemory::field<IOWorkLoop *>(controller,0xE00)==loop;
+            evidence[6]=callbackXE->adlnWorkLoopInGate && callbackXE->adlnWorkLoopTryClose && callbackXE->adlnWorkLoopOpen;
+            ready=ready && evidence[5] && evidence[6];
+            if(ready) {
+                evidence[7]=reinterpret_cast<bool (*)(const IOWorkLoop *)>(callbackXE->adlnWorkLoopInGate)(loop);
+                if(!evidence[7]) {
+                    ready=reinterpret_cast<bool (*)(IOWorkLoop *)>(callbackXE->adlnWorkLoopTryClose)(loop);
+                    if(ready) {acquired=loop;evidence[8]=1;}
                 }
-                if(evidence[13]!=active) {adlnFault(c.watermarkFaulted,__LINE__);result.status=Display13Clock::ChangeStatus::ReadbackMismatch;}
             }
-            adlnEndClockGuard(guard,result.status==Display13Clock::ChangeStatus::Complete || !result.writes);
+            if(ready)for(unsigned p=0;p<3;++p)if(active&(1U<<p)) {
+                auto fb=c.pipe[p].memoryFramebuffer;
+                if(!fb || fb->getMetaClass()->getClassSize()<0x4B90) {ready=false;break;}
+                for(unsigned q=0;q<p;++q)if(frames[q]==fb)ready=false;
+                if(!ready)break;
+                frames[p]=fb;fb->retain();mutexes[p]=Display13FBMemory::field<IORecursiveLock *>(fb,0x4220);
+                if(!mutexes[p]) {ready=false;break;}
+            }
+            IOLockUnlock(c.lock);
+            if(ready)for(unsigned p=0;p<3;++p)if(frames[p]) {
+                // TryLock also increments a caller-owned recursive mutex; balance
+                // only these successful invocations, never caller ownership.
+                locked[p]=IORecursiveLockTryLock(mutexes[p]);
+                if(!locked[p]) {ready=false;break;}
+                evidence[9]|=1U<<p;
+            }
+            IOLockLock(c.lock);
+            uint32_t actual=0;
+            ready=ready && controller==c.controller && loop==c.workLoop &&
+                Display13FBMemory::field<IOWorkLoop *>(controller,0xE00)==loop && measure(actual) && actual==active;
+            evidence[4]=actual;
+            if(ready) {
+                TGLFBBinding::PublishedPath paths[3];uintptr_t owners[3];
+                for(unsigned p=0;p<3;++p) {paths[p]=c.pipe[p].powerPath;owners[p]=reinterpret_cast<uintptr_t>(c.pipe[p].memoryFramebuffer);}
+                const auto map=TGLFBBinding::powerPipes(paths,owners,callbackXE->adlnOutputWiring.selected());
+                uint32_t published=0;for(unsigned d=0;d<7;++d)if(map.known&(1U<<d))published|=map.mask[d];
+                ready=map.valid && !(active&~published);
+                for(unsigned p=0;p<3 && ready;++p)if(active&(1U<<p)) {
+                    auto fb=frames[p];auto path=Display13FBMemory::singlePath<OSObject *>(fb);
+                    const auto binding=adlnInspectPathBinding(fb,path,callbackXE->adlnPlatform,callbackXE->adlnOutputWiring);
+                    ready=fb==c.pipe[p].memoryFramebuffer && !c.pipe[p].destroyingPath &&
+                        TGLFBBinding::publish(paths[p],reinterpret_cast<uintptr_t>(fb),reinterpret_cast<uintptr_t>(path),binding,p);
+                }
+            }
+            const auto now=ready ? Display13Clock::read(clockIO,display13ClockVariant()) : Display13Clock::Readout {};
+            ready=ready && now.status==current.status && now.nativeHz()==current.nativeHz() &&
+                !c.bridge.state.faulted && !c.clockFaulted && !c.watermarkFaulted;
+            evidence[10]=ready;
+            Display13FBClockGuard guard;
+            if(ready) {
+                const bool idle=!Display13WM::busyPipes(c.pipe) && !c.dbuf.updating;
+                evidence[14]=idle;
+                const bool cold=idle && !active && adlnBeginClockGuard(guard);evidence[15]=cold;
+                const bool certified=idle && !c.dbuf.unretired && !c.dbuf.faulted &&
+                    current.status==Display13Clock::Status::Complete && Display13WM::clockConsumersReady(c.pipe,active,current.nativeHz());
+                evidence[11]=certified;
+                if(certified)for(unsigned p=0;p<3;++p)if(active&(1U<<p)) {
+                    before[p]=adlnVerifyWMLatch(frames[p],current.nativeHz(),nativeHz);
+                    if(before[p].status==Display13WM::Status::Complete)evidence[12]|=1U<<p;
+                }
+                const bool activeReady=active && evidence[12]==active;
+                if(activeReady)for(unsigned p=0;p<3;++p)if(active&(1U<<p))c.pipe[p].watermarkClockHz=0;
+                result=Display13Clock::set(clockIO,nativeHz,{c.bridge.bootAdopted && (active || cold),idle && (cold || activeReady),active},display13ClockVariant());
+                if(cold && result.status==Display13Clock::ChangeStatus::Complete)adlnInvalidateWM();
+                if(activeReady && result.status==Display13Clock::ChangeStatus::Complete) {
+                    for(unsigned p=0;p<3;++p)if(active&(1U<<p)) {
+                        after[p]=adlnVerifyWMLatch(frames[p],result.after.nativeHz(),nativeHz);c.pipe[p].wmLatch=after[p];
+                        if(after[p].status==Display13WM::Status::Complete) {c.pipe[p].watermarkClockHz=result.after.nativeHz();evidence[13]|=1U<<p;}
+                    }
+                    if(evidence[13]!=active) {adlnFault(c.watermarkFaulted,__LINE__);result.status=Display13Clock::ChangeStatus::ReadbackMismatch;}
+                }
+                adlnEndClockGuard(guard,result.status==Display13Clock::ChangeStatus::Complete || !result.writes);
+            }
         }
     }
     if(result.status==Display13Clock::ChangeStatus::Complete) {
@@ -13507,7 +13537,9 @@ bool XE::display13PanelTarget(void *controller) {
  return controller && controller==c.controller && controller==s->adlnTopologyController &&
   s->display13FramebufferRequested && s->adlnOutputWiring.panel && s->display13PanelPowerReady &&
   XELP::PanelPower::nativePPS0(s->firmwarePorts,s->xeProfile.family) &&
-  adlnWriterMappingBound() && !c.clockStopped && !c.clockFaulted && !c.panelFaulted &&
+  // PCH PPS/PWM use the reference clock, not CDCLK. The native LightUpEDP
+  // calls panel power before setting CDCLK; require PG1 below, not a live pipe clock.
+  adlnWriterMappingBound() && !c.clockFaulted && !c.panelFaulted &&
   !c.bridge.state.faulted && !c.bridge.state.suspended &&
   Display13FBMemory::field<void *>(controller,0xD40)==s->adlnPlatform &&
   Display13FBMemory::field<void *>(controller,0xC8)==c.power &&
