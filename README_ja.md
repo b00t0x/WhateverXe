@@ -35,7 +35,7 @@ OS別の範囲と表示構成は[動作確認済みの機能と既知の問題](
 - 対応IDの他のAlder Lake-N / Twin Lake構成。
 - 対応IDの他のAlder Lake-H/P/U・Raptor Lake-H/P/U構成。
 - 対応IDの他のAlder Lake-S/HX・Raptor Lake-S/HX構成。
-- Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/Uの内蔵eDPは実装済み・実機未検証です。
+- Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/Uの内蔵eDPは実装済み・実機未検証です。輝度制御はPCH PWMと標準VESA AUXに対応し、OLED固有・Intel HDR方式の輝度制御は未認定です。
 
 ### 対応に追加改修が必要
 
@@ -137,3 +137,5 @@ Xeグラフィックスの取り組みを公開している[JulioNectar/XPS13Plu
 eDPの起動引継ぎ・初期化の修正では、[ann0see](https://github.com/ann0see/WhateverXe/tree/522c0a1bd60b9beac66e00dfd7414823680639dd)、[belugaa-01](https://github.com/belugaa-01/WhateverXe-Patched)、[Thatisjigen](https://github.com/Thatisjigen/WhateverXe)、[zsz-of](https://github.com/zsz-of/WhateverXe)の報告とpatchも参照しています。
 
 MiniBook Xの任意設定60 Hzのパネルタイミングには、[minibookx-ctlの表示ガイド](https://github.com/ishad0w/minibookx-ctl/blob/main/docs/guide/display.md)も参照しています。
+
+表示復帰時のIRQ再設定とGGTT復元では[jkbuha/WhateverXe](https://github.com/jkbuha/WhateverXe)を参照しました。AUX輝度制御の調査では[JulioNectar](https://github.com/JulioNectar/Hackintosh-XPS13Plus-IrisXe-Tahoe)も参照しています。VESA実装はLinux DRMのプロトコル上の事実に基づき、NootedGreenのコードはコピーしていません。

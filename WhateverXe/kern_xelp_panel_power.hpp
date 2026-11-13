@@ -7,16 +7,21 @@
 namespace XELP {
 struct PanelPower {
  // The current donor has one panel and addresses PPS/PWM controller 0.
- // This qualification does not claim PPS1, AUX backlight or panel admission
- // outside the native Combo panel coordinates; each needs its own adapter.
- static bool nativePPS0(const VBT::Ports &v,Family family) {
+ // PPS1 and non-Combo panels need separate adapters. Callers with the VESA
+ // backend may opt into AUX panel admission; PWM-only adapters stay unchanged.
+ static bool auxBacklight(const VBT::Ports::Panel &p) {
+  // VBT interface 5 is VESA AUX. A display-DDI panel without PWM also needs
+  // capability probing; never manufacture a PWM period for that panel.
+  return p.backlightValid && (p.backlightType==5 || (p.backlightType==2 && !p.pwmPresent));
+ }
+ static bool nativePPS0(const VBT::Ports &v,Family family,bool allowAux=false) {
   const auto &p=v.panel;
   const auto adapter=displayAdapter(family);
   const bool backend=(adapter==DisplayAdapter::TGL && p.ddi<2) ||
                      (adapter==DisplayAdapter::ADLS && p.ddi==0) ||
                      ((adapter==DisplayAdapter::ADLP || adapter==DisplayAdapter::ADLN) && p.ddi<2);
   if(!backend || !v.valid() || v.unmapped || !p.valid ||
-     !p.backlightValid || !p.pwmPresent || p.backlightType!=2 || p.controller)return false;
+     !p.backlightValid || (!(p.pwmPresent && p.backlightType==2) && !(allowAux && auxBacklight(p))) || p.controller)return false;
   const auto &port=v.port[p.ddi];const auto aux=p.ddi?0x10U:0x40U;
   if(!(v.present&(1U<<p.ddi)) || !port.internal() || !port.dp() ||
      (port.type&(0x400|0x20|1)) || (port.flags&0x17) || (port.capabilities&3) ||

@@ -25,7 +25,7 @@ namespace XELP { namespace VBT {
     inline Display13OutputWiring display13Fixed(const Ports &ports,uint32_t backend,Family family=Family::AlderLakeN) {
         auto w=display13HDMI(ports,backend);
         if(!w.valid || !ports.valid())return w;
-        if(PanelPower::nativePPS0(ports,family) && (backend&(1U<<ports.panel.ddi)))
+        if(PanelPower::nativePPS0(ports,family,true) && (backend&(1U<<ports.panel.ddi)))
             w.panel=1U<<ports.panel.ddi;
         for(unsigned d=3;d<7;++d) {
             const auto &p=ports.port[d];const auto aux=(d+3)*0x10U;

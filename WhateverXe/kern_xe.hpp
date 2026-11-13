@@ -527,8 +527,10 @@ private:
  static bool display13PanelPowerReference(bool acquire);
  static bool display13PanelCapture(void *controller);
  static void display13PanelTiming(void *controller,bool apply);
+ static bool display13PanelAUX(void *controller,uint32_t brightness,unsigned action);
  static uint32_t display13PanelBrightness(void *controller,uint32_t brightness);
  static void display13PanelPWMEnable(void *access);
+ static void display13PanelPWMPeriod(void *access);
  static uint32_t wrapDisplay13PanelPower(void *controller,uint32_t state);
  static void resetPanelDepth();
  static void cachePanelDepth(void *port,uint32_t block,const uint8_t *data,uint32_t result);

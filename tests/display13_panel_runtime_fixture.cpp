@@ -9,6 +9,8 @@
 #include <iterator>
 #include <sys/mman.h>
 #include <cstdio>
+#include <map>
+#include "kern_display13_firmware.hpp"
 struct IOMemoryMap {
  std::vector<uint32_t> memory=std::vector<uint32_t>(0x400000);
  uintptr_t getVirtualAddress(){return reinterpret_cast<uintptr_t>(memory.data());}
@@ -29,6 +31,9 @@ struct Context {
  bool clockStopped=false,clockFaulted=false,panelFaulted=false;
 }display13FBPower;
 bool mapping=true;bool adlnWriterMappingBound(){return mapping;}
+unsigned portRefs=0;void *currentPort=nullptr;bool auxOwner=true;unsigned auxCalls=0,failAux=0;
+std::map<uint32_t,uint8_t> sink;
+struct OSObject {void retain(){++portRefs;}void release(){assert(portRefs);--portRefs;}};
 constexpr uint32_t kIOReturnNotReady=0xe00002d8;
 #define FunctionCast(f,p) reinterpret_cast<decltype(&f)>(p)
 struct XE {
@@ -37,11 +42,31 @@ struct XE {
  Display13OutputWiring adlnOutputWiring;XELP::VBT::Ports firmwarePorts;
  XELP::Profile xeProfile;void *adlnTopologyController=nullptr,*adlnPlatform=nullptr;
  uintptr_t orgDisplay13PanelPower=0;
+ uintptr_t tglPortByDDI=0;
+ static bool display13AUXReady(void *p,bool){return auxOwner && p==currentPort;}
+ static uint32_t wrapDisplay13ReadAUX(void*,uint32_t,void*,uint32_t);
+ static uint32_t wrapDisplay13WriteAUX(void*,uint32_t,void*,uint32_t);
+ static bool display13PanelAUX(void*,uint32_t,unsigned);
  static bool display13PanelTarget(void*);static bool display13PanelPowerReference(bool);
  static bool display13PanelCapture(void*);static void display13PanelTiming(void*,bool);
  static uint32_t display13PanelBrightness(void*,uint32_t);static void display13PanelPWMEnable(void*);
  static uint32_t wrapDisplay13PanelPower(void*,uint32_t);
+ static void display13PanelPWMPeriod(void*);
 };XE *XE::callbackXE;
+bool auxAccess(void *p) {
+ auto &c=display13FBPower;
+ assert(p==currentPort && portRefs==1 && c.panelLock->held && !c.lock->held);
+ assert(c.bridge.state.refs[static_cast<unsigned>(Display13Power::Domain::AUXA)]>0);
+ ++auxCalls;return !failAux || auxCalls!=failAux;
+}
+uint32_t XE::wrapDisplay13ReadAUX(void *p,uint32_t a,void *d,uint32_t n) {
+ if(!auxAccess(p))return kIOReturnNotReady;
+ for(unsigned i=0;i<n;++i)static_cast<uint8_t*>(d)[i]=sink.at(a+i);return 0;
+}
+uint32_t XE::wrapDisplay13WriteAUX(void *p,uint32_t a,void *d,uint32_t n) {
+ if(!auxAccess(p))return kIOReturnNotReady;
+ for(unsigned i=0;i<n;++i)sink[a+i]=static_cast<uint8_t*>(d)[i];return 0;
+}
 // METHODS
 unsigned calls=0;bool timeout=false;uint32_t nativeResult=0;
 uint32_t nativePower(void *controller,uint32_t state) {
@@ -82,13 +107,62 @@ uint32_t lightTrain(void*,void *request){assert(!request);lightStages.push_back(
 void lightPlane(void*,bool enabled){assert(!enabled);lightStages.push_back(4);}
 void lightScaler(void*,void*){lightStages.push_back(5);}
 void lightPipe(void*,void*,void*,const void*){lightStages.push_back(6);}
-uint32_t lightBacklight(void*,uint32_t){lightStages.push_back(7);return 0;}
-void lightPWM(void*){lightStages.push_back(8);}
+uint32_t lightBacklight(void *ctl,uint32_t brightness){lightStages.push_back(7);return realPanelPower?XE::display13PanelBrightness(ctl,brightness):0;}
+void lightPWM(void *access){lightStages.push_back(8);if(realPanelPower)XE::display13PanelPWMEnable(access);}
 void lightWrite(void *access,uint64_t reg,uint32_t value){assert(access==display13FBPower.access);display13FBPower.map->at(reg)=value;if(reg==0xC8250)lightStages.push_back(8);}
 void lightDelay(unsigned){}
 void jump(uint8_t *site,uintptr_t target){site[0]=0x48;site[1]=0xb8;memcpy(site+2,&target,8);site[10]=0xff;site[11]=0xe0;}
 void redirect(uint8_t *image,unsigned call,unsigned stub,uintptr_t target){assert(image[call]==0xe8);jump(image+stub,target);int32_t delta=stub-call-5;memcpy(image+call+1,&delta,4);}
 int main(int argc,char **argv) {
+ // VBT interface 5 -> production PPS capture -> native power -> backlight
+ // callbacks -> AUX bytes, with PWM registers deliberately unusable. Native
+ // AUX serialization/electrical replies are leaves; leases are production.
+ for(bool wide:{false,true})for(bool auxEnable:{false,true})for(unsigned failure=0;failure<12;++failure) {
+  Fixture f;auto &c=display13FBPower;alignas(8) uint8_t port[0x600]{};uint32_t config[6]{};
+  put(port,0x548,config);currentPort=port;portRefs=0;auxOwner=true;auxCalls=failAux=0;
+  f.xe.tglPortByDDI=reinterpret_cast<uintptr_t>(+[](unsigned ddi)->OSObject*{assert(!ddi);return static_cast<OSObject*>(currentPort);});
+  f.xe.firmwarePorts.panel.backlightType=5;f.xe.firmwarePorts.panel.pwmPresent=false;
+  assert(XELP::VBT::display13Fixed(f.xe.firmwarePorts,3,f.xe.xeProfile.family).panel==1);
+  f.map.at(0xC8250)=f.map.at(0xC8254)=f.map.at(0xC8258)=~0U;f.map.at(0x45444)=3;
+  sink={{0x700,3},{0x701,uint8_t(auxEnable?5:3)},{0x702,uint8_t(wide?6:2)},{0x724,uint8_t(wide?12:8)},
+        {0x720,0x82},{0x721,0x28},{0x722,0},{0x723,0}};
+  assert(!XE::wrapDisplay13PanelPower(f.ctl,2));f.balanced();
+  assert(c.panel.aux && Display13FBMemory::field<unsigned>(f.ctl,0xE60)==65535);
+  failAux=failure;const auto r=XE::display13PanelBrightness(f.ctl,32768);
+  if(failure && failure<=auxCalls)assert(r==kIOReturnNotReady);
+  failAux=0;assert(!XE::display13PanelBrightness(f.ctl,32768));
+  const auto expected=wide?2047U:127U;
+  assert(sink[0x722]==(wide?expected>>8:expected) && (!wide || sink[0x723]==uint8_t(expected)));
+  assert(sink[0x721]==0x2a && sink[0x720]==0x82);
+  XE::display13PanelPWMPeriod(f.access);XE::display13PanelPWMEnable(f.access);assert(!c.panelFaulted && sink[0x720]==(auxEnable?0x83:0x82));
+  assert(!XE::wrapDisplay13PanelPower(f.ctl,0) && sink[0x720]==0x82);
+  // Simulate panel power loss: no stale protocol readiness, preserve level.
+  sink[0x721]=0;sink[0x722]=sink[0x723]=0;
+  assert(!XE::wrapDisplay13PanelPower(f.ctl,2));XE::display13PanelPWMEnable(f.access);
+  assert(sink[0x721]==2 && sink[0x720]==(auxEnable?0x83:0x82) && sink[0x722]==(wide?expected>>8:expected));
+  for(unsigned value:{0U,1U,65535U}) {
+   assert(!XE::display13PanelBrightness(f.ctl,value));const auto level=uint32_t(uint64_t(value)*(wide?4095:255)/65535);
+   assert(sink[0x722]==(wide?level>>8:level) && (!wide || sink[0x723]==uint8_t(level)));
+  }
+  const auto noCalls=auxCalls;assert(XE::display13PanelBrightness(f.ctl,65536)==kIOReturnNotReady && auxCalls==noCalls);
+  auxOwner=false;const auto before=auxCalls;assert(XE::display13PanelBrightness(f.ctl,100)==kIOReturnNotReady && auxCalls==before);
+  auxOwner=true;sink[0x702]=0;assert(XE::display13PanelBrightness(f.ctl,100)==kIOReturnNotReady);
+  assert(f.map.at(0xC8250)==~0U && f.map.at(0xC8254)==~0U && f.map.at(0xC8258)==~0U);
+  assert(!portRefs && !c.bridge.state.refs[static_cast<unsigned>(Display13Power::Domain::AUXA)]);f.balanced();
+ }
+
+ // Independent AUX-enable/PWM-level hybrid: no AUX brightness writes.
+ {Fixture f;auto &c=display13FBPower;alignas(8) uint8_t port[0x600]{};uint32_t config[6]{};
+  put(port,0x548,config);currentPort=port;portRefs=0;auxOwner=true;auxCalls=failAux=0;
+  f.xe.tglPortByDDI=reinterpret_cast<uintptr_t>(+[](unsigned)->OSObject*{return static_cast<OSObject*>(currentPort);});
+  f.xe.firmwarePorts.panel.backlightType=5;f.map.at(0x45444)=3;
+  sink={{0x700,3},{0x701,5},{0x702,1},{0x720,0x82},{0x721,2},{0x722,0x55},{0x723,0xaa}};
+  assert(!XE::wrapDisplay13PanelPower(f.ctl,2));assert(!XE::display13PanelBrightness(f.ctl,32768));
+  XE::display13PanelPWMPeriod(f.access);XE::display13PanelPWMEnable(f.access);
+  assert(!c.panelFaulted && sink[0x720]==0x83 && sink[0x721]==0 && sink[0x722]==0x55 && sink[0x723]==0xaa);
+  assert(f.map.at(0xC8258)==60000 && f.map.at(0xC8254)==120000 && f.map.at(0xC8250)==0xa0000000);
+  assert(!XE::wrapDisplay13PanelPower(f.ctl,0));assert(sink[0x720]==0x82 && !f.map.at(0xC8250));f.balanced();assert(!portRefs);
+ }
  for(bool gate:{false,true})for(bool fail:{false,true}) {
   Fixture f;if(gate)f.map.at(0xC2020)|=1U<<29;timeout=fail;
   assert(XE::wrapDisplay13PanelPower(f.ctl,2)==(fail?kIOReturnNotReady:0));
@@ -116,6 +190,7 @@ int main(int argc,char **argv) {
  }
  Fixture f;assert(XE::display13PanelCapture(f.ctl));
  assert(Display13FBMemory::field<unsigned>(f.ctl,0xE60)==120000);f.balanced();
+ f.map.at(0xC8254)=0;XE::display13PanelPWMPeriod(f.access);assert(f.map.at(0xC8254)==120000);
  for(unsigned brightness:{0U,1U,32768U,65535U}) {
   assert(!XE::display13PanelBrightness(f.ctl,brightness));
   assert(f.map.at(0xC8258)==uint64_t(120000)*brightness/65535);f.balanced();
@@ -130,6 +205,10 @@ int main(int argc,char **argv) {
   assert(!bytes.empty() && bytes.size()<0x400000);
   auto image=static_cast<uint8_t *>(mmap(nullptr,0x400000,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_ANON|MAP_PRIVATE,-1,0));assert(image!=MAP_FAILED);
   memcpy(image,bytes.data(),bytes.size());
+  assert(!memcmp(image+Display13Panel::PeriodSite,Display13Panel::periodBefore,sizeof(Display13Panel::periodBefore)));
+  memset(image+Display13Panel::PeriodSite,0x90,sizeof(Display13Panel::periodBefore));
+  auto site=image+Display13Panel::PeriodSite;site[0]=0x48;site[1]=0xb8;
+  auto period=reinterpret_cast<uintptr_t>(XE::display13PanelPWMPeriod);memcpy(site+2,&period,8);site[10]=0xff;site[11]=0xd0;
   jump(image+0x48652,reinterpret_cast<uintptr_t>(lightPower));jump(image+0x6ccb4,reinterpret_cast<uintptr_t>(lightClocks));
   jump(image+0x1ba02,reinterpret_cast<uintptr_t>(lightTrain));jump(image+0x1108,reinterpret_cast<uintptr_t>(lightPlane));
   jump(image+0x65fd4,reinterpret_cast<uintptr_t>(lightScaler));jump(image+0x48bb6,reinterpret_cast<uintptr_t>(lightPipe));
@@ -154,6 +233,20 @@ int main(int argc,char **argv) {
   display13FBPower.clockStopped=true;lightStages.clear();
   assert(!light(cold.ctl,nullptr,path,nullptr));cold.balanced();
   assert(calls==1 && !display13FBPower.clockStopped && lightStages.size()==8);
+  // Full donor tail now crosses both production PWM adapters and AUX level.
+  Fixture aux;alignas(8) uint8_t port[0x600]{};uint32_t config[6]{};put(port,0x548,config);
+  currentPort=port;portRefs=0;auxOwner=true;auxCalls=failAux=0;
+  aux.xe.tglPortByDDI=reinterpret_cast<uintptr_t>(+[](unsigned)->OSObject*{return static_cast<OSObject*>(currentPort);});
+  aux.xe.firmwarePorts.panel.backlightType=5;aux.xe.firmwarePorts.panel.pwmPresent=false;
+  aux.map.at(0xC8250)=aux.map.at(0xC8254)=aux.map.at(0xC8258)=~0U;aux.map.at(0x45444)=3;
+  sink={{0x700,3},{0x701,5},{0x702,6},{0x724,12},{0x720,0x82},{0x721,0},{0x722,0},{0x723,0}};
+  put(aux.access,0,vtable);put(aux.ctl,0xE58,32768U);display13FBPower.clockStopped=true;
+  // Route the exact enable site as production does, preserving its call ABI.
+  auto enableSite=image+0x507e9;memset(enableSite,0x90,16);enableSite[0]=0x48;enableSite[1]=0xb8;
+  auto enable=reinterpret_cast<uintptr_t>(lightPWM);memcpy(enableSite+2,&enable,8);enableSite[10]=0xff;enableSite[11]=0xd0;
+  lightStages.clear();assert(!light(aux.ctl,nullptr,path,nullptr));aux.balanced();
+  assert(!portRefs && sink[0x720]==0x83 && sink[0x722]==7 && sink[0x723]==255);
+  assert(aux.map.at(0xC8250)==~0U && aux.map.at(0xC8254)==~0U && aux.map.at(0xC8258)==~0U);
   realPanelPower=false;
   munmap(image,0x400000);
   puts("PASS exact native LightUpEDP power/train failure exits; original donor counterexamples");

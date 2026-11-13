@@ -190,3 +190,29 @@ Useful primary references include
 [Linux v6.12 SSEU](https://github.com/torvalds/linux/blob/v6.12/drivers/gpu/drm/i915/gt/intel_sseu.c)
 and [PCI classifications](https://github.com/torvalds/linux/blob/v6.12/include/drm/i915_pciids.h).
 These sources specify hardware facts, not Apple private ABI compatibility.
+
+### Display13 deferred IRQ, GGTT resume and AUX backlight
+
+`display13_irq_rearm` executes the production enable/disable/VBL wrappers and
+real IRQ bank logic. The donor calls VBL after PIPECONF (0x49193/0x491ad).
+Disabled pipes defer without permanent fault, then rearm on actual activation;
+quiescing, blocked pipes and foreign owners cannot arm interrupts. Association
+validation and kernel lock primitives are modeled leaves, not GPU IRQ timing.
+`display13_shared_restore` executes the actual shared restore wrapper and stopped
+consumer checks. Power-well restore/publication are modeled leaves. Linux v6.12
+`intel_dpt_configure` specifies GGTT selection. No engine enable may occur after
+unreadable/failed GGTT readback or with active consumers; pending state survives.
+
+`display13_panel_runtime` now covers VBT-selected VESA AUX, the PPS wrapper,
+brightness/enable/disable callbacks and real PG/AUX leases. Native AUX replies
+and serialization are modeled; `display13_aux` separately tests the transport.
+The native mode additionally replays the period-write adapter in LightUpEDP.
+Linux DRM eDP capability, byte ordering and PWMGEN bit count define the level
+oracle. 8/16-bit sinks, AUX/pin enable, zero PWM availability, transaction failure,
+foreign owner, power-off and restoration preserve normalized brightness without
+writing absent PWM registers. `display13_panel` retains PWM-only callers and
+adds AUX panel wiring for Combo A/B across Display13 families. Its former
+PWM-absent rejection becomes a positive AUX-probe case; unknown VBT backlight
+facts remain rejected. OLED-specific nits calibration and physical panel
+brightness are not demonstrated by any CPU mode. Require these modes and the
+native panel/AUX modes when changing this path.

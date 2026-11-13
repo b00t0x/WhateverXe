@@ -4795,7 +4795,7 @@ struct Display13FBIRQContext {
 	IOSimpleLock *lock {};
 	IOService *controller {};
 	Display13FBIRQ::State state;
-	unsigned handlers {},softwareHandlers {};bool quiescing {},powerLost {};uint32_t blockedPipes {};
+	unsigned handlers {},softwareHandlers {};bool quiescing {},powerLost {},rearmPending {};uint32_t blockedPipes {};
 	uintptr_t softwareThread {};
 	Display13FBIRQ::HandlerScopes scopes;
 	volatile uint32_t admittedPipes {}; // Release-published after actual path/backing proof.
@@ -5027,7 +5027,7 @@ struct Display13FBPowerIO {
 struct Display13FBPanelIO : Display13FBPowerIO {
  explicit Display13FBPanelIO(IOMemoryMap *m):Display13FBPowerIO{m} {}
  void write(uint32_t r,uint32_t v) {
-  if(r==0xC2020 || r==0xC8250 || r==0xC8258)
+  if(r==0xC2020 || r==0xC8250 || r==0xC8254 || r==0xC8258)
    *reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()+r)=v;
   else Display13FBPowerIO::write(r,v);
  }
@@ -6115,7 +6115,10 @@ IOReturn XE::wrapDisplay13FBEnableIRQ(IOService *controller) {
 	for(unsigned i=0;i<4;++i)check[19+i]=io.read(otherBanks[i]+4)&~io.read(otherBanks[i]-4);
     if(c.powerLost && !c.quiescing) {
         c.status=Display13FBIRQ::restoreAfterPowerLoss(io,c.state,c.admittedPipes);
-        if(c.status==Display13FBIRQ::Status::Complete)c.powerLost=false;
+        if(c.status==Display13FBIRQ::Status::Complete){c.powerLost=false;c.rearmPending=false;}
+        else if(Display13FBIRQ::deferRearm(io,c.state,c.admittedPipes))c.rearmPending=true;
+    } else if(!c.quiescing && !c.state.enabled && Display13FBIRQ::deferRearm(io,c.state,c.admittedPipes)) {
+        c.status=Display13FBIRQ::Status::Topology;c.rearmPending=true;
     } else if(Display13FBTopology::multiOutputWiring(callbackXE->adlnOutputWiring)) {
         const auto admitted=__atomic_load_n(&c.admittedPipes,__ATOMIC_ACQUIRE);
 		const auto actual=Display13FBIRQ::readActivePipes(io,admitted,c.state.transcoders);
@@ -6123,6 +6126,7 @@ IOReturn XE::wrapDisplay13FBEnableIRQ(IOService *controller) {
 		if(c.status==Display13FBIRQ::Status::Complete)c.status=c.state.begun && c.state.enabled ?
 			Display13FBIRQ::extendActivePipes(io,c.state,admitted) : Display13FBIRQ::enable(io,c.state,excluded,adlnSharedGT(controller),actual.active,callbackXE->adlnOutputWiring.hotplug(),callbackXE->adlnOutputWiring.typeC);
 	} else c.status=c.quiescing ? Display13FBIRQ::Status::Power : Display13FBIRQ::enable(io,c.state,excluded,adlnSharedGT(controller),1,callbackXE->adlnOutputWiring.hotplug(),callbackXE->adlnOutputWiring.typeC);
+	if(c.status==Display13FBIRQ::Status::Complete)c.rearmPending=false;
 	adlnIRQCache(controller,io);adlnIRQRecord(record,1);
 	check[23]=static_cast<uint32_t>(c.status);check[24]=c.state.begun;
 	check[25]=c.state.enabled;check[26]=c.state.faulted;check[27]=c.state.active;check[28]=c.state.configured;
@@ -6158,11 +6162,21 @@ void XE::wrapDisplay13FBConfigureVBL(IOService *controller,IOService *fb,OSObjec
 	const bool valid=display13FBAssociations(controller,0x1C20,fb,fb->getMetaClass()->getClassSize(),display13FBExpectedOwner(controller)) &&
 		path->getMetaClass()->getClassSize()>=0x3730;
 	const auto pipe=valid ? Display13FBMemory::field<uint32_t>(path,0x3640) : 3;
-	if(Display13FBTopology::multiOutputWiring(callbackXE->adlnOutputWiring) && (c.quiescing || (pipe<3 && (c.blockedPipes&(1U<<pipe))))) {
+	if(c.quiescing || (pipe<3 && (c.blockedPipes&(1U<<pipe)))) {
 		c.status=Display13FBIRQ::Status::Power;adlnIRQCache(controller,io);
 		if(getLock)IOSimpleLockUnlockEnableInterrupt(c.lock,saved);return;
 	}
 	if(valid && pipe<3 && !(c.blockedPipes&(1U<<pipe))) {
+        if((c.rearmPending || c.powerLost) && enabled && !c.quiescing && !c.state.faulted &&
+           (c.admittedPipes&(1U<<pipe))) {
+            const auto active=Display13FBIRQ::readActivePipes(io,c.admittedPipes,c.state.transcoders);
+            if(active.status==Display13FBIRQ::Status::Complete && (active.active&(1U<<pipe))) {
+                c.status=Display13FBIRQ::restoreAfterPowerLoss(io,c.state,c.admittedPipes);
+                if(c.status==Display13FBIRQ::Status::Complete){c.powerLost=false;c.rearmPending=false;}
+                else {adlnIRQCache(controller,io);if(getLock)IOSimpleLockUnlockEnableInterrupt(c.lock,saved);return;}
+            } else {c.status=active.status;adlnIRQCache(controller,io);if(getLock)IOSimpleLockUnlockEnableInterrupt(c.lock,saved);return;}
+        }
+
 		if(Display13FBTopology::multiOutputWiring(callbackXE->adlnOutputWiring) && enabled && !c.quiescing) {
 			const auto admitted=__atomic_load_n(&c.admittedPipes,__ATOMIC_ACQUIRE);
 			c.status=(admitted&(1U<<pipe)) ? Display13FBIRQ::extendActivePipes(io,c.state,admitted) : Display13FBIRQ::Status::Topology;
@@ -10362,7 +10376,7 @@ bool XE::restoreDisplay13ResourcesLocked(void *power,bool waking) {
         if(!c.resumeClockHz)c.resumeClockHz=c.clock.nativeHz();
         auto &irq=display13FBIRQ;
         const auto saved=IOSimpleLockLockDisableInterrupt(irq.lock);
-        irq.powerLost=true;
+        irq.powerLost=true;irq.rearmPending=true;
         IOSimpleLockUnlockEnableInterrupt(irq.lock,saved);
     }
     cold[0]=c.restorePending;cold[1]=c.restoreEpoch;
@@ -10388,7 +10402,10 @@ bool XE::restoreDisplay13ResourcesLocked(void *power,bool waking) {
             if(cold[4]!=c.dbuf.mbus)
                 *reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+0x4438C)=c.dbuf.mbus;
             cold[5]=io.read(0x4438C);
-            if(cold[5]!=c.dbuf.mbus)result.status=Display13Power::Status::NotReady;
+            if(cold[5]!=c.dbuf.mbus || !Display13Power::restoreGGTT(
+                [&](uint32_t r){return io.read(r);},
+                [&](uint32_t r,uint32_t v){*reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+r)=v;}))
+                result.status=Display13Power::Status::NotReady;
             else for(unsigned i=0;i<4;++i)
                 if(!(io.read(Display13DBUF::regs[i])&Display13DBUF::Request))c.dbuf.owned&=~(1U<<i);
         }
@@ -13506,7 +13523,7 @@ bool XE::processKextFull(KernelPatcher &patcher, size_t index, mach_vm_address_t
 // Display13 panel operations use its own physical PG bridge. No display owner
 // lock spans a donor call: native AUX/clock callbacks reacquire that lock.
 void XE::processDisplay13Panel(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size) {
- if(!adlnOutputWiring.panel || !XELP::PanelPower::nativePPS0(firmwarePorts,xeProfile.family))return;
+ if(!adlnOutputWiring.panel || !XELP::PanelPower::nativePPS0(firmwarePorts,xeProfile.family,true))return;
  if(!tglAUXLock)tglAUXLock=IOSimpleLockAlloc();
  if(!tglAUXLock)return;
  processNativePanel(patcher,index,address,size);
@@ -13518,6 +13535,7 @@ void XE::processDisplay13Panel(KernelPatcher &patcher,size_t index,mach_vm_addre
  if(size<=0x48B88 || target!=address+0x48652 ||
     memcmp(reinterpret_cast<void *>(target),entry,sizeof(entry)) ||
     memcmp(reinterpret_cast<void *>(address+0x4866b),configCall,sizeof(configCall)))return;
+ if(memcmp(reinterpret_cast<void *>(address+Display13Panel::PeriodSite),Display13Panel::periodBefore,sizeof(Display13Panel::periodBefore)))return;
  for(const auto &patch:Display13Panel::lightPatches)
   if(memcmp(reinterpret_cast<void *>(address+patch.offset),patch.before,patch.size))return;
  for(const auto &patch:Display13Panel::lightPatches) {
@@ -13526,6 +13544,14 @@ void XE::processDisplay13Panel(KernelPatcher &patcher,size_t index,mach_vm_addre
    !memcmp(reinterpret_cast<void *>(address+patch.offset),patch.after,patch.size);
   patcher.clearError();if(!ok)return;
  }
+ uint8_t periodBridge[sizeof(Display13Panel::periodBefore)];memset(periodBridge,0x90,sizeof(periodBridge));
+ periodBridge[0]=0x48;periodBridge[1]=0xB8;
+ const auto periodHandler=reinterpret_cast<uintptr_t>(display13PanelPWMPeriod);memcpy(periodBridge+2,&periodHandler,8);
+ periodBridge[10]=0xFF;periodBridge[11]=0xD0;
+ patcher.routeBlock(address+Display13Panel::PeriodSite,periodBridge,sizeof(periodBridge));
+ const bool periodReady=patcher.getError()==KernelPatcher::Error::NoError &&
+  !memcmp(reinterpret_cast<void *>(address+Display13Panel::PeriodSite),periodBridge,sizeof(periodBridge));
+ patcher.clearError();if(!periodReady)return;
  if(!display13FBPower.panelLock)display13FBPower.panelLock=IOLockAlloc();
  if(!display13FBPower.panelLock)return;
  KernelPatcher::RouteRequest route(symbol,wrapDisplay13PanelPower,orgDisplay13PanelPower);
@@ -13537,7 +13563,7 @@ bool XE::display13PanelTarget(void *controller) {
  auto s=callbackXE;auto &c=display13FBPower;
  return controller && controller==c.controller && controller==s->adlnTopologyController &&
   s->display13FramebufferRequested && s->adlnOutputWiring.panel && s->display13PanelPowerReady &&
-  XELP::PanelPower::nativePPS0(s->firmwarePorts,s->xeProfile.family) &&
+  XELP::PanelPower::nativePPS0(s->firmwarePorts,s->xeProfile.family,true) &&
   // PCH PPS/PWM use the reference clock, not CDCLK. The native LightUpEDP
   // calls panel power before setting CDCLK; require PG1 below, not a live pipe clock.
   adlnWriterMappingBound() && !c.clockFaulted && !c.panelFaulted &&
@@ -13564,7 +13590,7 @@ bool XE::display13PanelCapture(void *controller) {
  Display13FBPanelIO io{c.map};bool ok=false;
  if(display13PanelTarget(controller) && display13PanelPowerReference(true)) {
   ok=c.panel.capture(io,callbackXE->firmwarePorts.panel);
-  if(ok)*reinterpret_cast<uint32_t *>(static_cast<uint8_t *>(controller)+0xE60)=c.panel.pwm.period;
+  if(ok)*reinterpret_cast<uint32_t *>(static_cast<uint8_t *>(controller)+0xE60)=c.panel.aux?65535:c.panel.pwm.period;
   ok=display13PanelPowerReference(false) && ok;
  }
  IOLockUnlock(c.lock);return ok;
@@ -13580,9 +13606,61 @@ void XE::display13PanelTiming(void *controller,bool apply) {
  }
  IOLockUnlock(c.lock);
 }
+// Caller holds panelLock, never c.lock over native AUX. Each operation takes
+// a fresh bound port and retains it only for this synchronous transaction.
+// Native read/writeAUX own their recursive AUX lock and nested power refs.
+bool XE::display13PanelAUX(void *controller,uint32_t brightness,unsigned action) {
+ auto s=callbackXE;auto &c=display13FBPower;if(brightness>65535 || action>2)return false;
+ IOLockLock(c.lock);Display13FBPanelIO io{c.map};
+ const auto ddi=s->firmwarePorts.panel.ddi;
+ auto port=display13PanelTarget(controller) && s->tglPortByDDI ?
+  reinterpret_cast<OSObject *(*)(uint32_t)>(s->tglPortByDDI)(ddi):nullptr;
+ const auto config=port && display13AUXReady(port,false)?Display13FBMemory::field<uint32_t *>(port,0x548):nullptr;
+ const bool bound=port && ddi<2 && config && config[0]==ddi && !config[2] &&
+  (s->adlnOutputWiring.panel&(1U<<ddi)) && display13AUXReady(port,false);
+ bool pg=false,aux=false;
+ if(bound) {
+  port->retain();pg=display13PanelPowerReference(true);
+  if(pg)aux=c.bridge.getAUX(io,ddi).status==Display13Power::Status::Complete;
+ }
+ const bool powered=io.read(0xC7200)!=UINT32_MAX && (io.read(0xC7200)&0x80000000U);
+ IOLockUnlock(c.lock);
+ struct AUX {
+  void *port;
+  bool read(uint32_t r,void *p,uint32_t n){return XE::wrapDisplay13ReadAUX(port,r,p,n)==0;}
+  bool write(uint32_t r,void *p,uint32_t n){return XE::wrapDisplay13WriteAUX(port,r,p,n)==0;}
+ } transport{port};
+ EDPAuxBacklight::Caps caps;
+ bool ok=aux && powered && EDPAuxBacklight::probe(transport,caps);
+ // Enable over AUX is independent of brightness. The native LightUpEDP
+ // asserts EDP_BLC_ENABLE (PPS +4 bit2) before this callback; PPS off clears
+ // it. That is the pin-enable backend when AUX enable is absent.
+ ok=ok && (caps.set || c.panel.pwm.valid());
+ if(ok)ok=EDPAuxBacklight::apply(transport,caps,static_cast<EDPAuxBacklight::Action>(action),brightness);
+ IOLockLock(c.lock);
+ ok=ok && display13PanelTarget(controller) && display13AUXReady(port,false);
+ if(ok && !caps.set) {
+  uint32_t duty=0;ok=c.panel.pwm.duty(brightness,duty);
+  if(ok && action!=2){io.write(0xC8258,duty);ok=io.read(0xC8258)==duty;}
+  if(ok && action!=0) {
+   const auto value=action==1?0x80000000U|c.panel.pwm.polarity:0;
+   io.write(0xC8250,value);ok=io.read(0xC8250)==value;
+  }
+ }
+ if(ok && action!=2)c.panel.brightness=brightness;
+ if(aux)ok=(c.bridge.putAUX(io,ddi).status==Display13Power::Status::Complete) && ok;
+ if(pg)ok=display13PanelPowerReference(false) && ok;
+ IOLockUnlock(c.lock);if(bound)port->release();return ok;
+}
 uint32_t XE::display13PanelBrightness(void *controller,uint32_t brightness) {
  if(!display13PanelCapture(controller))return kIOReturnNotReady;
- auto &c=display13FBPower;IOLockLock(c.lock);Display13FBPanelIO io{c.map};bool ok=false;uint32_t duty=0;
+ auto &c=display13FBPower;
+ if(c.panel.aux) {
+  IOLockLock(c.panelLock);const bool ok=display13PanelAUX(controller,brightness,0);
+  if(ok)*reinterpret_cast<uint32_t *>(static_cast<uint8_t *>(controller)+0xE58)=brightness;
+  IOLockUnlock(c.panelLock);return ok?0:kIOReturnNotReady;
+ }
+ IOLockLock(c.lock);Display13FBPanelIO io{c.map};bool ok=false;uint32_t duty=0;
  if(display13PanelTarget(controller) && c.panel.pwm.duty(brightness,duty) &&
     display13PanelPowerReference(true)) {
   io.write(0xC8258,duty);ok=io.read(0xC8258)==duty;
@@ -13591,8 +13669,26 @@ uint32_t XE::display13PanelBrightness(void *controller,uint32_t brightness) {
  }
  IOLockUnlock(c.lock);return ok?0:kIOReturnNotReady;
 }
-void XE::display13PanelPWMEnable(void *access) {
+// Replace the native period write too: an AUX-only panel has no PWM period.
+void XE::display13PanelPWMPeriod(void *access) {
  auto &c=display13FBPower;if(!c.lock)return;IOLockLock(c.lock);Display13FBPanelIO io{c.map};
+ if(access==c.access && display13PanelTarget(c.controller)) {
+  if(c.panel.pwm.valid() && display13PanelPowerReference(true)) {
+   io.write(0xC8254,c.panel.pwm.period);const bool ok=io.read(0xC8254)==c.panel.pwm.period;
+   if(!display13PanelPowerReference(false) || !ok)c.panelFaulted=true;
+  } else if(!c.panel.aux)c.panelFaulted=true;
+ }
+ IOLockUnlock(c.lock);
+}
+void XE::display13PanelPWMEnable(void *access) {
+ auto &c=display13FBPower;if(!c.lock)return;
+ if(c.panel.aux) {
+  IOLockLock(c.panelLock);
+  const bool ok=access==c.access && display13PanelAUX(c.controller,c.panel.brightness,1);
+  if(!ok){IOLockLock(c.lock);c.panelFaulted=true;IOLockUnlock(c.lock);}
+  IOLockUnlock(c.panelLock);return;
+ }
+ IOLockLock(c.lock);Display13FBPanelIO io{c.map};
  if(access==c.access && display13PanelTarget(c.controller) && c.panel.pwm.valid() &&
     display13PanelPowerReference(true)) {
   const auto value=0x80000000U|c.panel.pwm.polarity;
@@ -13605,7 +13701,16 @@ uint32_t XE::wrapDisplay13PanelPower(void *controller,uint32_t state) {
  auto s=callbackXE;auto &c=display13FBPower;
  if(!s->adlnOutputWiring.panel)return FunctionCast(wrapDisplay13PanelPower,s->orgDisplay13PanelPower)(controller,state);
  if(!c.panelLock || !c.lock || !display13PanelCapture(controller))return kIOReturnNotReady;
- IOLockLock(c.panelLock);IOLockLock(c.lock);Display13FBPanelIO io{c.map};Display13Panel::OnGate gate;
+ IOLockLock(c.panelLock);
+ // Disable AUX brightness while the panel still answers AUX, before PPS off.
+ // Repeated off after a successful power-down needs no sink transaction.
+ if(c.panel.aux && state!=2) {
+  IOLockLock(c.lock);Display13FBPanelIO check{c.map};const auto status=check.read(0xC7200);IOLockUnlock(c.lock);
+  if(status==UINT32_MAX || ((status&0x80000000U) && !display13PanelAUX(controller,c.panel.brightness,2))) {
+   IOLockUnlock(c.panelLock);return kIOReturnNotReady;
+  }
+ }
+ IOLockLock(c.lock);Display13FBPanelIO io{c.map};Display13Panel::OnGate gate;
  const bool owned=display13PanelTarget(controller) && display13PanelPowerReference(true);
  const bool ready=owned && (state!=2 || gate.begin(io));
  IOLockUnlock(c.lock);
