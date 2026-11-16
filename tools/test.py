@@ -38,7 +38,7 @@ display13_retirement display13_trial_retirement display13_port_wait display13_ag
 display13_boot_handoff display13_clock_runtime display13_training_frontend framebuffer_donor_runtime compat_bundle_version dsi_backlight_adapter
 dsi_restart dsi_panel dsi_command_adapter dsi_irq_live dsi_surface_adapter dsi_aperture_adapter
 display13_shutdown display13_wake_notifications released_physical_admission released_topology
-accelerator_resources display13_power_dispatch test_runner_contract
+accelerator_resources display13_power_dispatch tgl_recovery test_runner_contract
 """.split()
 FAMILIES = {'BigSur':'bigsur', 'Monterey':'monterey', 'Ventura':'ventura',
             'Sonoma':'sonoma', 'Sequoia':'sequoia', 'Tahoe':'tahoe'}

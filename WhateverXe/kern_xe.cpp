@@ -310,6 +310,7 @@ static bool tglBlitDeferredSerialize(void *,void *,OSSerialize *serializer) {
 namespace {
 uint32_t tglRecoveryCalls {}, tglRecoveryReturns {};
 uint64_t tglRecoveryRecords[16][16] {};
+TGLRecovery::StampOps tglRecoveryStamp {};
 bool tglRecoverySerialize(void *,void *,OSSerialize *serializer) {
 	uint64_t data[2+16*16] {};
 	data[0]=__atomic_load_n(&tglRecoveryCalls,__ATOMIC_ACQUIRE);
@@ -326,13 +327,14 @@ bool tglRecoverySerialize(void *,void *,OSSerialize *serializer) {
 void XE::wrapTGLRecovery(void *channel) {
 	const auto n=__atomic_fetch_add(&tglRecoveryCalls,1,__ATOMIC_RELAXED);
 	uint64_t before {};clock_get_uptime(&before);
-	const auto result=TGLRecovery::resetAndResume(channel);
+	const auto result=TGLRecovery::resetAndResume(channel,tglRecoveryStamp);
 	uint64_t after {};clock_get_uptime(&after);
 	if (n<arrsize(tglRecoveryRecords)) {
 		auto q=tglRecoveryRecords[n];q[0]=123;q[1]=n+1;q[2]=before;q[3]=after;
 		q[4]=reinterpret_cast<uintptr_t>(channel);q[5]=result.ring;
 		q[6]=result.context;q[7]=result.affected;q[8]=result.index;
 		q[9]=result.failuresBefore;q[10]=result.failuresAfter;q[11]=result.resetOK;
+		q[12]=static_cast<uint8_t>(result.stamp);q[13]=result.targetStamp;q[14]=result.observedStamp;
 		__atomic_store_n(&q[15],1,__ATOMIC_RELEASE);
 	}
 	__atomic_fetch_add(&tglRecoveryReturns,1,__ATOMIC_RELEASE);
@@ -12232,10 +12234,10 @@ bool XE::processTGLAccelerator(KernelPatcher &patcher, size_t index, mach_vm_add
 			// target returns after native reset/resume; its lower-level reset still
 			// performs context replay. Port that CALLER contract only. No changed
 			// completion values, queue drops, hardware reset or panic entry points.
-			// IOAccel on Darwin 20-25 releases its recovery locks after this void
-			// callback returns. Native ICL uses the same single-pass caller; no host
-			// requires the TGL donor's extra stamp wait. Select by the firmware mode,
-			// exact donor and scheduler ABI, not by the OS used to observe a hang.
+			// A successful Blit reset has a bounded native completion path. Retain
+			// that one stamp without the retry path. Other engines and failed
+			// resets keep the single-pass reset/account/resume contract.
+			// Select by firmware mode and exact donor ABI, not host OS or machine.
 			const bool recoveryRequested=checkKernelArgument("-disablegfxfirmware");
 			bool recoveryOK=!recoveryRequested;
 			if (recoveryRequested) {
@@ -12245,14 +12247,27 @@ bool XE::processTGLAccelerator(KernelPatcher &patcher, size_t index, mach_vm_add
 					0x49,0x8B,0x76,0x20,0x48,0x8B,0x9E,0xB8,0,0,0};
 				const uint8_t failedAndResume[] {0xFF,0x83,0x7C,0x01,0,0,0x49,0x8B,0x47,0x18,0x48,0x8B,0xB8,0x50,0x12,0,0,
 					0x48,0x8B,0x07,0xFF,0x90,0x80,0x01,0,0};
-				recoveryOK=hostOK && size>0xDF668 &&
+				const uint8_t successDispatch[] {0xFF,0x90,0x68,0x01,0,0,0x84,0xC0,0x74,0x09,0x41,0x80,0x7E,0x40,0,0x74,0x08,0xEB,0x72};
+				const uint8_t successPath[] {0x49,0x8B,0x47,0x18,0x48,0x8B,0xB8,0x50,0x12,0,0,0x48,0x8B,0x07,0xFF,0x90,0x80,0x01,0,0,
+					0x48,0x85,0xDB,0x74,0xDA,0x49,0x8B,0x47,0x18,0x48,0x8B,0xB8,0x80,0x03,0,0,0x8B,0x73,0x20,0x48,0x8B,0x07,0xFF,0x90,0xD8,0x01,0,0,
+					0x48,0x89,0xDF,0xE8,0xFD,0xF9,0xFF,0xFF,0x8B,0x93,0x78,0x01,0,0,0x48,0x8D,0x75,0xD8,0x4C,0x89,0xF7,0xB9,0x40,0x42,0x0F,0,
+					0xE8,0xC4,0x54,0xFF,0xFF,0x84,0xC0,0x74,0xA0,0xFF,0x83,0x7C,0x01,0,0,0xEB,0x98};
+				const uint8_t submitHead[] {0x55,0x48,0x89,0xE5,0x41,0x56,0x53,0x48,0x83,0xEC,0x10,0x48,0x8B,0x47,0x18,0xF6,0x80,0x78,0x0C,0,0,0x02};
+				const auto submit=patcher.solveSymbol<mach_vm_address_t>(index,"__ZN18IGAccelFIFOChannel18submitStampCommandEv",address,size);
+				// hostOK already qualifies and routes this exact sleep entry. Call
+				// the routed entry, as the native E8 does, not the saved trampoline.
+				recoveryOK=hostOK && orgTGLHostWait && size>0xDF668 && submit==address+0x4C506 &&
 					patcher.solveSymbol<mach_vm_address_t>(index,recovery,address,size)==address+0x4CA1E &&
 					patcher.solveSymbol<mach_vm_address_t>(index,"__ZN20IGHardwareRingBuffer19resetGraphicsEngineEP17IGHardwareContext",address,size)==address+0x43576 &&
 					patcher.solveSymbol<mach_vm_address_t>(index,"__ZN12IGScheduler56resumeEv",address,size)==address+0x3906C &&
 					!memcmp(reinterpret_cast<void *>(address+0x4CA1E),head,sizeof(head)) &&
-					!memcmp(reinterpret_cast<void *>(address+0x4CA5F),failedAndResume,sizeof(failedAndResume));
+					!memcmp(reinterpret_cast<void *>(address+0x4CA5F),failedAndResume,sizeof(failedAndResume)) &&
+					!memcmp(reinterpret_cast<void *>(address+0x4CA4C),successDispatch,sizeof(successDispatch)) &&
+					!memcmp(reinterpret_cast<void *>(address+0x4CAD1),successPath,sizeof(successPath)) &&
+					!memcmp(reinterpret_cast<void *>(submit),submitHead,sizeof(submitHead));
 				patcher.clearError();
 				if (recoveryOK) {
+					tglRecoveryStamp={reinterpret_cast<TGLRecovery::SubmitStamp>(submit),reinterpret_cast<TGLRecovery::WaitStamp>(address+0x41FE4)};
 					KernelPatcher::RouteRequest hook[] {{recovery,wrapTGLRecovery,orgTGLRecovery}};
 					recoveryOK=patcher.routeMultiple(index,hook,arrsize(hook),address,size);
 				}

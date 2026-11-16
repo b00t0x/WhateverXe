@@ -8,6 +8,18 @@ separate source/bundle locations do not create a weaker quality boundary.
 
 ## Maintaining test contracts
 
+`tgl_recovery` runs the production wrapper and helper against ABI-matched
+reset, scheduler, event-machine, submit and wait callees. The exact TGL donor's
+successful non-render branch provides the increment/submit/one-second wait
+sequence; only Blit uses it here. For other engines and failed resets the ICL
+single-pass ordering and accounting remain mandatory. The fixture checks the
+real affected channel, two reload points, raw timeout polarity, no stamp on an
+absent affected channel, bounded call counts and published outcomes. Semantic
+mutants exercise lost or duplicated work, erroneous gating and failure effects.
+This CPU check does not execute the donor's callback bodies, Lilu installation,
+IOAccel locking, GPU execution or stamp retirement. The exact donor guards and
+an observed live recovery are required at those boundaries.
+
 Apply these rules to implementation changes and test additions, corrections,
 merges and removals. An existing passing test is not an approved specification.
 The [check inventory](#independent-expectations-and-boundaries) describes selected
