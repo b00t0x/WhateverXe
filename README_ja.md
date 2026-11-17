@@ -48,13 +48,13 @@ OS別の範囲と表示構成は[動作確認済みの機能と既知の問題](
 
 ## インストール
 
-1. Lilu 1.7.2以降と**RELEASE** ZIPの`WhateverXe.kext`をOpenCoreに追加し、WEXはLiluの後に設定します。[OpenCoreの設定手順](https://github.com/b00t0x/AMFIAnchor/blob/0.1.2/README.md#install-with-opencore)に従い、[AMFIAnchor](https://github.com/b00t0x/AMFIAnchor/releases/latest)と、[AMFIAnchorのソースZIP](https://github.com/b00t0x/AMFIAnchor/archive/refs/tags/0.1.2.zip)の`Injectors/`にある`AMFIAnchorInjector.kext`を導入します。
+1. Lilu 1.7.2以降と**RELEASE** ZIPの`WhateverXe.kext`をOpenCoreに追加し、WEXはLiluの後に設定します。[OpenCoreの設定手順](https://github.com/b00t0x/AMFIAnchor/blob/main/README.md#install-with-opencore)に従い、[AMFIAnchor](https://github.com/b00t0x/AMFIAnchor/releases/latest)と[`AMFIAnchorInjector.kext`](https://github.com/b00t0x/AMFIAnchor/tree/main/Injectors)を導入します。
 2. `csr-active-config=03080000`（`0x803`）と、[設定](#設定)を適用します。
 3. 対象macOSを起動して最新版の[WhateverXe Graphics pkg](https://github.com/b00t0x/WhateverXe-Graphics/releases)を導入し、再起動します。[pkgの導入・削除手順](https://github.com/b00t0x/WhateverXe-Graphics/blob/main/README_ja.md#インストール)。
 
 AMFIPass 1.4.1 Modから移行する場合は、OpenCoreから旧Mod版の項目を削除してください。AMFIは有効にします。WhateverGreenとWhateverXeは併用できません。`amfi=0x80`と`ipc_control_port_options=0`は不要です。
 
-Graphicsは`/Library`への配置とAuxKC生成を行い、Systemファイルやsnapshotにはパッチしません。旧Xe System patchは先に復元してください。他のroot patchのためにOCLPを使う場合は、同じMod署名に対応する[独自ビルド版OCLP](https://github.com/b00t0x/OpenCore-Legacy-Patcher)を使用します。
+Graphicsは`/Library`への配置とAuxKC生成を行い、Systemファイルやsnapshotにはパッチしません。旧Xe System patchは先に復元してください。他のroot patchに[OCLP](https://github.com/dortania/OpenCore-Legacy-Patcher)を使う場合は、AMFIAnchorとInjectorの後にOCLPのAMFIPassを読み込んでください。
 
 ## 設定
 
