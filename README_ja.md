@@ -35,7 +35,7 @@ OS別の範囲と表示構成は[動作確認済みの機能と既知の問題](
 - 対応IDの他のAlder Lake-N / Twin Lake構成。
 - 対応IDの他のAlder Lake-H/P/U・Raptor Lake-H/P/U構成。
 - 対応IDの他のAlder Lake-S/HX・Raptor Lake-S/HX構成。
-- Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/Uの内蔵eDPは実装済み・実機未検証です。
+- Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/Uの内蔵eDPは実装済み・実機未検証です。輝度制御はPCH PWMと標準VESA AUXに対応し、OLED固有・Intel HDR方式の輝度制御は未認定です。
 
 ### 対応に追加改修が必要
 
@@ -48,13 +48,13 @@ OS別の範囲と表示構成は[動作確認済みの機能と既知の問題](
 
 ## インストール
 
-1. Lilu・`WhateverXe.kext`・[AMFIPass 1.4.1 Mod](https://github.com/b00t0x/WhateverXe-Graphics/blob/main/extras/AMFIPass-v1.4.1-Mod-RELEASE.zip)をOpenCoreに追加し、WEXはLiluの後に設定します。WEXは**RELEASE** ZIPを使用してください。DEBUGは障害調査用です。
+1. Lilu 1.7.2以降と**RELEASE** ZIPの`WhateverXe.kext`をOpenCoreに追加し、WEXはLiluの後に設定します。[OpenCoreの設定手順](https://github.com/b00t0x/AMFIAnchor/blob/main/README.md#install-with-opencore)に従い、[AMFIAnchor](https://github.com/b00t0x/AMFIAnchor/releases/latest)と[`AMFIAnchorInjector.kext`](https://github.com/b00t0x/AMFIAnchor/tree/main/Injectors)を導入します。
 2. `csr-active-config=03080000`（`0x803`）と、[設定](#設定)を適用します。
 3. 対象macOSを起動して最新版の[WhateverXe Graphics pkg](https://github.com/b00t0x/WhateverXe-Graphics/releases)を導入し、再起動します。[pkgの導入・削除手順](https://github.com/b00t0x/WhateverXe-Graphics/blob/main/README_ja.md#インストール)。
 
-AMFIPassは本家版に代えてリンク先の**Mod版**を使用し、両方を同時に読み込まないでください。WhateverGreenとWhateverXeも併用できません。`amfi=0x80`と`ipc_control_port_options=0`は不要です。
+AMFIPass 1.4.1 Modから移行する場合は、OpenCoreから旧Mod版の項目を削除してください。AMFIは有効にします。WhateverGreenとWhateverXeは併用できません。`amfi=0x80`と`ipc_control_port_options=0`は不要です。
 
-Graphicsは`/Library`への配置とAuxKC生成を行い、Systemファイルやsnapshotにはパッチしません。旧Xe System patchは先に復元してください。他のroot patchのためにOCLPを使う場合は、同じMod署名に対応する[独自ビルド版OCLP](https://github.com/b00t0x/OpenCore-Legacy-Patcher)を使用します。
+Graphicsは`/Library`への配置とAuxKC生成を行い、Systemファイルやsnapshotにはパッチしません。旧Xe System patchは先に復元してください。他のroot patchに[OCLP](https://github.com/dortania/OpenCore-Legacy-Patcher)を使う場合は、AMFIAnchorとInjectorの後にOCLPのAMFIPassを読み込んでください。
 
 ## 設定
 
@@ -134,4 +134,8 @@ Xeグラフィックスの取り組みを公開している[JulioNectar/XPS13Plu
 
 内蔵パネルの対応では、[WhateverXe-RaptorLakeP](https://github.com/samranahmad09/WhateverXe-RaptorLakeP)、[X1Carbon-G11](https://github.com/dssoftx/Hackintosh-X1Carbon-G11-IrisXe-Tahoe)、XPS13Plus、[Linux i915の表示ソース](https://github.com/torvalds/linux/tree/v6.12/drivers/gpu/drm/i915/display)も、ハードウェアの挙動と実装の比較に参照しています。
 
+eDPの起動引継ぎ・初期化の修正では、[ann0see](https://github.com/ann0see/WhateverXe/tree/522c0a1bd60b9beac66e00dfd7414823680639dd)、[belugaa-01](https://github.com/belugaa-01/WhateverXe-Patched)、[Thatisjigen](https://github.com/Thatisjigen/WhateverXe)、[zsz-of](https://github.com/zsz-of/WhateverXe)の報告とpatchも参照しています。
+
 MiniBook Xの任意設定60 Hzのパネルタイミングには、[minibookx-ctlの表示ガイド](https://github.com/ishad0w/minibookx-ctl/blob/main/docs/guide/display.md)も参照しています。
+
+表示復帰時のIRQ再設定とGGTT復元では[jkbuha/WhateverXe](https://github.com/jkbuha/WhateverXe)を参照しました。AUX輝度制御の調査では[JulioNectar](https://github.com/JulioNectar/Hackintosh-XPS13Plus-IrisXe-Tahoe)も参照しています。VESA実装はLinux DRMのプロトコル上の事実に基づき、NootedGreenのコードはコピーしていません。

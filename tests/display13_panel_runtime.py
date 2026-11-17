@@ -3,7 +3,7 @@
 from pathlib import Path
 import re,sys,subprocess,tempfile,hashlib
 r=Path(__file__).resolve().parents[1];s=(r/'WhateverXe/kern_xe.cpp').read_text()
-names=['display13PanelTarget','display13PanelPowerReference','display13PanelCapture','display13PanelTiming','display13PanelBrightness','display13PanelPWMEnable','wrapDisplay13PanelPower']
+names=['processDisplay13Panel','wrapADLSLightUpEDP','display13PanelHealthy','display13PanelTarget','display13PanelPowerReference','display13PanelCapture','display13PanelTiming','display13PanelAUX','display13PanelBrightness','display13PanelPWMPeriod','display13PanelPWMEnable','wrapDisplay13PanelPower']
 methods='\n'.join(re.search(r'(?:bool|void|uint32_t) XE::'+n+r'\(.*?\n\}',s,re.S).group() for n in names)
 io=s[s.index('struct Display13FBPowerIO {'):s.index('// The static boot reader')]
 if len(sys.argv)>1:
@@ -20,5 +20,5 @@ if len(sys.argv)>1:
 code=(r/'tests/display13_panel_runtime_fixture.cpp').read_text().replace('// PRODUCTION_IO',io).replace('// METHODS',methods)
 with tempfile.TemporaryDirectory(prefix='display13-panel-') as d:
  p=Path(d);(p/'test.cpp').write_text(code)
- subprocess.run(['clang++','-arch','x86_64','-std=c++17','-O1','-g','-fsanitize=address,undefined','-I'+str(r/'WhateverXe'),str(p/'test.cpp'),'-o',str(p/'test')],check=True)
+ subprocess.run(['clang++','-arch','x86_64','-std=c++17','-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all','-I'+str(r/'WhateverXe'),str(p/'test.cpp'),'-o',str(p/'test')],check=True)
  subprocess.run([str(p/'test')]+sys.argv[1:],check=True)

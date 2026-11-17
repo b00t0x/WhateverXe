@@ -51,11 +51,19 @@ int main(){IORecursiveLock pool;
   lease.trainingThread=nullptr;assert(!XE::display13TrainingPath(f.path,d,p));lease.trainingThread=current_thread();
   lease.adopted=true;assert(!XE::display13TrainingPath(f.path,d,p));lease.adopted=false;
   put(f.fb,0x49e8,1U);assert(!XE::display13TrainingPath(f.path,d,p));put(f.fb,0x49e8,0U);
+  if(ddi<2)put(f.port,0x550,0U); // native constructor, before setPortMode
   assert(!XE::wrapDisplay13PortTraining(f.port,nullptr));assert(f.port[0x11a]==(cap&wanted));
   assert((map.regs[0x60540+0x1000*pipe]&0x40000U)==((cap&wanted)<<18));
   const auto clock=0x46140+4*pipe;assert(map.regs[clock]==((ddi+(ddi>=3?3:1))<<28));
   assert(!XE::display13DeferClock(f.access,clock,0,state.display13DPImage+0x4d991));
   assert(XE::display13DeferClock(f.access,clock,0,state.display13DPImage+0x4d990));assert(map.regs[clock]==((ddi+(ddi>=3?3:1))<<28));
+  assert(!display13FBPower.clockFaulted);
+  assert(XE::display13DeferClock(f.access,clock,0,state.display13DPImage+0x4d990));
+  assert(!display13FBPower.clockFaulted && map.regs[clock]==((ddi+(ddi>=3?3:1))<<28));
+  // Conflicting values stay suppressed and never replace the pending request.
+  assert(XE::display13DeferClock(f.access,clock,1,state.display13DPImage+0x4d990));
+  assert(display13FBPower.clockFaulted && display13DeferredClocks[pipe].value==0);
+  display13FBPower.clockFaulted=false;
   map.regs[0x70008+0x1000*pipe]=0;map.regs[0x64000+0x100*ddi]=0x80000000;
   assert(!XE::display13StopTranscoder(f.port)&&map.regs[clock]==((ddi+(ddi>=3?3:1))<<28));
   map.regs[0x64000+0x100*ddi]=0x80;map.regs[0x60540+0x1000*pipe]&=~0x80000000U;
@@ -68,3 +76,13 @@ with tempfile.TemporaryDirectory(prefix='display13-training-front-') as d:
  p=Path(d);(p/'test.cpp').write_text(prefix+code+extra)
  subprocess.run(['clang++','-std=c++17','-O1','-g','-fsanitize=address,undefined','-I'+str(r/'WhateverXe'),str(p/'test.cpp'),'-o',str(p/'test')],check=True)
  subprocess.run([str(p/'test')],check=True)
+
+ # Restoring the old non-idempotent queue must fail at the no-fault assertion.
+ before='(!deferred.pending || (deferred.port==port && deferred.value==value))'
+ assert before in code
+ with tempfile.TemporaryDirectory(prefix='display13-defer-fault-') as d:
+  p=Path(d);(p/'fault.cpp').write_text(prefix+code.replace(before,'!deferred.pending')+extra)
+  subprocess.run(['clang++','-std=c++17','-O1','-I'+str(r/'WhateverXe'),str(p/'fault.cpp'),'-o',str(p/'fault')],check=True)
+  result=subprocess.run([str(p/'fault')],capture_output=True,text=True)
+  assert result.returncode!=0 and 'Assertion failed:' in result.stderr
+  print('PASS rejected semantic fault: repeated deferred stop faults')

@@ -179,8 +179,11 @@ static void tcComposition() {
     const Case cases[]={{{5,3,0},2,1U<<5},{{3,5,0},2,1U<<5},
         {{0,4,0},2,0},{{6,1,0},2,1U<<6},{{1,6,0},2,1U<<6},
         {{3,4,5},3,(1U<<3)|(1U<<5)},{{4,1,6},3,1U<<6}};
-    for(const auto &c:cases)for(bool owner:{false,true}) {
+    for(const auto &c:cases)for(bool owner:{false,true})for(unsigned depth:{0U,1U,2U,3U}) {
         IO io;const auto wiring=multiGOP(io,c.ports,c.count,c.dp,owner);
+        // Preserve the retained link depth; peers of every defined RGB depth
+        // still stop through the same native bootstrap sequence.
+        for(unsigned p=0;p<c.count;++p)io.regs[0x60400+p*0x1000]|=depth<<20;
         const auto boot=AlderLakeN::readDisplay(io,true);const auto before=io.regs;
         const auto r=normalize(io,boot,true,wiring,memory);
         assert(r.status==Display13Boot::Status::Complete && r.after==1);

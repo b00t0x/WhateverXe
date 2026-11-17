@@ -4,6 +4,7 @@
 #define KERN_DISPLAY13_PANEL_HPP
 #include "kern_xelp_panel_power.hpp"
 #include "kern_xelp_panel_pwm.hpp"
+#include "kern_edp_aux_backlight.hpp"
 namespace Display13Panel {
 // Exact c004fc1a LightUpEDP: reject failed power/train before enabling scanout.
 // This adapter admits only the standard native panel (controller+D0 is null),
@@ -14,17 +15,21 @@ static constexpr LightPatch lightPatches[]={
               {0x41,0x89,0xc6,0x85,0xc0,0x0f,0x85,0xcd,0x01,0x00,0x00,0xe9,0x5b,0x00,0x00,0x00}},
  {0x506fd,6,{0x0f,0x84,0x50,0x01,0x00,0x00},{0x0f,0x85,0x3e,0x01,0x00,0x00}}
 };
+constexpr uint32_t PeriodSite=0x507BD;
+static constexpr uint8_t periodBefore[]={0x8b,0x93,0x60,0x0e,0x00,0x00,0x48,0x8b,0x07,0xbe,0x54,0x82,0x0c,0x00,0xff,0x90,0x30,0x01,0x00,0x00};
 struct State {
  XELP::PanelPWM pwm;
  uint32_t bios[3] {};
- bool captured {};
+ bool captured {},aux {};
+ uint32_t brightness {65535};
  template<class IO> bool capture(IO &io,const XELP::VBT::Ports::Panel &panel) {
-  if(captured)return pwm.valid();
+  if(captured)return aux || pwm.valid();
+  const bool useAux=XELP::PanelPower::auxBacklight(panel);
   const auto on=io.read(0xC7208),off=io.read(0xC720C),control=io.read(0xC7204);
-  const auto period=io.read(0xC8254),polarity=io.read(0xC8250);
-  const auto selected=XELP::PanelPWM::select(period,polarity,period?0:io.read(0xC2014),panel.pwmHz,panel.activeLowPWM);
-  if(on==~0U || off==~0U || control==~0U || !selected.valid())return false;
-  bios[0]=on;bios[1]=off;bios[2]=control;pwm=selected;captured=true;return true;
+  const auto period=panel.pwmPresent?io.read(0xC8254):0,polarity=panel.pwmPresent?io.read(0xC8250):0;
+  const auto selected=XELP::PanelPWM::select(period,polarity,period || !panel.pwmPresent?0:io.read(0xC2014),panel.pwmHz,panel.activeLowPWM);
+  if(on==~0U || off==~0U || control==~0U || (!useAux && !selected.valid()))return false;
+  bios[0]=on;bios[1]=off;bios[2]=control;pwm=panel.pwmPresent?selected:XELP::PanelPWM{};aux=useAux;captured=true;return true;
  }
 };
 // WA 22019252566 (Display13/14): block PCH DPLS clock gating over panel on.

@@ -33,11 +33,17 @@ int main() {
   for(unsigned bad=0;bad<10;++bad) {
    auto b=v;
    switch(bad) {case 0:b.panel.controller=1;break;case 1:b.panel.backlightType=3;break;
-    case 2:b.panel.pwmPresent=false;break;case 3:b.unmapped=1;break;case 4:b.panel.valid=false;break;
+    case 2:b.panel.backlightValid=false;break;case 3:b.unmapped=1;break;case 4:b.panel.valid=false;break;
     case 5:b.port[ddi].flags=4;break;case 6:b.port[ddi].capabilities=1;break;
     case 7:b.port[ddi].aux=0x90;break;case 8:b.present|=1U<<(1-ddi);b.port[1-ddi]=b.port[ddi];break;
     case 9:b.panel.ddi=2;break;}
    assert(!PanelPower::nativePPS0(b,family));assert(!VBT::display13Fixed(b,0x7b,family).panel);
+  }
+  for(unsigned type:{2U,5U}) {
+   auto aux=v;aux.panel.backlightType=type;aux.panel.pwmPresent=false;
+   assert(!PanelPower::nativePPS0(aux,family)); // PWM-only callers stay unchanged.
+   assert(PanelPower::nativePPS0(aux,family,true));
+   assert(VBT::display13Fixed(aux,0x7b,family).panel==(1U<<ddi));
   }
   auto overlap=w;overlap.dp=w.panel;assert(!overlap.described());overlap=w;overlap.panel=3;assert(!overlap.described());
   ProbeBinding binding;binding.controller=1;binding.access=2;binding.platform=reinterpret_cast<uintptr_t>(dst);

@@ -8,6 +8,18 @@ separate source/bundle locations do not create a weaker quality boundary.
 
 ## Maintaining test contracts
 
+`tgl_recovery` runs the production wrapper and helper against ABI-matched
+reset, scheduler, event-machine, submit and wait callees. The exact TGL donor's
+successful non-render branch provides the increment/submit/one-second wait
+sequence; only Blit uses it here. For other engines and failed resets the ICL
+single-pass ordering and accounting remain mandatory. The fixture checks the
+real affected channel, two reload points, raw timeout polarity, no stamp on an
+absent affected channel, bounded call counts and published outcomes. Semantic
+mutants exercise lost or duplicated work, erroneous gating and failure effects.
+This CPU check does not execute the donor's callback bodies, Lilu installation,
+IOAccel locking, GPU execution or stamp retirement. The exact donor guards and
+an observed live recovery are required at those boundaries.
+
 Apply these rules to implementation changes and test additions, corrections,
 merges and removals. An existing passing test is not an approved specification.
 The [check inventory](#independent-expectations-and-boundaries) describes selected
@@ -130,8 +142,14 @@ The registry contract checks that newly added scripts are not silently omitted.
 | --- | --- | --- |
 | `compat_exports.py` | Fixed `c004fc1a` donor imports, native DSB caller/field producers, mapped-memory extent, contiguous Gen12 PTE address encoding, DSB manager dispatch and zero-success return | Compiles the complete Compat translation unit with kernel/IOKit boundary mocks, retaining export asm names. Executes MMIO, DSB allocation/zeroing/PTE installation/publication, failure/retry, clock and lifecycle. Hardware DMA, the system mapper and actual DSB queue execution are outside this check |
 | Graphics activation (`compat_exports.py`, `host_publication.py`) | Either component alone must preserve firmware graphics; native drivers may start only with an active, compatible WEX plugin. Activation ABI 1 is a runtime registry token, independent of EFI/AuxKC linking | Executes the actual accepted pluginStart body, token publisher and complete Compat start consumer. Missing, malformed and incompatible tokens reject start. The early callback may copy read-only firmware facts after PCI publication; it must not initialize/configure the GPU. Actual host dispatch ignores unrelated notifications until a Graphics image arrives, then initializes once. Lilu's shouldLoad decision, OSKext dependency failure propagation, AuxKC construction and GOP scanout require separate loader/hardware validation |
-| `firmware_readout.py` | Intel OpRegion/VBT wire records and owner-bound immutable boot facts: firmware storage may disappear before native image activation, but valid captured wiring must remain available | Production early acquisition and activation consumer on the same XE object, using synthetic HDMI-B/DDC2 records. Physical memory mapping is modeled. Missing input and map failure retry; foreign registry owner, parser-family change and zero owner cannot reuse a snapshot. Semantic mutations that lose a snapshot or reuse another owner's snapshot must fail. Physical firmware lifetime and display output require hardware validation |
+| `firmware_readout.py`, `firmware_panel_identity.cpp` | Intel OpRegion mailbox 5 and Linux v6.12 `intel_bios.c` BDB 41/42 PNP identity: exact-date match precedes an undated match; no blind profile-zero fallback. Identical child records have the same ownership; conflicting records do not | Actual early acquisition, inline/external VBT, owner cache, wiring, PPS delay and PWM consumers. Explicit indices and LFP2 are retained. Equivalent consumed facts remain usable without claiming an index; divergent candidates, malformed pointers/EDID and conflicting children cannot supply panel routing. Mapping and MMIO are modeled. Snapshot loss, foreign ownership and disconnected EDID mutations fail. Physical mailbox availability and output remain hardware boundaries |
+| ADL-S initial panel mode (`adls_panel_pwm.py`) | Fixed donor reset starts Combo mode0 before mode1 publication. The bound internal panel, controller/access association and PG1 witness independently establish PWM ownership | Production LightUpEDP wrapper captures PWM in mode0/1, then delegates once. Native mode checks the reset producer and executes the PWM tail for the first mode0 cycle and subsequent mode1 cycles. Restoring mode1-only admission fails semantically. No claim of a complete ADL-S cold engine reset or physical panel training |
+| Deferred Display13 clock (`display13_training_frontend.py`) | Exact donor stop caller defers clock removal until DDI buffer/transcoder stop. Reentry with the same owner/value is the same pending operation | Actual deferred request and stop consumer with the real power bridge and mocked MMIO. Identical repetition stays pending without a fault; conflicting values stay suppressed without overwriting the request; running DDI prevents clock removal. Physical disable timing remains outside the model |
 | `compat_producer.py` | Explicit board wiring and native port-mode roles: Combo=1, fixed TC=4, DP-alt=3; DSI remains WEX-owned | Real wiring conversion and WEX `xelpBindProbe` construct config delivered to complete Compat, then actual port probe on the same objects. Includes missing AUX/panel/DSI readiness and retry. Hook installation and DSI operation are prerequisites tested elsewhere, not simulated by successful bind |
+| Display13 boot link depth (`display13_linear_dp.cpp`, `display13_fb_memory.cpp`, `display13_boot.cpp`) | Linux v6.12 `i915_reg.h` TRANS_DDI_BPC encodes 8/10/6/12 bpc as 0/1/2/3; lane width is a different field. The four-byte RGB plane does not require an 8-bpc output link | Actual source readout, plane conversion, GGTT backing inspector and multi-output parking retain the firmware depth. Reserved depths fail before writes/PTE reads; drift is refused. This preserves a firmware link, not HDR or native deep-color modeset support |
+| `display13_boot_handoff.py`, `display13_training_frontend.py`, `display13_sst.py` | Fixed donor `resetSoftwareState` initializes Combo mode to 0 before `setPortMode`; exact physical config, access owner and TC modes remain required | Production setup-workloop -> SST selection -> boot AUX adoption -> port stop/re-enable, and training wrappers. Prequalified framebuffer memory and provider IRQ registration are boundaries. `display13_sst_native` checks producer bytes and replays existing native port operations; full native startup and physical link training are outside the model |
+| `display13_clock_runtime.py` | Cold CDCLK has no live consumers; all powered planes/cursors/DSB/transcoders must be stopped under the display owner lock and IRQ guard. A caller-owned FB mutex must not wait for a potentially dependent workloop gate | Actual dual-clock dispatcher, IRQ guard and clock state machine with MMIO/mailbox/locks modeled. Gate contention, clock publication, no-write refusals and partial-write IRQ containment are checked. Active-clock success certificates and real scheduler races are outside this fixture |
+| `display13_panel_runtime.py` | Fixed donor `LightUpEDP` powers the panel before clock setup/training. Linux `intel_pps.c` and CNP PWM use PCH rawclk, independent of CDCLK | Actual panel power/brightness wrappers run with CDCLK stopped or running, retain PG1 and owner/fault guards. Native mode replays patched `LightUpEDP` into the real power wrapper; clock/training leaves are mocked there. Physical PPS timing, brightness and panel link remain unqualified |
 | `provider_binding.py` | Physical owner/ABI identity, immutable binding lifetime, port record ownership and semantic transport classification | Complete Compat translation unit; preserves physical ID/spoof and ABI1 history, pinning/idempotence and foreign/stale rejection. Replaces a mirrored capability truth table and tuple-bit rejection loop with consumer capability checks and named semantic violations/positive flag variation. Does not model arbitrary kernel scheduling |
 | `profile_admission.py` | Physical PCI family classifications from Linux `i915_pciids.h`, supported Darwin families and documented opt-outs; fixed mobile identities also preserve prior selections | Executes the complete production selector using real `Profile` values; checks selected backend/driver and noaccel behavior. Does not qualify physical fuses or native start |
 | `gen12_resource_cases.hpp`, `adlp_resources.cpp`, `tgl_gt2_urb.py` | Positive resource capacities and Gen12 SSEU bit meanings; Intel TGL PRM Vol. 4 and Linux `intel_sseu.c` | Separate EU/DSS/L3 populations and position permutations; native URB stores use independent expected capacities, including eight native subslices. Unlisted encodings are not automatically negative specifications |
@@ -184,3 +202,59 @@ Useful primary references include
 [Linux v6.12 SSEU](https://github.com/torvalds/linux/blob/v6.12/drivers/gpu/drm/i915/gt/intel_sseu.c)
 and [PCI classifications](https://github.com/torvalds/linux/blob/v6.12/include/drm/i915_pciids.h).
 These sources specify hardware facts, not Apple private ABI compatibility.
+
+### Display13 deferred IRQ, GGTT resume and AUX backlight
+
+`display13_irq_rearm` executes the production enable/disable/VBL wrappers and
+real IRQ bank logic. The donor calls VBL after PIPECONF (0x49193/0x491ad).
+Disabled pipes defer without permanent fault, then rearm on actual activation;
+quiescing, blocked pipes and foreign owners cannot arm interrupts. Association
+validation and kernel lock primitives are modeled leaves, not GPU IRQ timing.
+Combo DP/HDMI, TC DP-alt, eDP plus external, and DSI plus external also resume
+in two stages across pipes A/B/C. A later peer must preserve pending pipe/DSB
+completions and peer masks; both native lock conventions execute. Replacing
+incremental activation with a global rearm must fail at that external effect.
+`display13_shared_restore` executes the actual shared restore wrapper and stopped
+consumer checks. Power-well restore/publication are modeled leaves. Linux v6.12
+`intel_dpt_configure` specifies GGTT selection. No engine enable may occur after
+unreadable/failed GGTT readback or with active consumers; pending state survives.
+Retry keeps the lost-power generation for normal and DSI transcoder bindings.
+A retained, running engine accepts peer wake without reprogramming GGTT or
+re-enabling the engine, even when a new GGTT transaction would fail.
+
+`display13_panel_runtime` now covers VBT-selected VESA AUX, the PPS wrapper,
+brightness/enable/disable callbacks and real PG/AUX leases. Native AUX replies
+and serialization are modeled; `display13_aux` separately tests the transport.
+The native mode executes `processDisplay13Panel` against the exact donor and
+replays its generated period-call bridge in LightUpEDP, with the real outer
+LightUpEDP wrapper and health result. It retains original-donor counterexamples,
+checks partial installation/mismatched bytes, and restores a lost period on the
+existing PWM path as well as exercising AUX. Common native panel installers
+remain explicit prerequisites; patcher memory writes/routes and OS locks are
+modeled. The test must not assemble a substitute period bridge.
+Linux DRM eDP capability, byte ordering and PWMGEN bit count define the level
+oracle. 8/16-bit sinks, AUX/pin enable, zero PWM availability, transaction failure,
+foreign owner, power-off and restoration preserve normalized brightness without
+writing absent PWM registers. `display13_panel` retains PWM-only callers and
+adds AUX panel wiring for Combo A/B across Display13 families. Its former
+PWM-absent rejection becomes a positive AUX-probe case; unknown VBT backlight
+facts remain rejected. OLED-specific nits calibration and physical panel
+brightness are not demonstrated by any CPU mode. Require these modes and the
+native panel/AUX modes when changing this path.
+
+Shared firmware identity checks also run inline/external capture and cached facts
+for TGL, ADL/RPL-S, ADL/RPL-P and ADL-N. Consumers follow their physical mapping:
+TGL internal eDP stays on the native panel route, and ADL-S HDMI-B is TC1 rather
+than Combo-B. Optional panel damage must preserve external HDMI wiring. The
+ADL/RPL-S PWM replay preserves level/polarity and native non-panel delegation;
+entering a Display13 helper in that fixture fails. These are CPU routing and
+lifecycle protections, not new Display12 AUX support or hardware qualification.
+
+For non-eDP regression isolation, `display13_panel_runtime_native` additionally
+calls the real eDP installer with DP-only, HDMI-only and DSI-plus-external wiring
+while stale panel firmware facts remain present. Neither donor bytes nor common
+panel hook setup may change. Removing the non-eDP guard must fail at this no-write
+boundary. The existing Display13 PWM branch also makes no AUX calls and preserves
+the modeled sink. `profile_admission` and `framebuffer_common[_native]` separately
+protect Display12 backend selection and installation dispatch; their combination
+is not a full kernel startup replay.

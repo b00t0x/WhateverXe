@@ -12,6 +12,8 @@ if len(sys.argv)>1:
  assert hashlib.sha256(b).hexdigest()=='c004fc1ac9ee4157e2e12736f40fa6639bde025a279326beeb9dd48c9b445731'
  for n,off in [('lightEntry',0x5063e),('brightnessEntry',0x4a56a),('enable',0x507e9)]:
   raw=bytes(int(x,0) for x in arrays[n].split(','));assert b[off:off+len(raw)]==raw
+ assert b[0x1b12c:0x1b12e]==bytes.fromhex('31c0')
+ assert b[0x1b15b:0x1b162]==bytes.fromhex('48898750050000')
  # Native start chooses Camellia/Banksia from platform+190 only.
  assert b[0x40216:0x4021d]==bytes.fromhex('83b89001000002')
  assert b[0x402bb:0x402c2]==bytes.fromhex('83b89001000003')
@@ -102,6 +104,26 @@ int main(int argc,char**argv){
   if(bad==12)control=~0U;if(bad==13){period=0;strap=~0U;}
   assert(XE::wrapADLSLightUpEDP(ctl,nullptr,nullptr,nullptr)==kIOReturnNotReady&&nativeLight==0&&writes==0&&get==put&&!refs);
  }
+ // PPS/PWM capture precedes the native body and cannot require its mode1
+ // publication. Preserve all physical panel/owner guards for initial mode0.
+ for(unsigned mode:{0U,1U}){XE initial;setup(initial);field<uint32_t>(port,0x550)=mode;
+  assert(XE::wrapADLSLightUpEDP(ctl,nullptr,nullptr,nullptr)==0x1234 && nativeLight==1);
+  assert(field<uint32_t>(ctl,0xe60)==120000 && get==put && !refs);
+ }
+ // Display12 PWM and native delegation remain independent of Display13's
+ // AUX backend. A Display13 call in this fixture is a hard failure above.
+ for(auto family:{XELP::Family::AlderLakeS,XELP::Family::RaptorLakeS}) {
+  XE legacy;setup(legacy);legacy.xeProfile.family=family;
+  assert(XE::wrapADLSLightUpEDP(ctl,nullptr,nullptr,nullptr)==0x1234);
+  assert(!XE::wrapADLSPanelBacklight(ctl,32768) && duty==60000);
+  XE::wrapADLSPanelPWMEnable(access);assert(control==0xa0000000);
+ }
+ for(bool adls:{false,true}) {
+  XE external;setup(external);external.adlsDisplaySelected=adls;external.adlsWiring.panel=0;
+  assert(XE::wrapADLSLightUpEDP(ctl,nullptr,nullptr,nullptr)==0x1234 && nativeLight==1);
+  assert(XE::wrapADLSPanelBacklight(ctl,100)==0x5678 && nativeBacklight==1);
+  assert(!reads && !writes && !get && !put);
+ }
  XE s;setup(s);assert(XE::wrapADLSLightUpEDP(ctl,nullptr,nullptr,nullptr)==0x1234&&nativeLight==1&&field<uint32_t>(ctl,0xe60)==120000);
  assert(get==put&&get==1&&!refs);const auto capturedReads=reads;
  for(unsigned v:{0U,1U,32768U,65535U}){assert(!XE::wrapADLSPanelBacklight(ctl,v));assert(duty==uint64_t(120000)*v/65535&&field<uint32_t>(ctl,0xe58)==v&&get==put&&!refs);}
@@ -124,6 +146,7 @@ int main(int argc,char**argv){
   auto tail=(void(*)(void*))(mem+stubs+32);
   state.orgADLSLightUpEDP=(uintptr_t)+[](void*c,void*,void*,const void*)->uint32_t{assert(c==ctl);return 0;};
   for(unsigned cycle=0;cycle<16;++cycle){
+   field<uint32_t>(port,0x550)=cycle?1:0;
    assert(XE::wrapADLSLightUpEDP(ctl,nullptr,nullptr,nullptr)==0);
    field<uint32_t>(ctl,0xe58)=65535;tail(ctl);
    assert(period==120000&&duty==120000&&control==0xa0000000&&get==put&&!refs);
@@ -140,3 +163,11 @@ with tempfile.TemporaryDirectory(prefix='adls-panel-pwm-') as d:
  p=Path(d);(p/'test.cpp').write_text(code)
  subprocess.run(['clang++','-arch','x86_64','-std=c++17','-O1','-g','-fsanitize=address,undefined','-I'+str(r/'WhateverXe'),str(p/'test.cpp'),'-o',str(p/'test')],check=True)
  subprocess.run([str(p/'test')]+sys.argv[1:],check=True,env=dict(os.environ,UBSAN_OPTIONS='halt_on_error=1'))
+
+ with tempfile.TemporaryDirectory(prefix='adls-panel-mode-fault-') as d:
+  p=Path(d);before='port+0x550)>1';assert before in code
+  (p/'fault.cpp').write_text(code.replace(before,'port+0x550)!=1'))
+  subprocess.run(['clang++','-arch','x86_64','-std=c++17','-O1','-I'+str(r/'WhateverXe'),str(p/'fault.cpp'),'-o',str(p/'fault')],check=True)
+  result=subprocess.run([str(p/'fault')],capture_output=True,text=True)
+  assert result.returncode!=0 and 'Assertion failed:' in result.stderr
+  print('PASS rejected semantic fault: initial panel mode requires later native publication')

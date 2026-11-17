@@ -424,7 +424,7 @@ template<class IO> Readout inspect(IO &io,const void *controller,size_t controll
         const bool source=dsi ? !(io.read(0x60400)&(1U<<31)) && (XELPGeometry::timing(geometry,dsi->htotal,dsi->vtotal) ||
             (clippedCanvas() && geometry.width<=(dsi->htotal&0x3fff)+1 && geometry.height<=(dsi->vtotal&0x3fff)+1)) :
             (dpt&(1U<<30)) && ((trans>>27)&15)==expectedDDI+1 &&
-            (dp ? ((trans>>24)&7)==2 : ((trans>>24)&7)<=1) && !((trans>>20)&7);
+            (dp ? ((trans>>24)&7)==2 : ((trans>>24)&7)<=1) && XELPGeometry::rgbLinkDepth(trans);
         if (dpt==UINT32_MAX || !source || !(trans&(1U<<31)) || (conf&0xC0000000)!=0xC0000000 ||
             !geometry.valid ||
             position || offset || (r.surface&4095) ||

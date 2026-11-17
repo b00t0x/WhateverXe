@@ -4,6 +4,10 @@
 #define KERN_XELP_GEOMETRY_HPP
 #include <stdint.h>
 namespace XELPGeometry {
+// Linux v6.12 TRANS_DDI_BPC encodes 8/10/6/12 bpc as 0/1/2/3.
+// Link depth is independent of the four-byte RGB plane. Bootstrap preserves
+// that firmware link; changing the plane's addressing does not change BPC.
+inline bool rgbLinkDepth(uint32_t trans) {return ((trans>>20)&7)<=3;}
 struct Linear {uint32_t width {},height {},pitch {};uint64_t bytes {};bool valid {};};
 inline Linear linear(uint32_t control,uint32_t stride,uint32_t size,uint32_t position,uint32_t offset) {
     Linear r;

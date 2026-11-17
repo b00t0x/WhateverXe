@@ -15,6 +15,10 @@ code=r'''
 #include "kern_xelp_platform.hpp"
 #include "kern_vbt.hpp"
 #include "kern_dsi_math.hpp"
+#include "kern_display13_firmware.hpp"
+#include "kern_display13_panel.hpp"
+#include "kern_alderlake_s.hpp"
+#include "firmware_panel_fixture.hpp"
 bool auditEnabled=false;
 bool checkKernelArgument(const char *arg){assert(!strcmp(arg,"-wex-dsi-audit"));return auditEnabled;}
 #define OSDynamicCast(type,ptr) (ptr)
@@ -24,11 +28,14 @@ struct OSData {
  static OSData *withBytes(const void *p,unsigned n){auto d=new OSData;d->bytes.assign((const uint8_t*)p,(const uint8_t*)p+n);return d;}
  void release(){delete this;}const void *getBytesNoCopy(){return bytes.data();}unsigned getLength(){return bytes.size();}
 };
-std::vector<uint8_t> opregion(8192);bool mapAvailable=true;
+std::vector<uint8_t> opregion(8192),externalVBT;bool mapAvailable=true;
 struct IOMemoryDescriptor {
- struct Map {uintptr_t getVirtualAddress(){return reinterpret_cast<uintptr_t>(opregion.data());}unsigned getLength(){return opregion.size();}void release(){delete this;}};
- static IOMemoryDescriptor *withPhysicalAddress(uint64_t address,unsigned bytes,unsigned){assert(address==0x100000 && bytes==8192);return new IOMemoryDescriptor;}
- Map *map(unsigned){return mapAvailable?new Map:nullptr;}void release(){delete this;}
+ std::vector<uint8_t> *storage;
+ struct Map {std::vector<uint8_t> *storage;uintptr_t getVirtualAddress(){return reinterpret_cast<uintptr_t>(storage->data());}unsigned getLength(){return storage->size();}void release(){delete this;}};
+ static IOMemoryDescriptor *withPhysicalAddress(uint64_t address,unsigned bytes,unsigned){
+  assert((address==0x100000 && bytes==8192)||(address==0x200000 && bytes==externalVBT.size()));
+  return new IOMemoryDescriptor{address==0x100000?&opregion:&externalVBT};}
+ Map *map(unsigned){return mapAvailable?new Map{storage}:nullptr;}void release(){delete this;}
 };
 struct IOPCIDevice {unsigned reads=0,publications=0;uint32_t asls=0;uint64_t id=1;
  uint32_t configRead32(unsigned off){assert(off==0xfc);++reads;return asls;}
@@ -86,8 +93,37 @@ void snapshotLifetime(){
   x.xelpReadFirmware(&pci);assert(!x.firmwarePorts.valid() && pci.reads==2);
  }
 }
+// Production capture -> owner cache -> wiring/PPS/PWM consumers. MMIO is
+// modeled; these checks do not establish that a firmware provides mailbox 5.
+void automaticPanel(){
+ for(unsigned id:{0x9a498086U,0x46808086U,0xa7808086U,0x46a68086U,0xa7a88086U,0x46d18086U})for(bool external:{false,true})for(bool pointers:{false,true}) {
+  PanelFixture::Input f(pointers,true);opregion=f.op;externalVBT=f.vbt;
+  if(external){opregion[23]=2;PanelFixture::w32(opregion,0x58,0x14);PanelFixture::w32(opregion,0x3ba,0x200000);PanelFixture::w32(opregion,0x3c2,externalVBT.size());memset(opregion.data()+0x400,0,externalVBT.size());}
+  XE x;IOPCIDevice pci;pci.asls=0x100000;x.xeProfile=XELP::identify(id,12);
+  x.xelpReadFirmware(&pci);assert(x.firmwarePorts.panel.type==9 && x.firmwarePorts.panel.valid);
+  // Reclaim both source mappings before consuming the copied facts.
+  opregion.assign(8192,0);externalVBT.clear();pci.asls=0;x.xelpReadFirmware(&pci);
+  const auto &v=x.firmwarePorts;assert(pci.reads==1);
+  const auto adapter=XELP::displayAdapter(x.xeProfile.family);
+  if(adapter==XELP::DisplayAdapter::TGL) {
+   assert(v.hdmi(3).hdmi==2 && XELP::PanelPower::nativePPS0(v,x.xeProfile.family));
+   assert(TGLComboDP::fromFirmware(v,2)==0); // internal eDP retains the native panel route
+  } else if(adapter==XELP::DisplayAdapter::ADLS) {
+   const auto wiring=AlderLakeS::Wiring::fromFirmware(v);assert(wiring.panel==1 && wiring.hdmi==8); // ADL-S DVO HDMI-B is TC1, not Combo-B
+  } else {
+   const auto wiring=XELP::VBT::display13Fixed(v,0x7b,x.xeProfile.family);
+   assert(wiring.panel==1 && wiring.hdmi==2);
+  }
+  const uint32_t native[5]={};auto timing=XELP::PanelPower::select(v.panel,native,0,0,0);
+  assert(timing.valid && timing.fields[0]==911 && timing.fields[2]==910 && timing.fields[4]==2);
+  struct IO {uint32_t read(uint32_t r){return r==0xc2014?256:0;}} io;
+  Display13Panel::State panel;assert(panel.capture(io,v.panel) && panel.pwm.period==114833);
+  uint32_t duty=0;assert(panel.pwm.duty(32768,duty) && duty==57417);
+  IOPCIDevice foreign;foreign.id=2;x.xelpReadFirmware(&foreign);assert(!x.firmwarePorts.panel.valid);
+ }
+}
 int main(int argc,char **argv){
- snapshotLifetime();
+ snapshotLifetime();automaticPanel();
 
  for(unsigned kind=0;kind<5;++kind){XE x;IOPCIDevice pci;
   x.xeProfile=kind==0?XELP::identify(0x46a68086,12,0x9a498086):kind==1?XELP::identify(0x46a68086,12):kind==2?XELP::identify(0x9a498086,1):kind==3?XELP::identify(0x46d18086,0):XELP::identify(0x4c8a8086,0);
@@ -111,13 +147,14 @@ int main(int argc,char **argv){
 '''.replace('BODY',body)
 with tempfile.TemporaryDirectory(prefix='firmware-readout-') as d:
  p=Path(d);(p/'test.cpp').write_text(code)
- subprocess.run(['clang++','-std=c++17','-O1','-fsanitize=address,undefined','-I'+str(r/'WhateverXe'),str(p/'test.cpp'),'-o',str(p/'test')],check=True)
+ subprocess.run(['clang++','-std=c++17','-O1','-fsanitize=address,undefined','-I'+str(r/'WhateverXe'),'-I'+str(r/'tests'),str(p/'test.cpp'),'-o',str(p/'test')],check=True)
  subprocess.run([str(p/'test'),*sys.argv[1:]],check=True)
  for name,before,after in [('lost-snapshot','if(owner && firmwareOwnerID==owner','if(false && firmwareOwnerID==owner'),
-                           ('foreign-owner','firmwareOwnerID==owner','true')]:
+                           ('foreign-owner','firmwareOwnerID==owner','true'),
+                           ('lost-edid','profile.family,identity','profile.family,nullptr')]:
   assert before in code
   (p/'fault.cpp').write_text(code.replace(before,after,1))
-  subprocess.run(['clang++','-std=c++17','-O1','-I'+str(r/'WhateverXe'),str(p/'fault.cpp'),'-o',str(p/'fault')],check=True)
+  subprocess.run(['clang++','-std=c++17','-O1','-I'+str(r/'WhateverXe'),'-I'+str(r/'tests'),str(p/'fault.cpp'),'-o',str(p/'fault')],check=True)
   result=subprocess.run([str(p/'fault')],capture_output=True,text=True)
   assert result.returncode!=0 and 'Assertion failed:' in result.stderr,(name,result.returncode,result.stderr)
   print('PASS rejected semantic fault:',name)

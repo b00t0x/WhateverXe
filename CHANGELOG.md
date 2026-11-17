@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.3
+
+### Added
+
+- Add experimental VESA AUX brightness control for internal eDP on Alder Lake and Raptor Lake. Hardware validation on internal panels is pending.
+
+### Fixed
+
+- Improve experimental internal eDP support on Alder Lake and Raptor Lake at startup and after display sleep.
+- Fix a GPU recovery failure that could stall a normal restart after a graphics hang.
+
 ## 0.8.2
 
 Update WhateverXe and [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) together.
