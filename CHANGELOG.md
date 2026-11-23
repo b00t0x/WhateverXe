@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fix an issue that could leave Metal and hardware video acceleration unavailable on some Tiger Lake, Alder Lake, and Raptor Lake laptops even when the internal display worked.
+- Fix an issue on some laptops where the internal display worked but Metal and hardware video acceleration were unavailable.
 - Fix a framebuffer allocation failure that could leave the display blank at startup when the image ends partway through a memory page, as on some 2880×1800 panels.
 - Fix display startup on supported Alder Lake and Raptor Lake systems where an unused USB-C display port could block the boot display.
 - Fix an eDP handoff failure where the panel could keep display stream compression enabled when switching to an uncompressed link.
