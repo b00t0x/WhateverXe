@@ -2,6 +2,8 @@
 
 ## 0.8.4
 
+Update WhateverXe and [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) together.
+
 ### Fixed
 
 - Fix an issue on some laptops where the internal display worked but Metal and hardware video acceleration were unavailable.
