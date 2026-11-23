@@ -94,6 +94,10 @@ private:
     static bool rejectADLPStart(IOService *,IOService *);
  XELP::DisplayContract::Mask display12Available() const;
  XELP::DisplayContract::Mask display13Available() const;
+ bool display13PortReady(unsigned ddi,bool boot=false) const;
+ bool display13HPDAllowed(void *controller,unsigned ddi) const;
+ static void wrapDisplay13Hotplug(void *controller,unsigned ddi,unsigned mode);
+ static void wrapDisplay13ShortPulse(void *controller,unsigned ddi,unsigned mode);
 	// Do not inline either helper into the small kext-load dispatcher.
 	__attribute__((noinline)) bool processAlderLakeNLoadOnly(KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size);
 	__attribute__((noinline)) bool processAlderLakeNRejectedAccelerator(KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size);
@@ -117,6 +121,7 @@ private:
     bool display12SmallGTDetected {},display12SmallGTReady {};
     bool tglGT2Detected {},tglGT2Ready {};
     XELP::GTResources tglGT2Resources;
+    bool mobilePrimaryVCS2 {};
     bool adlsDisplaySelected {},adlsDisplayHooksReady {};
     bool adlsPortInitReady {},tglHPDHookReady {};
     bool adlsPLLTableReady {},adlsClockReady {},adlsPowerReady {},adlsPanelPWMReady {};
@@ -217,6 +222,7 @@ private:
  mach_vm_address_t orgDisplay13TrainingPattern {},orgDisplay13SignalLevels {};
  mach_vm_address_t orgDisplay13EnablePort {},orgDisplay13DisablePort {};
  static bool display13MainLinkAUX(void *port,bool acquire,bool stopping=false);
+ static bool display13BootPanelDSCOff(void *port,unsigned ddi);
  static uint32_t wrapDisplay13EnablePort(void *port);
  static uint32_t wrapDisplay13DisablePort(void *port);
  bool processDisplay13FramebufferSST(KernelPatcher &,size_t,mach_vm_address_t,size_t);
@@ -236,11 +242,16 @@ private:
  static uint32_t wrapDisplay13TrainingPattern(void *path,uint32_t pattern);
  static uint32_t wrapDisplay13SignalLevels(void *port,uint32_t swing,uint32_t emphasis,void *overrideConfig);
 	mach_vm_address_t xelpProviderProbe {},xelpProviderConfigureProbe {};
- bool display13DPAltProbeReady {},display13DPProbeReady {},display13TCProbeReady {},display13TCDPProbeReady {},display13FBDPHooksReady {};
+ bool display13DPAltProbeReady {},display13DPProbeReady {},display13TCProbeReady {},display13TCDPProbeReady {};
  bool adlpDisplaySelected {};
  bool adlpRenderRequested {};
  Display13OutputWiring display13BoardWiring(IOService *);
+ unsigned display13PreparedDDI {UINT32_MAX};
  bool prepareDisplay13BootScanout(IOPCIDevice *);
+ mach_vm_address_t orgBootModeCompare {}, bootModeCaller {}, orgBootResourceInit {};
+ static bool wrapBootModeCompare(void *,void *,void *,void *,const void *,void *);
+ static bool selectBootMode(void *,void *,void *,void *,const void *,void *);
+ static void *wrapBootResourceInit(void *,uint32_t,void *);
     bool xelpBindProbe(void *controller);
 	bool display13FBTopologyHooksReady {false};
     bool display13DSIModeHooksReady {};
@@ -345,6 +356,7 @@ private:
 	uint64_t adlnPlatform[0x1C0/8] {};
 	IOService *adlnTopologyController {};
 	mach_vm_address_t orgAlderLakeNGetOSInformation {},orgAlderLakeNPortState {};
+ mach_vm_address_t orgDisplay13Hotplug {},orgDisplay13ShortPulse {};
 	bool display13FBMemoryHooksReady {false};
 	bool display13FBGTTHooksReady {false};
 	mach_vm_address_t orgDisplay13FBMemoryInit {};
@@ -376,7 +388,7 @@ private:
 	mach_vm_address_t adlnScanoutDisableFB {};
 	mach_vm_address_t orgAlderLakeNSetupWorkLoop {};
 	__attribute__((noinline)) bool processDisplay13FramebufferOutput(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size);
-    bool display13FBTCHooksReady {};
+    bool display13FBTCHooksReady {},display13SharedModePatchFaulted {};
     mach_vm_address_t orgDisplay13TCMode {},display13TCBaseMode {},orgDisplay13TCEnableClocks {},orgDisplay13TCDisableClocks {};
     mach_vm_address_t orgDisplay13TCLightUp {},orgDisplay13TCSetMode {},display13TCNotify {};
     mach_vm_address_t display13TCFullClocks {},display13TCPlane {},display13TCScaler {},display13TCPipe {},display13TCPackets {};

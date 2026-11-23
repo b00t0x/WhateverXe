@@ -30,7 +30,7 @@ void check(unsigned id,unsigned rev,unsigned dss,unsigned banks,unsigned media,u
  uint32_t fuses[]={1,dss,eu,banks,media};
  assert(xeProfile.admitted() && XELP::tigerLakeGT2Device(xeProfile.identity));
  bool tglGT2Detected=true;XELP::GTResources tglGT2Resources;
- assert(XELP::decodeTGLGT2(fuses,tglGT2Resources));
+ assert(XELP::decodeMobileGT(fuses,tglGT2Resources));
  bool adlnDetected=false;unsigned adlnNativeSubslices=0,adlnL3Banks=0;
  BODY
  assert(urbReplacement==urbReplaceAlderLakeN);
@@ -58,19 +58,19 @@ int main() {
   uint32_t edram=0;bool display12SmallGTDetected=false,display12SmallGTReady=false,tglGT2Detected=true,tglGT2Ready=false;
   XELP::GTResources display12SmallGT,tglGT2Resources;
   QUALIFICATION
-  assert(tglGT2Ready==((status==AlderLakeN::GTStatus::Complete || status==AlderLakeN::GTStatus::ProfileMismatch) && mask==3 && release==3 && failed==0));
+  assert(tglGT2Ready==(status==AlderLakeN::GTStatus::Complete && mask==3 && release==3 && failed==0));
  }
  for(auto id:{0x9a40U,0x9a49U,0x9a78U,0x9a59U,0x9ac0U,0x9ac9U,0x9ad9U,0x9af8U})
- for(auto rev:{0U,1U,2U,3U,4U,255U})for(auto video:{0xe00feU,0xe00faU}) {
+ for(auto rev:{0U,1U,2U,3U,4U,255U})for(auto video:{0xe00feU,0xe00fbU,0xe00faU}) {
   for(const auto &input:ResourceCases::positive)
    check(id,rev,input.fuses[1],input.fuses[3],video,input.fuses[2],input.dss,input.banks);
  }
  XELP::GTResources resource;
- assert(!XELP::decodeTGLGT2(nullptr,resource));
- ResourceCases::check(XELP::decodeTGLGT2);
+ assert(!XELP::decodeMobileGT(nullptr,resource));
+ ResourceCases::check(XELP::decodeMobileGT);
  uint32_t captured[]={1,0x1f,0,0x88,0xe00fa};
- assert(XELP::decodeTGLGT2(captured,resource) && resource.eus==80 && resource.l3Banks==6);
- for(unsigned i=0;i<5;++i){uint32_t f[]={1,63,0,0,0xe00fa};f[i]=~0U;assert(!XELP::decodeTGLGT2(f,resource));}
+ assert(XELP::decodeMobileGT(captured,resource) && resource.eus==80 && resource.l3Banks==6);
+ for(unsigned i=0;i<5;++i){uint32_t f[]={1,63,0,0,0xe00fa};f[i]=~0U;assert(!XELP::decodeMobileGT(f,resource));}
  puts("PASS all eight TGL GT2 IDs, independent resource populations and native URB stores");
 }'''.replace('BODY',body).replace('QUALIFICATION',qualification)
 with tempfile.TemporaryDirectory(prefix='small-gt-urb-') as tmp:

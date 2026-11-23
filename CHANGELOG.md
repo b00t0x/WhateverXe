@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.4
+
+Update WhateverXe and [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) together.
+
+### Fixed
+
+- Fix an issue on some laptops where the internal display worked but Metal and hardware video acceleration were unavailable.
+- Fix a framebuffer allocation failure that could leave the display blank at startup when the image ends partway through a memory page, as on some 2880×1800 panels.
+- Fix display startup on supported Alder Lake and Raptor Lake systems where an unused USB-C display port could block the boot display.
+- Fix an eDP handoff failure where the panel could keep display stream compression enabled when switching to an uncompressed link.
+- Prevent a kernel panic when the driver cannot identify a video engine interrupt in time.
+
 ## 0.8.3
 
 ### Added

@@ -30,7 +30,8 @@ namespace Display13DBUF {
 struct Pipe {IOService *memoryFramebuffer{};uintptr_t publishedScanout{};bool destroyingPath{};
  int powerPath{},memory{},scanout{};uint64_t watermarkClockHz{};unsigned wmPending{};};
 struct Power {int *lock{};IOService *controller{};void *map{};bool memoryFaulted{};
- struct Bridge {unsigned forgotten{};void forgetBootPath(uintptr_t){++forgotten;}}bridge;
+ void *firmwareLink{}; Display13FBMemory::Readout firmwarePlane;
+ struct Bridge {unsigned forgotten{};bool forgetBootPath(uintptr_t){++forgotten;return true;}}bridge;
  Pipe pipe[3];Display13DBUF::State dbuf;}display13FBPower;
 struct {struct Slot{IOService *framebuffer{};void *buffer{};}slot[3];}display13FBSysMem;
 struct {unsigned admittedPipes{};}display13FBIRQ;
@@ -106,6 +107,7 @@ void setup(uintptr_t native){
  put(fb,0x4288,uint8_t(0xff));put(fb,0x4348,backing);
  put(path,0x32b0,frame);put(path,0x3648,static_cast<void*>(peer));put(path,0x3644,2U);
  display13FBPower={};auto &c=display13FBPower;c.lock=&ownerMutex;c.controller=reinterpret_cast<IOService*>(ctl);
+ c.firmwareLink=peer;c.firmwarePlane.status=Display13FBMemory::Status::Complete;
  c.pipe[0].memoryFramebuffer=reinterpret_cast<IOService*>(fb);c.pipe[0].memoryFramebuffer->retain();c.pipe[0].publishedScanout=backing;
  c.pipe[1].memoryFramebuffer=reinterpret_cast<IOService*>(peer);c.pipe[1].publishedScanout=0x5678000;c.pipe[1].wmPending=7;
  display13FBSysMem={};display13FBIRQ.admittedPipes=3;
@@ -142,6 +144,7 @@ int main(int argc,char**argv){
    if(failure<=2)assert(Display13FBMemory::field<uintptr_t>(fb,0x4348)==backing&&!pathCalls);
    if(failure==3)assert(!Display13FBMemory::field<uintptr_t>(fb,0x4348)&&!pathCalls); // partial backing release
   }else{
+   assert(!display13FBPower.firmwareLink && display13FBPower.firmwarePlane.status==Display13FBMemory::Status::Unavailable);
    assert(postCalls==4&&pathCalls==1&&!Display13FBMemory::field<unsigned>(fb,0x49e8));
    assert(!display13FBPower.pipe[0].memoryFramebuffer&&!(display13FBIRQ.admittedPipes&1));
    assert(XE::wrapDisplay13AllocateResources(fb)&&allocCalls==1);

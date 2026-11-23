@@ -183,7 +183,7 @@ int main() {
         if(failure==2)p.failReleaseGT=true;
         if(failure==3)p.regs[0x913C]=UINT32_MAX;
         if(failure==4)p.regs[0x9140]=0xe00ff;
-        auto a=AlderLakeN::readGT(p,true,nullptr,XELP::decodeADLPGT);
+        auto a=AlderLakeN::readGT(p,true,nullptr,XELP::decodeMobileGT);
         using S=AlderLakeN::GTStatus;
         const S expected[]={S::Complete,S::AckTimeout,S::ReleaseFailed,S::Unavailable,S::ProfileMismatch};
         assert(a.status==expected[failure]);

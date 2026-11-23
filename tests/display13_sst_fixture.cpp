@@ -32,6 +32,7 @@ struct Map {
  }
 };
 struct Context {
+ OSObject *firmwareLink=nullptr;
  Display13Power::NativeBridge bridge;void *lock=reinterpret_cast<void *>(1),*controller=nullptr,*access=nullptr;
  Display13Power::MainLinkAUX mainLink[2];alignas(void *) uint8_t powerBytes[0x80]{};void *power=powerBytes;
  Map *map=nullptr;bool panelFaulted=false,clockFaulted=false,memoryFaulted=false,clockStopped=false;

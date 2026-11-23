@@ -11,8 +11,8 @@ from pathlib import Path
 root=Path(__file__).resolve().parents[1]
 source=(root/'WhateverXe/kern_xe.cpp').read_text()
 selector=re.search(r'void XE::selectProfile\(.*?\n\}',source,re.S)[0]
-qualification=source.split('            const bool readoutReady=')[1].split('            if(tglGT2Detected)')[0]
-qualification='const bool readoutReady='+qualification
+qualification=source.split('            const bool readoutReady=')[1].split('                physicalGPU->setProperty("TGLGT2Qualified"',1)[0]
+qualification='const bool readoutReady='+qualification+'}'
 probe=re.search(r'IOService \*XE::wrapTGLAcceleratorProbe\(.*?\n\}',source,re.S)[0]
 start=re.search(r'bool XE::wrapTGLAcceleratorStart\(.*?\n\}',source,re.S)[0]
 start_guard=start.split('{',1)[1].split(' if (callbackXE->adlnDetected')[0]
@@ -24,7 +24,7 @@ resources=re.search(r'const bool resourcesReady=.*?;',source,re.S)
 prerequisites = """adlnObserved auxAlignOK blitInitOK ccsPSReady ccsReady
 completionCacheOK contextCacheOK copyOK cpsOK dmaWriteOK ffModeOK flushOK
 ggttOK gucOK hangOK hizReady hostOK iosCCSOK observed ok recoveryOK scratchOK
-semaphoreTLBOK skuReady surfaceABIReady tglMMIOUCReady tlbPreparserOK urbReady""".split()
+semaphoreTLBOK skuReady surfaceABIReady tglMMIOUCReady tlbPreparserOK urbReady videoRoutingReady""".split()
 code=r'''
 #include "kern_xelp_gt_resources.hpp"
 #include "kern_alderlake_n.hpp"
@@ -53,6 +53,7 @@ IOService *nativeProbe(IOService *that,IOService*,SInt32*){++nativeCalls;return 
 struct XE {
  static XE *callbackXE;
  bool tglGT2Detected=false,tglGT2Ready=false,display12SmallGTDetected=false,display12SmallGTReady=false;
+ bool mobilePrimaryVCS2=false;
  bool adlsDisplaySelected=false,adlsDisplayHooksReady=true,adlsBootConsumersFailed=false;
  bool adlnDetected=false,tglAcceleratorRequested=true,tglAcceleratorReady=false;
  XELP::GTResources tglGT2Resources,display12SmallGT;
@@ -73,13 +74,14 @@ struct XE {
 XE *XE::callbackXE;
 SELECTOR
 PROBE
-struct Capacity {bool small;uint32_t fuses[5];unsigned dss,eus,banks;};
+struct Capacity {bool small;uint32_t fuses[5];unsigned dss,eus,banks;bool vcs2;};
 // The cache-disable mask is not derived from the EU count. Keep both TGL
 // 80-EU layouts, and independent donor-supported capacities as separate input.
 const Capacity inputs[]={
  {false,{1,0x1f,0,0x88,0xe00fa},5,80,6},
  {false,{1,0x1f,0,0,0xe00fa},5,80,8},
  {false,{1,0x07,0,0xc0,0xe00fe},3,48,6},
+ {false,{1,0x07,0,0xc0,0xe00fb},3,48,6,true},
  {false,{1,0x3f,0,0,0xe00fa},6,96,8},
  {false,{1,0x3f,0xc0,0xf0,0xe00fa},6,72,4},
  {true,{1,0x03,0,0xf0,0xe00fa},2,32,4},
@@ -87,27 +89,31 @@ const Capacity inputs[]={
  {true,{1,0x01,0,0xf0,0xe00fa},1,16,4}
 };
 int main(){IOPCIDevice pci;IOService accelerator;SInt32 score=0;
- for(const auto &input:inputs)for(unsigned failure=0;failure<8;++failure){
+ for(const auto &input:inputs)for(unsigned failure=0;failure<9;++failure){
   XE xe;XE::callbackXE=&xe;
   xe.selectProfile(XELP::identify(((input.small?0x9a60U:0x9a49U)<<16)|0x8086,1));
   assert(xe.tglGT2Detected==!input.small && xe.display12SmallGTDetected==input.small);
-  AlderLakeN::GTReadout gt;gt.status=AlderLakeN::GTStatus::ProfileMismatch;
+  AlderLakeN::GTReadout gt;
   gt.requestedMask=gt.releasedMask=3;memcpy(gt.fuses,input.fuses,sizeof(gt.fuses));
+  if(failure==4)gt.fuses[0]=UINT32_MAX;
+  gt.status=!input.small && XELP::decodeMobileGT(gt.fuses,gt.resources) ?
+     AlderLakeN::GTStatus::Complete : AlderLakeN::GTStatus::ProfileMismatch;
   if(failure==1)gt.status=AlderLakeN::GTStatus::AckTimeout;
   if(failure==2)gt.releasedMask=1;
   if(failure==3)gt.releaseFailedMask=2;
-  if(failure==4)gt.fuses[0]=UINT32_MAX;
   xe.qualify(gt,failure==5?1U:0U);
   const bool capacityReady=failure==0 || failure>=6;
   const auto &capacity=input.small?xe.display12SmallGT:xe.tglGT2Resources;
   assert((input.small?xe.display12SmallGTReady:xe.tglGT2Ready)==capacityReady);
+  assert(xe.mobilePrimaryVCS2==(capacityReady && input.vcs2));
   if(capacityReady)assert(capacity.dss==input.dss && capacity.eus==input.eus &&
      capacity.nativeSubslices==2*input.dss && capacity.l3Banks==input.banks && capacity.urbKiB==64*input.banks);
   if(failure==6)xe.surfaceABIReady=false;
+  if(failure==8)xe.videoRoutingReady=false;
   selected=failure!=7;nativeCalls=0;xe.report();
   // Admission reporting must include pre-probe resource rejection. This
   // caught the misleading Ready=true report independently of decoder tests.
-  assert(xe.tglAcceleratorReady==(capacityReady && failure!=6));
+  assert(xe.tglAcceleratorReady==(capacityReady && failure!=6 && failure!=8));
   const auto result=XE::wrapTGLAcceleratorProbe(&accelerator,&pci,&score);
   assert((result==&accelerator)==(failure==0));
   assert(nativeCalls==(failure==0?1U:0U));

@@ -68,8 +68,8 @@ struct DisplayContract {
   PanelPWM=1ULL<<58,
   SST13=1ULL<<59,
   AUX13=1ULL<<60,
-  DPProbe13=1ULL<<61,
-  DPBoot13=1ULL<<62,
+  FixedDPProbe13=1ULL<<61,
+  DPAltBoot13=1ULL<<62,
   DonorRuntime=1ULL<<63,
  };
  Mask required {},available {};
@@ -106,10 +106,21 @@ struct DisplayContract {
   return {PlatformADLS|(dp?Training12|Combo12|Fixed12:0)|
    (panel?Combo12|PanelDepth|PanelTiming|PanelPWM|AUXParent|PowerGet|PowerPut:0),installed};
  }
- static constexpr Mask DP13=SST13|AUX13|DPProbe13|DPBoot13|Training12|Framing;
- static constexpr Mask Panel13=SST13|AUX13|Training12|Framing|PanelPower|PanelTranscoder|PanelDepth|PanelTiming|PanelPWM;
- static DisplayContract display13(Mask installed,bool dp=false,bool panel=false) {
-  return {Backend13|(dp?DP13:0)|(panel?Panel13:0),installed};
+ static constexpr Mask DP13=SST13|AUX13|Training12|Framing;
+ static constexpr Mask Panel13=DP13|PanelPower|PanelTranscoder|PanelDepth|PanelTiming|PanelPWM;
+ static DisplayContract display13(Mask installed) {return {Backend13,installed};}
+ enum class Port13 {TMDS,Panel,DSI,TCTMDS,FixedDP,DPAlt};
+ static DisplayContract display13Port(Mask installed,Port13 port,bool boot=false) {
+  Mask required=0;
+  switch(port) {
+   case Port13::TMDS:
+   case Port13::DSI: break; // DSI has its own explicit boot and runtime gates.
+   case Port13::Panel: required=Panel13;break;
+   case Port13::TCTMDS: required=TCNative|Mode;break;
+   case Port13::FixedDP: required=TCNative|Mode|FixedDPProbe13|DP13;break;
+   case Port13::DPAlt: required=TCNative|HPD|DP13|(boot?DPAltBoot13:0);break;
+  }
+  return {required,installed};
  }
  static const char *name(Mask bit) {
   switch(bit) {
@@ -175,8 +186,8 @@ struct DisplayContract {
    case PanelPWM:return "PanelPWM";
    case SST13:return "SST13";
    case AUX13:return "AUX13";
-   case DPProbe13:return "DPProbe13";
-   case DPBoot13:return "DPBoot13";
+   case FixedDPProbe13:return "FixedDPProbe13";
+   case DPAltBoot13:return "DPAltBoot13";
    default:return "Unknown";
   }
  }

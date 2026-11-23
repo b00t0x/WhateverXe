@@ -49,9 +49,13 @@ int main() {
  assert((adlsDP.required&C::Training12)==C::Training12);
  assert(!(adlsDP.required&(C::NativeFIA|C::AltFIA)));
  auto d13=C::display13(~0ULL);faults(d13);
- auto dp13=C::display13(~0ULL,true);faults(dp13);
- assert(dp13.required==(d13.required|C::DP13));
- assert(C::display13(C::Backend13|C::SST13|C::AUX13|C::DPProbe13,true).missing()==(C::DPBoot13|C::Training12|C::Framing));
+ using Port=C::Port13;
+ auto dp13=C::display13Port(~0ULL,Port::FixedDP);faults(dp13);
+ assert(dp13.required==(C::TCNative|C::Mode|C::FixedDPProbe13|C::SST13|C::AUX13|C::Training12|C::Framing));
+ assert(C::display13Port(~0ULL,Port::Panel).required==C::Panel13);
+ assert(C::display13Port(~0ULL,Port::TCTMDS).required==(C::TCNative|C::Mode));
+ assert(!(C::display13Port(~0ULL,Port::DPAlt).required&(C::Mode|C::FixedDPProbe13|C::DPAltBoot13)));
+ assert(C::display13Port(~C::DPAltBoot13,Port::DPAlt,true).missing()==C::DPAltBoot13);
  assert(d13.required==(C::DonorRuntime|C::Power13|C::Clock13|C::MemoryGroup13|C::IRQ13|C::WMLayout13|C::Output13|C::Topology13));
  printf("PASS %u route combinations, union composition and all single-operation failures/restores\n",cases);
 }

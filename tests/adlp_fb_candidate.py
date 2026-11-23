@@ -60,10 +60,10 @@ int main(){
  x.adlnOutputWiring=w;assert(x.xelpBindProbe((void*)1));
  assert(seen.valid() && !seen.combo && seen.comboBackend==3 && seen.legacy==0x18 && seen.legacyBackend==0x78);
  assert(seen.profile.family==XELP::Family::AlderLakeP && seen.profile.admitted());
- for(unsigned f=0;f<5;++f){XE bad=x;
-  if(f==0)bad.display13TCProbeReady=false;if(f==1)bad.display13FBTCHooksReady=false;
-  if(f==2)bad.display13FBTopologyHooksReady=false;if(f==3)bad.xelpProviderConfigureProbe=0;
-  if(f==4)bad.adlnTopologyController=(void*)2;
+ for(unsigned f=0;f<3;++f){XE bad=x;
+  if(f==0)bad.display13FBTopologyHooksReady=false;
+  if(f==1)bad.xelpProviderConfigureProbe=0;
+  if(f==2)bad.adlnTopologyController=(void*)2;
   const auto before=calls;assert(!bad.xelpBindProbe((void*)1) && calls==before);
  }
  OSData property;pci.property=&property;assert(!x.display13BoardWiring(&pci).described());pci.property=nullptr;
@@ -80,7 +80,6 @@ int main(){
   assert(Display13FBTopology::supportedWiring(dp.adlnOutputWiring,true) && dp.xelpBindProbe((void*)1));
   assert(seen.legacy==(1U<<ddi));
   assert(Display13FBTopology::bootDDI(dp.adlnOutputWiring,0x82000000|((ddi+1)<<27))==~0U); // DP GOP stays unqualified.
-  dp.display13TCDPProbeReady=false;const auto before=calls;assert(!dp.xelpBindProbe((void*)1) && calls==before);
   dp.firmwarePorts.port[ddi].aux=0x40;assert(!dp.display13BoardWiring(&pci).dp);
  }
  unsigned cases=0;
@@ -110,7 +109,7 @@ int main(){
  auto explicitW=adln.display13BoardWiring(&pci);assert(explicitW.described() && explicitW.hdmi==2);
  property.bytes=1;assert(!adln.display13BoardWiring(&pci).described());pci.property=nullptr;
  adln.xeProfile=XELP::identify(0x9A498086,1);assert(!adln.display13BoardWiring(&pci).described());
- puts("PASS production fixed-HDMI selection: all 63 Combo/TC subsets on ADL-N and ADL-P, firmware pins, boot DDI and capability/hook-gated provider binding");
+ puts("PASS production fixed-HDMI selection: all 63 Combo/TC subsets on ADL-N and ADL-P, firmware pins, boot DDI and owner-gated provider binding");
 }
 '''.replace('FUNCTIONS',f)
 with tempfile.TemporaryDirectory(prefix='adlp-fb-candidate-') as tmp:
