@@ -13,6 +13,7 @@ binding=fn('static TGLFBBinding::Readout adlnInspectPathBinding(')
 native=(r/'tests/tgl_fb_binding.cpp').read_text().split('int main()')[0].replace('port[0x580]','port[0x700]')
 code=(r/'tests/display13_sst_fixture.cpp').read_text().split('int main(')[0]
 code=code.replace('// NATIVE_OBJECTS',native).replace('// BINDING',binding)
+code=code.replace('struct Context {','struct Context { bool bootPanelDSCCheckPending=false;')
 lease=re.search(r'\tstruct TGLTrainingLease \{.*?\n\t\};',h,re.S).group()
 code=code.replace('struct XE {','''struct XE {
  LEASE
@@ -21,6 +22,7 @@ code=code.replace('struct XE {','''struct XE {
  unsigned trainingLeaseDP13Mask=0;IORecursiveLock *tglPathPoolLock=nullptr;
  uintptr_t orgDisplay13PortTraining=0,orgTGLPathLookup=0,tglPortByDDI=0,display13DPImage=0;
  static uint32_t wrapDisplay13PortTraining(void*,void*);
+ static bool display13BootPanelDSCOff(void*,unsigned){assert(false);return false;}
  static bool display13DeferClock(void*,uint64_t,uint32_t,uintptr_t);
 '''.replace('LEASE',lease))
 code=code.replace('static bool display13StopTranscoder(void*){assert(false);return false;}','static bool display13StopTranscoder(void*);')

@@ -37,6 +37,7 @@ uint32_t nativeMode(void*,void*,const void*){++modeCalls;return modeResult;}
 void nativeStop(IOService*,IOService*,OSObject*,uint8_t){++stopCalls;}
 void notify(void*,void*,uint32_t value){assert(value==1);++notifications;}
 struct XE {
+ bool display13FBTCHooksReady=true;
  struct Wiring{unsigned dsi=0;operator unsigned()const{return dsi;}}adlnOutputWiring;void *adlnPlatform=nullptr;
  uintptr_t orgDisplay13TCSetMode=reinterpret_cast<uintptr_t>(nativeMode),display13TCNotify=reinterpret_cast<uintptr_t>(notify);
  uintptr_t orgAlderLakeNDisableDisplay=reinterpret_cast<uintptr_t>(nativeStop);
@@ -78,7 +79,10 @@ int main(){
  modeResult=7;assert(XE::wrapDisplay13TCSetMode(&controller,&fb,nullptr)==7);assert(notifications==n+1);
  XE::wrapAlderLakeNDisableDisplay(&controller,&fb,&path,0);assert(stopCalls==d+1 && !c.memoryFaulted);
  // With DSI disabled no additional native-object interpretation is introduced.
- xe.adlnOutputWiring.dsi=0;panel=&fb;modeResult=0;
+ xe.adlnOutputWiring.dsi=0;panel=&fb;
+ xe.display13FBTCHooksReady=false;
+ assert(XE::wrapDisplay13TCSetMode(&controller,&fb,nullptr)==7 && notifications==n+1);
+ modeResult=0;
  assert(!XE::wrapDisplay13TCSetMode(nullptr,nullptr,nullptr));
  XE::wrapAlderLakeNDisableDisplay(nullptr,nullptr,nullptr,0);assert(stopCalls==d+2 && !c.memoryFaulted);
  puts("PASS production DSI mode/disable dispatch: no donor entry or notifications, fault retention, ambiguous object rejection, external return behavior");

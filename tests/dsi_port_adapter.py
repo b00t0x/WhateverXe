@@ -58,6 +58,7 @@ struct XE {
  uint32_t (*orgAlderLakeNPortState)(OSObject*)=nativeProbe;
  bool xelpBindProbe(void *){++providerCalls;return true;}
  static uint32_t setDSIPortMode(OSObject *,uint32_t);
+ bool display13PortReady(unsigned){return true;}
  static uint32_t wrapDisplay13ProbeMode(OSObject *);
  static uint32_t wrapAlderLakeNPortState(OSObject *);
 } xe,*callbackXE=&xe;

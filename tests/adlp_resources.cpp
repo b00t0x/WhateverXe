@@ -9,13 +9,19 @@ using namespace XELP;
 int main() {
     // Hardware captures: 46A6, six DSS, 96 EU, eight L3 banks, VCS0/2.
     uint32_t f[]={1,0x3f,0,0,0xe00fa};GTResources r;
-    assert(decodeADLPGT(f,r) && r.dss==6 && r.nativeSubslices==12 && r.eus==96 && r.l3Banks==8 && r.urbKiB==512);
+    assert(decodeMobileGT(f,r) && r.dss==6 && r.nativeSubslices==12 && r.eus==96 && r.l3Banks==8 && r.urbKiB==512);
     assert(!decodeSmallGT(f,r));
-    ResourceCases::check(decodeADLPGT);
-    assert(!decodeADLPGT(nullptr,r));
-    for(unsigned i=0;i<5;++i){auto save=f[i];f[i]=~0U;assert(!decodeADLPGT(f,r));f[i]=save;}
-    for(unsigned bad:{0U,2U,3U}){f[0]=bad;assert(!decodeADLPGT(f,r));}f[0]=1;
-    f[4]=0xfffff;assert(!decodeADLPGT(f,r));
+    // Same 4 DSS, 64 EU and 6 banks. Only the video fuse changes.
+    for (uint32_t video : {1U,4U,5U}) {
+        const uint32_t media[] {1,15,0,0xc0,0xe00ffU ^ video};
+        assert(decodeMobileGT(media,r) && r.dss==4 && r.eus==64 &&
+               r.nativeSubslices==8 && r.l3Banks==6 && r.urbKiB==384);
+    }
+    ResourceCases::check(decodeMobileGT);
+    assert(!decodeMobileGT(nullptr,r));
+    for(unsigned i=0;i<5;++i){auto save=f[i];f[i]=~0U;assert(!decodeMobileGT(f,r));f[i]=save;}
+    for(unsigned bad:{0U,2U,3U}){f[0]=bad;assert(!decodeMobileGT(f,r));}f[0]=1;
+    f[4]=0xfffff;assert(!decodeMobileGT(f,r));
     VBT::Ports ports;ports.status=VBT::Status::Valid;ports.present=0x3a;
     ports.port[1]={0x68c6,7,0,0x10,0xc0,0};
     ports.port[3]={0x60d2,13,3,0,0xc0,3};

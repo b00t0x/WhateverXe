@@ -29,6 +29,7 @@ struct Context {
  void *power=nullptr,*controller=nullptr;IOWorkLoop *workLoop=nullptr;Map *map=nullptr;
  Display13Power::NativeBridge bridge;Display13Transcoder::Bindings transcoders;
  bool clockFaulted=false,restorePending=false,engineEnabled=false,clockStopped=true;
+ void *firmwareLink=nullptr;Display13FBMemory::Readout firmwarePlane;
  uint32_t restoreEpoch=0,resumeClockHz=0;
  struct {unsigned restorePending=0,selected=1,mbus=0x3,owned=0;}dbuf;
  struct Mode {void notePowerLoss(){}}tcMode[4];bool tcSignalReady[4]{};unsigned tcDPLink[4]{};

@@ -60,3 +60,15 @@ if len(sys.argv)>1:
     for at,target in [(0x50979,0x1ba02),(0x50b0c,0x51f56),(0x5fb9b,0x1fea8)]:
         assert donor[at]==0xe8 and at+5+int.from_bytes(donor[at+1:at+5],'little',signed=True)==target
     print('PASS native DP mode-before-AUX, training signal/gating/enable slots and SDP/stagger caller ABI')
+
+    # The HPD callbacks can bypass probePortState. Verify their intended
+    # native entries and the first port-dependent effects of each callback.
+    for symbol,at in [
+        ('__ZN31AppleIntelFramebufferController23invokeShortPulseHandlerEjN14AppleIntelPort8PortModeE',0x746d4),
+        ('__ZN31AppleIntelFramebufferController20invokeHotplugHandlerEjN14AppleIntelPort8PortModeE',0x748d4)
+    ]:
+        assert symbols[symbol]==at and donor[at:at+13]==bytes.fromhex('554889e5415741564155415453')
+    for at,target in [(0x746f4,0x1b1ea),(0x74757,0x5bedc),(0x748fa,0x1b1ea),
+                      (0x7496b,0x1b368),(0x74ae7,0x1d8bc)]:
+        assert donor[at]==0xe8 and at+5+int.from_bytes(donor[at+1:at+5],'little',signed=True)==target
+    print('PASS native short and long HPD handlers have direct power, HPD and AUX callers')

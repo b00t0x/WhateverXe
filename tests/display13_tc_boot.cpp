@@ -1,4 +1,5 @@
 #include "kern_display13_boot.hpp"
+#include "kern_display13_handoff.hpp"
 #include "kern_display13_fb_memory.hpp"
 #include <map>
 #include <vector>
@@ -71,6 +72,21 @@ static void dpHandoff() {
         const auto tc=Display13TC::Boot::capture(io,true,ddi,0);
         const auto source=readDisplay(io,true);LinearPlan plan;
         assert(dpSource(source,0,ddi,&tc) && dpSourceUnchanged(io,source,0,ddi,0,&tc));
+        // The powered selector and PHY link rate must describe this TC, even
+        // if another port changes. A gated port cannot inherit the stream.
+        {
+            auto test=io;
+            const unsigned rates[]={162000,270000,540000,810000,216000,243000,324000,432000};
+            for(unsigned code=0;code<8;++code) {
+                test.regs[tc.port.buffer]=(tc.buffer&~(7U<<20))|(code<<20);
+                Display13Handoff::Stream stream;DisplayReadout scratch;
+                assert(Display13Handoff::stream(test,scratch,ddi,false,24000,stream));
+                assert(stream.symbolKHz==rates[code] && stream.lanes()==lanes);
+                test.regs[0x164280]=Display13TC::Clock::gateBit(ddi-3);
+                assert(!Display13Handoff::stream(test,scratch,ddi,false,24000,stream));
+                test.regs[0x164280]=0;
+            }
+        }
         // No unpowered TC register is pulled into the shared reader, and
         // no DP acceptance is obtained by omitting either source/TC proof.
         uint32_t ignored=0;assert(!value(source,tc.port.buffer,ignored));

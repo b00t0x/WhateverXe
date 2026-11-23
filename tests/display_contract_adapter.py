@@ -23,7 +23,7 @@ display13FBClockReadoutHooksReady display13FBClockSetHookReady display13FBMemory
 display13FBGTTHooksReady display13FBABIReady display13FBBootHandoffHookReady
 display13FBIRQReady display13FBWatermarkLayoutReady display13FBOutputHooksReady
 display13FBTopologyHooksReady display13FBSSTHooksReady display13FBAUXHooksReady
-display13DPProbeReady display13TrainingReady display13FramingReady
+display13TrainingReady display13FramingReady
  display13PanelPWMReady""".split()
 # Real callback invocation inside start, through to the immutable contract.
 begin=s.index(' // Evaluate firmware candidates, not only currently registered/live ports:')
@@ -37,7 +37,9 @@ using C=XELP::DisplayContract;
 struct State {
 FIELDS
  bool display13PanelPowerReady=false,display13PanelProbeReady=false;
- bool display13FBDPHooksReady=false,display13TCDPProbeReady=false,display13ClockOrderReady=true;
+ bool display13SharedModePatchFaulted=false;
+ bool display13FBTCHooksReady=false,display13TCProbeReady=true,display13DPAltProbeReady=true;
+ bool display13TCDPProbeReady=false,display13ClockOrderReady=true;
  struct Native {bool valid=true;bool complete()const{return valid;}}tglTCNativeFunctions;
  bool tglHDMIB=false,adlsDisplaySelected=false,tglTrainingLeaseRequested=true;
  struct {struct {bool valid=false;}panel;}firmwarePorts;
@@ -53,28 +55,36 @@ int main() {
  assert(s.start().missing()==C::DonorRuntime);
  assert(C::display13(s.display13Available()).missing()==C::DonorRuntime);
  s.framebufferDonorRuntimeReady=true;
- assert(C::display13(s.display13Available(),true).missing()==C::DPBoot13);
- s.display13DPProbeReady=false;
- assert(C::display13(s.display13Available()).ready()); // Existing provider/HDMI stays valid.
- assert(C::display13(s.display13Available(),true).missing()==(C::DPBoot13|C::DPProbe13));
- s.display13DPProbeReady=true;s.display13FBAUXHooksReady=false;
- assert(C::display13(s.display13Available(),true).missing()==(C::DPBoot13|C::AUX13));
+ using Port=C::Port13;
+ const auto route=[&](Port port){return C::display13Port(s.display13Available(),port);};
+ assert(C::display13(s.display13Available()).ready());
+ s.display13SharedModePatchFaulted=true;
+ assert(C::display13(s.display13Available()).missing()==C::Output13);
+ s.display13SharedModePatchFaulted=false;
+ assert(route(Port::TMDS).ready());
+ assert(route(Port::TCTMDS).missing()==C::TCNative);
+ assert(route(Port::FixedDP).missing()==(C::TCNative|C::FixedDPProbe13));
+ s.display13FBTCHooksReady=true;
+ assert(route(Port::DPAlt).ready());
+ s.display13DPAltProbeReady=false;
+ assert(route(Port::DPAlt).missing()==C::HPD && route(Port::TCTMDS).ready());
+ s.display13TCDPProbeReady=true;assert(route(Port::FixedDP).ready());
+ s.display13TCProbeReady=false;assert(route(Port::TCTMDS).missing()==C::Mode);
+ s.display13TCProbeReady=true;
+ s.display13FBAUXHooksReady=false;assert(route(Port::FixedDP).missing()==C::AUX13);
  s.display13FBAUXHooksReady=true;s.display13FBSSTHooksReady=false;
- assert(C::display13(s.display13Available(),true).missing()==(C::DPBoot13|C::SST13));
+ assert(route(Port::FixedDP).missing()==C::SST13);
  s.display13FBSSTHooksReady=true;
- s.display13FBDPHooksReady=true;assert(C::display13(s.display13Available(),true).missing()==C::DPBoot13);
- s.display13TCDPProbeReady=true;assert(C::display13(s.display13Available(),true).ready());
- s.display13TrainingReady=false;assert(C::display13(s.display13Available(),true).missing()==C::Training12);
+ s.display13TrainingReady=false;assert(route(Port::FixedDP).missing()==C::Training12);
  s.display13TrainingReady=true;s.display13ClockOrderReady=false;
- assert(C::display13(s.display13Available(),true).missing()==C::ClockOrder);
+ assert(route(Port::FixedDP).missing()==C::ClockOrder);
  s.display13ClockOrderReady=true;s.display13FramingReady=false;
- assert(C::display13(s.display13Available(),true).missing()==C::Framing);s.display13FramingReady=true;
- s.display13FBDPHooksReady=false;assert(C::display13(s.display13Available(),true).missing()==C::DPBoot13);
- // Panel admission requires the new provider capability and complete panel hooks.
- assert(C::display13(s.display13Available(),false,true).missing()==C::PanelPower);
- s.display13PanelPowerReady=true;assert(C::display13(s.display13Available(),false,true).missing()==C::PanelPower);
- s.display13PanelProbeReady=true;assert(C::display13(s.display13Available(),false,true).ready());
- s.display13PanelPWMReady=false;assert(C::display13(s.display13Available(),false,true).missing()==C::PanelPWM);
+ assert(route(Port::FixedDP).missing()==C::Framing);s.display13FramingReady=true;
+ s.display13FBTCHooksReady=false;
+ assert(route(Port::Panel).missing()==C::PanelPower);
+ s.display13PanelPowerReady=true;assert(route(Port::Panel).missing()==C::PanelPower);
+ s.display13PanelProbeReady=true;assert(route(Port::Panel).ready());
+ s.display13PanelPWMReady=false;assert(route(Port::Panel).missing()==C::PanelPWM);
  s.display13PanelPWMReady=true;s.display13PanelPowerReady=s.display13PanelProbeReady=false;
  // TGL: candidate not yet registered, native donor setup is complete.
  // Missing framing, AUX, mode lock or cleanup must fail before any hotplug.

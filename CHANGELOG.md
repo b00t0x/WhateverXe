@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.4
+
+### Fixed
+
+- Fix missing graphics acceleration and Metal on supported Tiger Lake and Alder Lake mobile GPUs whose only video engine is VCS2. Hardware video encoding and decoding now use that engine.
+- Fix a framebuffer allocation failure that could leave the display blank at startup when the image ends partway through a memory page, as on some 2880×1800 panels.
+- Fix display startup on supported Alder Lake and Raptor Lake systems where an unused USB-C display port could block the boot display.
+- Fix an eDP handoff failure where the panel could keep display stream compression enabled when switching to an uncompressed link.
+- Prevent a kernel panic when the driver cannot identify a video engine interrupt in time.
+
 ## 0.8.3
 
 ### Added

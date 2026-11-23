@@ -16,7 +16,7 @@ import test as runner
 
 class RunnerContract(unittest.TestCase):
     def args(self):
-        return argparse.Namespace(donor=None,accelerator=None,kernels={},host=[],hde_source=None,ccs_records=None,outer_source=None,linux_tables=None,pcode_donor=None)
+        return argparse.Namespace(donor=None,accelerator=None,ioaccel=None,kernels={},host=[],hde_source=None,ccs_records=None,outer_source=None,linux_tables=None,pcode_donor=None)
 
     def test_every_registered_script_exists_and_names_are_unique(self):
         jobs = runner.make_jobs(self.args(),ROOT,Path('unused'))
@@ -28,7 +28,7 @@ class RunnerContract(unittest.TestCase):
         # Every Python test has an explicit execution mode. These modules
         # are shared source/ABI helpers exercised by registered callers.
         scripts = {Path(c[1]).name for j in jobs for stage,c in j.steps if stage == 'script'}
-        helpers = {'production_source.py','pmap_kernel_contract.py','compat_test_support.py'}
+        helpers = {'production_source.py','pmap_kernel_contract.py','compat_test_support.py','native_macho.py','tgl_recovery_adapter.py'}
         self.assertEqual({p.name for p in (ROOT/'tests').glob('*.py')},scripts|helpers)
         native = next(j for j in jobs if j.name == 'tgl_gt2_urb_native')
         self.assertEqual(runner.missing_inputs(native,self.args()),['accelerator'])

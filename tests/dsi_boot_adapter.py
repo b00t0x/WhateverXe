@@ -69,6 +69,8 @@ struct XE {
  bool xelpMemoryMatches(IOPCIDevice *){return memoryOK;}
  void auditDSIBoot(IOPCIDevice *,volatile const uint8_t *,uint64_t,const AlderLakeN::DisplayReadout &,bool);
  bool prepareDSIFirmware(IOService *);
+ bool display13PortReady(unsigned,bool){assert(false);return false;}
+ unsigned display13PreparedDDI=UINT32_MAX;
  bool prepareDisplay13BootScanout(IOPCIDevice *);
 };
 FUNCTIONS

@@ -42,7 +42,7 @@ accelerator_resources display13_power_dispatch tgl_recovery test_runner_contract
 """.split()
 FAMILIES = {'BigSur':'bigsur', 'Monterey':'monterey', 'Ventura':'ventura',
             'Sonoma':'sonoma', 'Sequoia':'sequoia', 'Tahoe':'tahoe'}
-DONOR_TESTS = """tgl_aux_native tgl_boot_power tgl_disable_native display13_agdc display13_shutdown dsi_update_dispatch dsi_path_disposal
+DONOR_TESTS = """dsi_aperture_adapter display13_boot_handoff tgl_aux_native tgl_boot_power tgl_disable_native display13_agdc display13_shutdown dsi_update_dispatch dsi_path_disposal
 dsi_surface dsi_native_cache dsi_native_mode dsi_boot_probe dsi_port_adapter
 dsi_apple_adapter dsi_apple_timing_native adls_ddi_power_native display13_tc_preparation
 display13_retirement display13_port_wait framebuffer_training_registration
@@ -51,7 +51,7 @@ display13_tc_native display13_ddc tgl_power_fuses display13_aux display13_sst
 display13_combo_clock adls_panel_pwm display13_panel_runtime tgl_panel_timing
 tgl_agdc_port_status tgl_tc_native tgl_tc_mode tgl_mode_native tgl_panel_depth_route
 adls_donor adls_clock_native""".split()
-ACCELERATOR_TESTS = """tgl_ccs tgl_completion_cache tgl_cps_color_pipe tgl_ff_dop
+ACCELERATOR_TESTS = """xelp_video_irq adlp_video_route tgl_ccs tgl_completion_cache tgl_cps_color_pipe tgl_ff_dop
 tgl_ff_mode tgl_object_preemption tgl_object_selector tgl_render_flush
 dsi_backing_adapter dsi_backing_native tgl_rpcs_native small_gt_urb
 tgl_tlb_preparser tgl_semaphore_tlb tgl_iosurface_compression tgl_gt2_urb""".split()
@@ -98,13 +98,19 @@ def make_jobs(args, root, output):
         ('tgl_ccs_alignment',('accelerator','ccs_records'),[args.accelerator,args.ccs_records]),
         ('tgl_outer_flush',('accelerator',),[args.accelerator,args.outer_source or root/'WhateverXe/kern_xe.cpp']),
         ('tgl_dkl_signal',('donor','linux_tables'),[args.donor,'--linux-tables',args.linux_tables]),
+        ('display13_boot_resource',('donor','accelerator'),[args.donor,args.accelerator]),
         ('tgl_pcode_edram',('pcode_donor',),[args.pcode_donor,'--audit-copy',output/'tgl_pcode_edram_native/audit-copy'])]:
-        command = [sys.executable,str(root/'tests'/(name+'.py'))]+[str(v) for v in values if v is not None]
+        command = [sys.executable,str(root/'tests'/(('display13_boot_handoff' if name=='display13_boot_resource' else name)+'.py'))]+[str(v) for v in values if v is not None]
         jobs.append(Job(name+'_native','binary-check',[('script',command)],requirements))
     command = [sys.executable,str(root/'tests/xelp_forcewake_irq.py')]
     if args.accelerator:
         command += ['--donor',str(args.accelerator)]
     jobs.append(Job('xelp_forcewake_irq_native','binary-check',[('script',command)],('accelerator',)))
+    for name,requirements,values in [
+        ('tgl_reset_poll_native',('accelerator',),[args.accelerator]),
+        ('tgl_recovery_native',('accelerator','ioaccel'),[args.accelerator,args.ioaccel])]:
+        command=[sys.executable,str(root/'tests'/(name+'.py'))]+[str(v) for v in values if v is not None]
+        jobs.append(Job(name,'binary-check',[('script',command)],requirements))
     for family, prefix in FAMILIES.items():
         command = [sys.executable,str(root/'tests'/(prefix+'_pmap.py'))]
         if family in args.kernels:
@@ -152,6 +158,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--donor',type=Path)
     parser.add_argument('--accelerator',type=Path)
+    parser.add_argument('--ioaccel',type=Path,help='exact native IOAcceleratorFamily2 for recovery callback replay')
     parser.add_argument('--kernel',action='append',default=[],metavar='FAMILY=PATH')
     parser.add_argument('--host',action='append',type=Path,default=[])
     parser.add_argument('--hde-source',type=Path)
@@ -171,7 +178,7 @@ def main(argv=None):
         if not separator or family not in FAMILIES or family in args.kernels or not Path(path).is_file():
             parser.error('expected unique supported FAMILY=existing-kernel path')
         args.kernels[family] = Path(path).resolve()
-    for key in ['donor','accelerator','hde_source','ccs_records','outer_source','linux_tables','pcode_donor']:
+    for key in ['donor','accelerator','ioaccel','hde_source','ccs_records','outer_source','linux_tables','pcode_donor']:
         value = getattr(args,key)
         if value:
             if not value.is_file():parser.error('--'+key.replace('_','-')+' requires a file')
