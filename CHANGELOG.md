@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fix missing graphics acceleration and Metal on supported Tiger Lake and Alder Lake mobile GPUs whose only video engine is VCS2. Hardware video encoding and decoding now use that engine.
+- Fix missing graphics acceleration on some Tiger Lake and Alder Lake laptops where the internal display worked but Metal and hardware video encoding and decoding were unavailable.
 - Fix a framebuffer allocation failure that could leave the display blank at startup when the image ends partway through a memory page, as on some 2880×1800 panels.
 - Fix display startup on supported Alder Lake and Raptor Lake systems where an unused USB-C display port could block the boot display.
 - Fix an eDP handoff failure where the panel could keep display stream compression enabled when switching to an uncompressed link.
