@@ -6,6 +6,12 @@ firmware behavior or arbitrary kernel scheduling.
 The same contracts apply to WhateverXe, AppleIntelTGLCompat and their connection;
 separate source/bundle locations do not create a weaker quality boundary.
 
+Run `python3 tests/xe_data_access.py <expanded-graphics-pkg>` against a
+standard Graphics package expanded with `pkgutil --expand-full`. This follows
+the mandatory local dependencies of each OS's actual VA driver and exercises
+the production WebKit GPU access decision for their installed paths. The
+kernel signing queries are modeled. Safari playback requires a separate test.
+
 ## Maintaining test contracts
 
 `tgl_recovery` runs the production wrapper and helper against ABI-matched
