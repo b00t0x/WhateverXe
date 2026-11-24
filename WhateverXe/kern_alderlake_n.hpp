@@ -129,6 +129,19 @@ struct DisplayReadout {
     Register registers[160] {};
 };
 
+inline bool value(const DisplayReadout &r, uint32_t offset, uint32_t &out) {
+    if (r.count > sizeof(r.registers) / sizeof(r.registers[0])) return false;
+    for (uint32_t i=0; i<r.count; ++i)
+        if (r.registers[i].offset==offset) { out=r.registers[i].value; return out!=UINT32_MAX; }
+    return false;
+}
+
+// Display13 CMTG A enabled and active, with A as its secondary transcoder.
+// Based on the firmware handoff in jkbuha/WhateverXe-contrib (#185).
+inline bool cmtgSecondaryA(uint32_t ctl2, uint32_t cmtg) {
+    return ctl2 == (1U << 3) && cmtg == ((1U << 31) | (1U << 23));
+}
+
 // Read only. Check Display 13 PW_A/B/C before pipe-local registers; do not
 // access TGL FIA/TC/Dekel addresses or issue selector/power/MMIO writes.
 template<class IO> void readDisplay(IO &io, bool admitted, DisplayReadout &r) {
@@ -190,6 +203,22 @@ template<class IO> void readDisplay(IO &io, bool admitted, DisplayReadout &r) {
         // Display13 DSC/joiner belongs to the corresponding pipe well.
         add(0x78000 + 0x200 * pipe);add(0x78004 + 0x200 * pipe);
     }
+    // CMTG is clocked by the active port. Check the same power, clock
+    // and buffer on both sides of the optional read, while they are live.
+    uint32_t trans=0,ctl2=0,clock=0,buffer=0;
+    if(r.status==ReadoutStatus::Complete && r.activePipes==1 &&
+       value(r,0x60404,ctl2) && ctl2==8 && value(r,0x60400,trans) &&
+       (trans&0xff000000U)==0x8a000000U && value(r,0x46140,clock) &&
+       (clock>>28)==1 && value(r,0x64000,buffer) && (buffer&(1U<<31))) {
+        const auto stable=[&] {
+            return io.read(0x45404)==power && io.read(0x46140)==clock &&
+                io.read(0x64000)==buffer && io.read(0x60400)==trans && io.read(0x60404)==ctl2;
+        };
+        if(stable()) {
+            add(0x6fa88);
+            if(!stable())r.status=ReadoutStatus::PowerChanged;
+        } else r.status=ReadoutStatus::PowerChanged;
+    }
     const auto after = add(0x45404);
     if (r.status == ReadoutStatus::Complete && after != power)
         r.status = ReadoutStatus::PowerChanged;
@@ -200,13 +229,6 @@ template<class IO> DisplayReadout readDisplay(IO &io, bool admitted) {
     DisplayReadout r;
     readDisplay(io,admitted,r);
     return r;
-}
-
-inline bool value(const DisplayReadout &r, uint32_t offset, uint32_t &out) {
-    if (r.count > sizeof(r.registers) / sizeof(r.registers[0])) return false;
-    for (uint32_t i=0; i<r.count; ++i)
-        if (r.registers[i].offset==offset) { out=r.registers[i].value; return out!=UINT32_MAX; }
-    return false;
 }
 
 // Source-side certificate for an already-running, uncompressed external SST
@@ -232,6 +254,9 @@ inline bool dpSource(const DisplayReadout &boot,unsigned pipe,unsigned ddi,const
        !value(boot,0x78004+pipe*0x200,dss2) || !value(boot,0x60030+bank,dm) ||
        !value(boot,0x60034+bank,dn) || !value(boot,0x60040+bank,lm) ||
        !value(boot,0x60044+bank,ln))return false;
+    uint32_t cmtg=0;
+    const bool secondary=panel && pipe==0 && ddi==0 && boot.activePipes==1 &&
+        value(boot,0x6fa88,cmtg) && cmtgSecondaryA(ctl2,cmtg);
     const unsigned lanes=((trans>>1)&7)+1;
     // Linux v6.12 i915_reg.h: SST, normal training, scrambling, no FEC/MST,
     // port sync, HDCP, DSC or joined pipes. Enhanced framing may be on or off.
@@ -240,7 +265,7 @@ inline bool dpSource(const DisplayReadout &boot,unsigned pipe,unsigned ddi,const
     // preserve it and include it in the unchanged-source check, never clear it
     // on an enabled transcoder or infer an MST transport from that bit alone.
     return (trans&0xFF000000U)==(0x82000000U|((ddi+1)<<27)) && XELPGeometry::rgbLinkDepth(trans) &&
-        !(trans&((1U<<15)|(1U<<9))) && !ctl2 &&
+        !(trans&((1U<<15)|(1U<<9))) && (!ctl2 || secondary) &&
         (lanes==1 || lanes==2 || lanes==4) && ((buf>>1)&7)==lanes-1 &&
         (buf&(typeC && tc->ownershipOptional?0x80000080U:0x800000C0U))==
             (typeC && !tc->ownershipOptional?0x80000040U:0x80000000U) &&
@@ -275,6 +300,15 @@ template<class IO> bool dpSourceUnchanged(IO &io,const DisplayReadout &r,unsigne
         if(!io.readable(reg))return false;
         if(reg==Display13Power::AUX)expected|=addedAUXRequest;
         if(io.read(reg)!=expected)return false;
+    }
+    uint32_t cmtg=0;
+    if(value(r,0x6fa88,cmtg)) {
+        uint32_t power=0,clock=0,buffer=0;
+        if(!value(r,0x45404,power) || !value(r,0x46140,clock) || !value(r,0x64000,buffer))return false;
+        const auto stable=[&] {
+            return io.read(0x45404)==power && io.read(0x46140)==clock && io.read(0x64000)==buffer;
+        };
+        if(!io.readable(0x6fa88) || !stable() || io.read(0x6fa88)!=cmtg || !stable())return false;
     }
     return true;
 }

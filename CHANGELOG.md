@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.5
+
+Update WhateverXe to 0.8.5 and keep WhateverXe Graphics at 0.4.5.
+
+### Fixed
+
+- Fix an issue in WhateverXe 0.8.4 that prevented Safari from loading a library required for hardware video decoding with WhateverXe Graphics 0.4.5.
+- Fix a startup issue on some laptops where the internal display stayed black or graphics acceleration was unavailable after the firmware handed over the display.
+
 ## 0.8.4
 
 Update WhateverXe and [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) together.

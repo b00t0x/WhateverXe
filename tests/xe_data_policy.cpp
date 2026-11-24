@@ -31,12 +31,12 @@ int main() {
     const char *web = "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU";
     const char *metal = "/System/Library/Frameworks/Metal.framework/Versions/A/XPCServices/MTLCompilerService.xpc/Contents/MacOS/MTLCompilerService";
     const std::string va = "/Library/GPUBundles/AppleIntelTGLGraphicsVADriver.bundle/Contents/MacOS/";
-    for (auto name : {"AppleIntelTGLGraphicsVADriver", "TGLVA"}) {
+    for (auto name : {"AppleIntelTGLGraphicsVADriver", "TGLVA", "P"}) {
         assert(clientForFile((va+name).c_str(), true) == Client::WebKitGPU);
         assert(clientForFile(("/System/Volumes/Data"+va+name).c_str(), true) == Client::WebKitGPU);
         assert(clientForFile((va+name).c_str(), false) == Client::None);
     }
-    for (auto name : {"", "other", "TGLVA.old", "../Info.plist"})
+    for (auto name : {"", "other", "TGLVA.old", "p", "PP", "P.old", "../MacOS/P", "../Info.plist"})
         assert(clientForFile((va+name).c_str(), true) == Client::None);
     // Same signing identifier alone is not authority: both kernel trust and
     // current signature validity are required. Other Apple services are denied.

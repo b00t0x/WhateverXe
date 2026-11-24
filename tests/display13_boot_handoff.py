@@ -47,7 +47,7 @@ base=base.replace('struct OSObject {','std::map<const void *,unsigned> objectSiz
 base=base.replace('struct Context {','''struct Context {
  IOWorkLoop *workLoop=nullptr;AlderLakeN::DisplayReadout displayScratch;Display13FBMemory::Readout firmwarePlane;
  bool bootPanel=true;struct {unsigned refKHz=24000;}clock;
- bool bootPanelDSCCheckPending=false;
+ bool bootPanelDSCCheckPending=false,bootPanelCMTGSecondary=false;
  Display13Transcoder::Bindings transcoders;
  XELP::DSI::Readout bootDSI;
  struct {bool destroyingPath=false;IOService *memoryFramebuffer=nullptr;Display13FBMemory::Readout memory;} pipe[3];
@@ -321,6 +321,8 @@ void restartPanel(Fixture &f,Map &map,unsigned ddi) {
   map.regs[0x70008]=map.regs[0x60400]=map.regs[0x60540]=0;
   assert(!XE::wrapDisplay13DisablePort(f.port) && !objectRefs.count(f.port));
  }
+ // Qualify inherited CMTG at adoption, then vary each register independently.
+ map.regs[0x60404]=map.regs[0x6fa88]=0;
  // A previous owner may leave DSC or CMTG active even with the pipe off.
  for(auto reg:{0x60404U,0x6fa88U,0x78004U}) {
   map.regs[reg]=reg==0x60404?8:0x80000000U;
@@ -346,6 +348,23 @@ void restartPanel(Fixture &f,Map &map,unsigned ddi) {
   assert(XE::wrapDisplay13PortTraining(f.port,nullptr)==kIOReturnNotReady);
   assert(!dscWrites && !trains && c.bootPanelDSCCheckPending);
   downstream=false;
+ }
+ if(!ddi && fault==12) {
+  map.regs[0x60404]=8;map.regs[0x6fa88]=0x80800000;
+  // Even the qualified firmware pair cannot discharge an unknown sink
+  // or authorize training while the source DSC block is still active.
+  identityFailure=1;
+  assert(XE::wrapDisplay13PortTraining(f.port,nullptr)==kIOReturnNotReady);
+  identityFailure=0;
+  map.regs[0x78004]=0x80000000U;
+  assert(XE::wrapDisplay13PortTraining(f.port,nullptr)==kIOReturnNotReady);
+  map.regs[0x78004]=0;
+  assert(!dscWrites && !trains && c.bootPanelDSCCheckPending);
+  if(stoppedSink==Supported || stoppedSink==AlreadyOff) {
+   assert(XE::wrapDisplay13PortTraining(f.port,nullptr)==kIOReturnNotReady);
+   assert(!dscWrites && !trains && c.bootPanelDSCCheckPending);
+   map.regs[0x60404]=map.regs[0x6fa88]=0;
+  }
  }
  if(donor)nativePutDDI(f.port);
  const auto lightUp=[&] {
@@ -447,6 +466,9 @@ int main(int argc,char **argv){
   map.regs[0x45444]=1U<<(2*ddi);map.regs[0x42000]=0x8e380000;
   map.regs[0x60400]=0x82030006|((ddi+1)<<27);map.regs[0x70008]=0xc0000000;
   map.regs[0x64000+ddi*0x100]=0x80000006;map.regs[0x46140]=(ddi+1)<<28;
+  if(!ddi && fault==12) {
+   map.regs[0x60404]=8;map.regs[0x6fa88]=0x80800000;
+  }
   map.regs[0x60540]=0x80040300;map.regs[0x60030]=0x7e300000;
   map.regs[0x60034]=map.regs[0x60044]=0x800000;map.regs[0x60040]=0x400000;
   map.regs[0x46010]=0xcc000000;map.regs[0x164284]=(0x4000U<<10)|0x151;

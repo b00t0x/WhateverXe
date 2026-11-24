@@ -40,7 +40,7 @@ inline Client clientForFile(const char *path, bool executable) {
     constexpr const char va[] = "/Library/GPUBundles/AppleIntelTGLGraphicsVADriver.bundle/Contents/MacOS/";
     if (!strncmp(path, va, sizeof(va)-1)) {
         path += sizeof(va)-1;
-        return !strcmp(path, "AppleIntelTGLGraphicsVADriver") || !strcmp(path, "TGLVA") ?
+        return !strcmp(path, "AppleIntelTGLGraphicsVADriver") || !strcmp(path, "TGLVA") || !strcmp(path, "P") ?
             Client::WebKitGPU : Client::None;
     }
     constexpr const char metal[] = "/Library/GPUBundles/AppleIntelTGLGraphicsMTLDriver.bundle/Contents/MacOS/";

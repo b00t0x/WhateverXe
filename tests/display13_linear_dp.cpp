@@ -35,6 +35,22 @@ static IO firmware(unsigned pipe,unsigned ddi,unsigned lanes,bool enhanced,unsig
     return io;
 }
 int main() {
+    // The firmware drives one uncompressed internal panel with CMTG A secondary.
+    auto secondary=firmware(0,0,4,true);
+    secondary.regs[0x60404]=8; secondary.regs[0x6fa88]=0x80800000;
+    const auto secondaryBoot=readDisplay(secondary,true);
+    assert(dpSource(secondaryBoot,0,0,nullptr,true) && !dpSource(secondaryBoot,0,0,nullptr,false));
+    for(unsigned bit=0;bit<32;++bit) {
+        auto changed=secondary;
+        changed.regs[0x6fa88]^=1U<<bit;
+        assert(!dpSource(readDisplay(changed,true),0,0,nullptr,true));
+        assert(!dpSourceUnchanged(changed,secondaryBoot,0,0,0,nullptr,true));
+    }
+    auto preserved=reinitializeLinear(secondary,secondaryBoot,true,0,GOPProtocol::EDP);
+    assert(preserved.status==LinearStatus::Success && preserved.writes);
+    for(auto write:secondary.writes)
+        assert(write.offset!=0x60404 && write.offset!=0x6fa88);
+
     unsigned cases=0;
     for(unsigned pipe=0;pipe<3;++pipe)for(unsigned ddi=0;ddi<2;++ddi)for(unsigned lanes:{1U,2U,4U})
     for(unsigned depth:{0U,1U,2U,3U})for(bool enhanced:{false,true})for(unsigned width:{1280U,1920U,2560U,3840U}) {
