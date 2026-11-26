@@ -65,6 +65,7 @@ struct XE {
  static bool wrapTGLAllocatePathResources(void *, uint32_t, uint32_t);
 };
 XE obj, *callbackXE = &obj;
+void invalidateTGLBootPanels() {} // exercised by tgl_boot_depth
 struct {uint32_t enabled {},stopSeen {};} tglBootstrapAUX;
 // LEASE_FUNCTIONS
 

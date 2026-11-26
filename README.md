@@ -80,6 +80,7 @@ These settings are unnecessary at 96MB and do not increase firmware-allocated me
 
 ### Other settings
 
+- On a Tiger Lake laptop whose internal eDP panel goes dark as macOS takes over from the boot screen, try `-wex-tgl-edp-keep`. It can keep the working firmware display mode at startup, including its lower color depth. Remove the argument to let macOS select the depth normally.
 - Add `SSDT-PNLF` for internal-display brightness control.
 - GPU selection is automatic; a `device-id` override is normally unnecessary.
 - Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P/U select tiling automatically. Do not use `-yTileDisable`; `AAPL,GfxYTile` is unnecessary.

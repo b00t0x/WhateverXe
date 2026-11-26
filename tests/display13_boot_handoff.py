@@ -10,7 +10,7 @@ import hashlib,re,subprocess,sys,tempfile
 r=Path(__file__).resolve().parents[1];s=(r/'WhateverXe/kern_xe.cpp').read_text()
 def fn(sig):return re.search(re.escape(sig)+r'.*?\n\}',s,re.S).group()
 base=(r/'tests/display13_sst_fixture.cpp').read_text().split('int main(')[0]
-base=base.replace('// NATIVE_OBJECTS',(r/'tests/tgl_fb_binding.cpp').read_text().split('int main()')[0].replace('port[0x580]','port[0x700]'))
+base=base.replace('// NATIVE_OBJECTS',(r/'tests/tgl_fb_binding.cpp').read_text().split('int main()')[0].replace('port[0x580]','port[0x2000]'))
 base=base.replace('struct IOService:OSObject {};', '''
 struct IOService:OSObject {void *getProvider(){return this;}};
 struct IOPCIDevice:IOService {};
@@ -56,8 +56,17 @@ base=base.replace('struct XE {','''struct XE {
  bool display13FBIRQReady=true,display13FBBootHandoffHookReady=true;
  uintptr_t orgAlderLakeNSetupWorkLoop=0,orgBootModeCompare=0,orgBootResourceInit=0,bootModeCaller=0;
  uintptr_t orgTGLPathLookup=0,orgDisplay13PortTraining=0;
+ uintptr_t tglRetainedModeCaller=1,orgTGLRetainedMode=0,orgTGLRegisterRead=0,orgTGLRegisterWrite=0;
+ static bool wrapTGLRetainedMode(void*,void*,void*,void*,const void*,void*);
+ static bool prepareDisplay12RGBMode(void*,void*,uint32_t*,bool);
+ static uint32_t wrapTGLRegisterRead(void*,unsigned long);
+ static void wrapTGLRegisterWrite(void*,unsigned long,uint32_t);
+ static uint32_t tglPanelDepthPort(void *p){return Display13FBMemory::field<uint32_t>(p,0x120);}
+ static bool tglDPSSTMode(unsigned,unsigned){assert(false);return false;}
+ static bool selectTGLBootDepth(bool full,void*,void*,void*,void*,const void*,void*){return full;}
  bool display13FramingReady=true;
  static bool wrapBootModeCompare(void*,void*,void*,void*,const void*,void*);
+ static bool prepareDisplay13RGBMode(void*,void*,void*,uint32_t*,const void*,bool);
  static bool selectBootMode(void*,void*,void*,void*,const void*,void*);
  static void *wrapBootResourceInit(void*,uint32_t,void*);
  static bool display13AUXReady(void*,bool){return true;}
@@ -90,7 +99,10 @@ base=base.replace('struct XE {','''struct XE {
  bool adoptDSIBootPath(IOService*,OSObject*){assert(false);return false;}
 ''')
 base=base.replace('// BINDING',fn('static TGLFBBinding::Readout adlnInspectPathBinding('))
-methods='\n'.join(fn(x) for x in ['uint8_t *XE::display13SSTPort(', 'bool XE::display13HDMIPort(', 'bool XE::display13MainLinkAUX(', 'uint32_t XE::wrapDisplay13EnablePort(', 'uint32_t XE::wrapDisplay13DisablePort(', 'uint32_t XE::wrapDisplay13SignalLevels(', 'uint32_t XE::wrapDisplay13TrainingPattern(', 'void XE::wrapAlderLakeNSetupWorkLoop(', 'bool XE::wrapBootModeCompare(', 'bool XE::selectBootMode(', 'void *XE::wrapBootResourceInit(', 'bool XE::display13BootPanelDSCOff(', 'uint32_t XE::wrapDisplay13PortTraining('])
+methods='\n'.join(fn(x) for x in ['uint8_t *XE::display13SSTPort(', 'bool XE::display13HDMIPort(', 'bool XE::display13MainLinkAUX(', 'uint32_t XE::wrapDisplay13EnablePort(', 'uint32_t XE::wrapDisplay13DisablePort(', 'uint32_t XE::wrapDisplay13SignalLevels(', 'uint32_t XE::wrapDisplay13TrainingPattern(', 'void XE::wrapAlderLakeNSetupWorkLoop(', 'bool XE::wrapBootModeCompare(', 'bool XE::prepareDisplay13RGBMode(', 'bool XE::selectBootMode(', 'void *XE::wrapBootResourceInit(', 'bool XE::display13BootPanelDSCOff(', 'uint32_t XE::wrapDisplay13PortTraining('])
+# Invoke the registered mutating caller on the Display12 side of the same producer.
+methods += '\n#define __builtin_return_address(n) uintptr_t(1)\n' + fn('bool XE::wrapTGLRetainedMode(')
+methods += '\n#undef __builtin_return_address\n' + fn('bool XE::prepareDisplay12RGBMode(')
 boundaries='''
 struct Display13FBBootIO:Display13FBPowerIO {
  bool readable(uint32_t r){return r<0x1000000;}
@@ -136,6 +148,7 @@ std::vector<Stage> lightStages;
 bool replayCleanup=false;
 void *reconstructionPort=nullptr;
 #include "display13_reconstruction_fixture.hpp"
+bool producerReplay=false,display12Producer=false;
 uint8_t *donor=nullptr,*accelerator=nullptr;
 uint32_t XE::wrapDisplay13ReadAUX(void*,uint32_t reg,void *out,uint32_t n) {
  assert(!locked);auto bytes=static_cast<uint8_t*>(out);memset(out,0,n);
@@ -263,6 +276,7 @@ void resources(Fixture &f,Map &m) {
 void firstMode(Fixture &f,Map &m) {
  alignas(8) uint8_t timing[0xa0]{};uint32_t params[0xf0/4]{},original[0xf0/4]{};
  state.orgBootModeCompare=reinterpret_cast<uintptr_t>(nativeCompare);
+ params[3]=1; // Native plan may retain the old MSA depth.
  params[1]=m.regs[0x60400];params[10]=m.regs[0x6001c];
  for(unsigned i=0;i<6;++i)params[4+i]=m.regs[0x60000+4*i];
  params[14]=m.regs[0x60040];params[15]=m.regs[0x60044];
@@ -281,6 +295,7 @@ void firstMode(Fixture &f,Map &m) {
  if(fault==17)m.regs[0x46010]=0; // source proof fails before receiver reads
  if(fault==20)put(f.path,0x3644,1U); // inherited ownership no longer matches
  if(fault==21)assert(!XE::wrapDisplay13DisablePort(f.port)); // retire before comparison
+ const auto liveMSA=m.regs.at(0x60410);
  bool full=XE::selectBootMode(f.ctl,f.fb,f.path,params,timing,nullptr);
  bool keep=fault==0 || fault==8;
  assert(full==!keep);
@@ -288,9 +303,110 @@ void firstMode(Fixture &f,Map &m) {
  assert(display13FBPower.bootPanelDSCCheckPending); // independent of keeping the link
  if(fault==17)m.regs[0x46010]=0xcc000000;
  if(fault==20 || fault==21)put(f.path,0x3644,2U);
- if(keep){assert(!memcmp(params,f.path+0x128,sizeof(params)));
-  assert(Display13FBMemory::field<uint64_t>(f.fb,0x4358)==270000000);}
- else assert(!memcmp(original,params,sizeof(params)));
+ if(keep){
+  assert(params[3]==0x21 && m.regs.at(0x60410)==((liveMSA&~0xe0U)|0x20));
+  uint32_t expected[0xf0/4];memcpy(expected,f.path+0x128,sizeof(expected));expected[3]=0x21;
+  assert(!memcmp(params,expected,sizeof(params)));
+  assert(Display13FBMemory::field<uint64_t>(f.fb,0x4358)==270000000);
+  // After the firmware owner retires, hwSetMode can still copy a partial
+  // plan. VSC owns its own signaling. A dropped MMIO write needs full mode.
+  auto port=display13FBPower.firmwareLink;display13FBPower.firmwareLink=nullptr;
+
+  if (producerReplay && !fault && donor) {
+    put(f.fb,0x44fc,3U); // donor encoder depth 12
+    put(f.fb,0x45a8,1U); // RGB
+    put(timing,0x8a,uint16_t(8)); put(timing,0x8c,uint16_t(1)); put(timing,0x8e,uint16_t(1));
+    put(f.path,0xf8,1920U);put(f.path,0xfc,1080U);
+    // Rebase the four native profiling counter pointers at the load boundary.
+    for(unsigned i=0;i<4;++i) {
+      auto &counter=*reinterpret_cast<uintptr_t*>(donor+0xcc540+8*i);
+      if(counter<0x400000)counter+=reinterpret_cast<uintptr_t>(donor);
+    }
+    // setupPlane clearing and watermark calculation occur after the fields under review.
+    donor[0x4efb8]=0xc3; memset(donor+0x4ee26,0x90,5);
+    using Setup=void(*)(void*,void*,void*,uint32_t*,const void*);
+    auto setup=reinterpret_cast<Setup>(donor+0x4e758);
+    put(f.port,0x11,uint8_t(4));
+    put(f.fb,0x4500,0x0101U);
+    uint32_t testPlan[60];
+    // Replay the exact PIPE_MISC write in enablePipe (r14=path, rdi=register access).
+    auto small=donor+0x380000;
+    uint8_t prefix[]={0x53,0x41,0x56,0x48,0x83,0xec,0x08,0x49,0x89,0xf6,0x89,0xd3};
+    memcpy(small,prefix,sizeof(prefix));
+    memcpy(small+sizeof(prefix),donor+0x48c98,0x48cb1-0x48c98);
+    uint8_t suffix[]={0x48,0x83,0xc4,0x08,0x41,0x5e,0x5b,0xc3};
+    memcpy(small+sizeof(prefix)+0x48cb1-0x48c98,suffix,sizeof(suffix));
+    using Pipe=void(*)(void*,void*,unsigned);
+    static uintptr_t vt[64]={};
+    const auto regWrite=+[](void*,unsigned reg,uint32_t value){assert(reg==0x70030);display13FBPower.map->regs[reg]=value;};
+    vt[0x130/8]=reinterpret_cast<uintptr_t>(regWrite);
+    auto *vtptr=vt;
+    if(display12Producer) {
+      state.tglObservationController=f.ctl;put(f.fb,0x1d0,f.ctl+0);put(f.ctl,0xc40,display13FBPower.access);
+      state.orgTGLRetainedMode=reinterpret_cast<uintptr_t>(nativeCompare);
+      state.orgTGLRegisterRead=reinterpret_cast<uintptr_t>(nativeRead);
+      state.orgTGLRegisterWrite=reinterpret_cast<uintptr_t>(nativeWrite);
+    }
+    const unsigned componentBits[]={2,4,1,8}, pipeCode[]={0,1,2,4}, msa[]={0x21,0x41,1,0x61};
+    for(unsigned code=0;code<4;++code) for(unsigned dynamicRange:{1U,2U,8U}) for(unsigned disable:{0U,1U}) {
+      put(f.ctl,0x1b0a,uint8_t(disable)); // native FeatureControl DitherDisable
+      put(f.fb,0x44fc,code);put(timing,0x8a,uint16_t(componentBits[code]));
+      put(timing,0x8e,uint16_t(dynamicRange)); // SDR, HDR10, Dolby tunnel
+      put(f.path,0x128+4,0U); // first request must program a new stream
+      for(unsigned i=0;i<3;++i) {
+        memcpy(testPlan,params,sizeof(testPlan));
+        setup(f.ctl,f.fb,f.path,testPlan,timing);
+        assert(((testPlan[1]>>20)&7)==code && testPlan[3]==msa[code]);
+        const auto nativePipe=testPlan[12];
+        const auto expectedPipe=display12Producer
+          ? (code==3 ? nativePipe&~0xf0U : nativePipe)
+          : (nativePipe&~0xe0U)|(pipeCode[code]<<5);
+        if(i==1)m.regs[0x60410]^=0x20; // stale depth omitted by the native comparator
+        const bool full=display12Producer
+          ? XE::wrapTGLRetainedMode(f.ctl,f.fb,f.path,testPlan,timing,nullptr)
+          : XE::selectBootMode(f.ctl,f.fb,f.path,testPlan,timing,nullptr);
+        assert(full==(i==0) && testPlan[12]==expectedPipe && testPlan[3]==msa[code]);
+        memcpy(f.path+0x128,testPlan,sizeof(testPlan)); // hwSetMode copies 0xf0 bytes
+        if(full) {
+          m.regs[0x60400]=testPlan[1];m.regs[0x60410]=testPlan[3];
+          reinterpret_cast<Pipe>(small)(&vtptr,f.path,0);
+        }
+        assert(m.regs[0x70030]==expectedPipe && m.regs[0x60410]==msa[code]);
+      }
+    }
+    puts("Checked native RGB setup, full pipe write and two partial requests across depth and dither modes");
+    exit(0);
+  }
+  const auto originalLink=params[1];const auto originalPipe=m.regs[0x70030];
+  const uint32_t pipeBPC[]={0,1,2,4}, msaBPC[]={0x20,0x40,0,0x60};
+  for(unsigned depth=0;depth<4;++depth) {
+   params[1]=m.regs[0x60400]=(originalLink&~0x700000U)|(depth<<20);
+   params[12]=m.regs[0x70030]=(originalPipe&~0xe0U)|(pipeBPC[depth]<<5);
+   params[3]=1|((msaBPC[depth]^0x20U));m.regs[0x60410]=params[3]|0x08;
+   memcpy(f.path+0x128,params,sizeof(params));
+   assert(!XE::selectBootMode(f.ctl,f.fb,f.path,params,timing,nullptr));
+   assert(params[3]==(1|msaBPC[depth]) && m.regs.at(0x60410)==(9|msaBPC[depth]));
+  }
+  params[3]=m.regs[0x60410]=0x4001;memcpy(f.path+0x128,params,sizeof(params));
+  assert(!XE::selectBootMode(f.ctl,f.fb,f.path,params,timing,nullptr));
+  assert(params[3]==0x4001 && m.regs.at(0x60410)==0x4001);
+  params[3]=m.regs[0x60410]=1;memcpy(f.path+0x128,params,sizeof(params));
+  m.drop=0x60410;
+  assert(XE::selectBootMode(f.ctl,f.fb,f.path,params,timing,nullptr));
+  assert(params[3]==0x61 && m.regs.at(0x60410)==1);
+  m.drop=0;
+  // Each missing read leaves an independently coherent full RGB request.
+  for(unsigned bad:{0x60400U,0x70030U,0x60410U}) {
+   params[3]=m.regs[0x60410]=1;memcpy(f.path+0x128,params,sizeof(params));
+   const auto saved=m.regs[bad];m.regs[bad]=UINT32_MAX;
+   assert(XE::selectBootMode(f.ctl,f.fb,f.path,params,timing,nullptr));
+   assert(params[3]==0x61 && m.regs.at(bad)==UINT32_MAX);
+   m.regs[bad]=saved;
+  }
+  m.regs[0x60400]=originalLink;m.regs[0x70030]=originalPipe;
+  display13FBPower.firmwareLink=port;
+ }
+ else {assert(!memcmp(original,params,sizeof(params)));assert(m.regs.at(0x60410)==liveMSA);}
 }
 void restartPanel(Fixture &f,Map &map,unsigned ddi) {
  auto &c=display13FBPower;
@@ -445,7 +561,9 @@ int main(int argc,char **argv){
   installReconstructionReplay(donor);
  }
 
- if(argc>2){
+ display12Producer=argc==3 && !strcmp(argv[2],"rgb12-display12");
+ producerReplay=display12Producer || (argc==3 && !strcmp(argv[2],"rgb12"));
+ if(argc>2 && !producerReplay){
   std::ifstream input(argv[2],std::ios::binary);std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)),{});
   accelerator=static_cast<uint8_t*>(mmap(nullptr,0x400000,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_ANON|MAP_PRIVATE,-1,0));
   assert(accelerator!=MAP_FAILED && bytes.size()<0x400000);memcpy(accelerator,bytes.data(),bytes.size());
@@ -464,6 +582,7 @@ int main(int argc,char **argv){
   // The remaining handoff cases retain the pre-existing firmware requests.
   map.regs[0x45454]=donor && (fault!=0 && fault!=8) ? 0 : 15;
   map.regs[0x45444]=1U<<(2*ddi);map.regs[0x42000]=0x8e380000;
+  map.regs[0x60410]=ddi ? 0x21 : 1;
   map.regs[0x60400]=0x82030006|((ddi+1)<<27);map.regs[0x70008]=0xc0000000;
   map.regs[0x64000+ddi*0x100]=0x80000006;map.regs[0x46140]=(ddi+1)<<28;
   if(!ddi && fault==12) {
@@ -522,6 +641,7 @@ int main(int argc,char **argv){
   } else assert(!c.mainLink[ddi].owner&&!objectRefs.count(f.port));
   assert(!locked);
  }
+ assert(!producerReplay); // The dedicated producer case must execute and exit above.
  if(donor)puts("PASS native eDP modeset error unwind through port and Combo clocks, peer preserved, retry succeeds");
  puts("PASS link-loss inputs, non-DSC and unknown sinks, native DSC ownership, fastset and stopped DSC retry; same-address tiling and AUX leases");
 }
@@ -547,3 +667,6 @@ with tempfile.TemporaryDirectory(prefix='display13-handoff-') as d:
   assert target(0x7f2dd)==0x7ee9a and data[0x7f34c:0x7f354]==bytes.fromhex('31f6ff90a8090000')
   args.append(str(accel))
  subprocess.run([str(p/'test'),*args],check=True)
+ if len(args)==1:
+  for mode in ['rgb12','rgb12-display12']:
+   subprocess.run([str(p/'test'),args[0],mode],check=True)
