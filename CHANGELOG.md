@@ -6,14 +6,14 @@ Use with WhateverXe Graphics 0.4.5.
 
 ### Added
 
-- On Tiger Lake laptops whose internal display goes dark when macOS takes over the boot screen, `-wex-tgl-edp-keep` can preserve the firmware display mode at startup.
+- On Tiger Lake laptops whose internal eDP display goes dark when macOS takes over from the boot screen, `-wex-tgl-edp-keep` lets you try keeping the firmware display mode. This can retain a lower color depth.
 
 ### Fixed
 
-- Fix a display wake issue that could leave the screen blank or filled with noise.
-- Fix incorrect color depth when macOS reuses an existing eDP or DisplayPort link.
-- Fix a DisplayPort startup or wake delay on displays that advertise extended receiver capabilities.
-- Keep hardware video processing responsive when a completion interrupt needs to be retried during startup.
+- Fix a timeout when re-establishing the internal eDP link after display sleep.
+- Fix incorrect color-depth signaling when macOS reuses an existing eDP or DisplayPort link.
+- Fix an unnecessary delay during DisplayPort link training on displays that advertise extended receiver capabilities.
+- Fix a hardware video processing stall that could occur if interrupt retry setup failed at startup.
 
 ## 0.8.5
 
