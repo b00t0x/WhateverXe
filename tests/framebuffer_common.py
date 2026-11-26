@@ -50,6 +50,7 @@ struct KernelPatcher {
 bool tglInstallSonomaSurfaceABI(KernelPatcher&,size_t,uintptr_t,size_t,bool){return surfaceOK;}
 bool xelpInstallNVRAMABI(KernelPatcher&,size_t,uintptr_t,size_t){return nvramOK;}
 unsigned shutdownCalls=0;
+static bool installDPTrainingInterval(KernelPatcher &,size_t,uintptr_t,size_t){return true;}
 struct XE {
  bool framebufferDonorAttempted=false,framebufferDonorCommonReady=false,framebufferBackendInstalled=false;
  bool display13FramebufferRequested=false,tglPlatformNVRAMReady=false,tglProbeReady=false,tglFramebufferInitReady=false;

@@ -80,6 +80,7 @@ BIOS/UEFIで設定できる場合は、**DVMT Pre-Allocatedを96MB**にします
 
 ### その他の設定
 
+- Tiger LakeのノートPCで、起動画面からmacOSに切り替わるときに内蔵eDP画面が消える場合は、`-wex-tgl-edp-keep` を試せます。起動時にファームウェアの表示モードを引き継ぐため、色深度が低いままになることがあります。引数を外すと通常どおりmacOSが色深度を選びます。
 - 内蔵画面の輝度調整には`SSDT-PNLF`を追加します。
 - GPUは自動選択するため、通常は`device-id`上書きは不要です。
 - Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/Uではタイル形式を自動選択します。`-yTileDisable`は使わないでください。`AAPL,GfxYTile`は不要です。

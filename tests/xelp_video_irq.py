@@ -3,7 +3,7 @@
 Linux v6.12 gen11_gt_engine_identity/reset_one_iir defines selector/latch/W1C
 and bank-unlock order. Fixed Apple donor tables define native event numbers.
 The MMIO model retains late identities, independently latches a bank snapshot,
-and honors per-engine masks. Timer/gate/forcewake leaves are boundary spies;
+and honors per-engine masks. Workloop timers, thread calls, gates and forcewake are modeled;
 this does not establish electrical IRQ behavior or GPU waiter recovery.
 """
 import hashlib
@@ -52,12 +52,18 @@ struct OSObject {void retain(){++refs[this];} void release(){--refs[this];}};
 struct IOTimerEventSource;
 static std::mutex timerGate;
 static std::function<void()> duringWake,beforeJoin,duringNativeDisable;
-static bool failLoop=false,failTimer=false,failLock=false;
+static bool failLoop=false,failTimer=false,failLock=false,failCall=false;
+using IOReturn=int;
+#define OSSafeReleaseNULL(obj) do { if(obj) {obj->release();obj=nullptr;} } while(false)
 struct IOWorkLoop:OSObject {
  static IOWorkLoop *workLoop();
  IOTimerEventSource *source=nullptr;
  int addEventSource(IOTimerEventSource *s){if(failLoop)return 1;source=s;return 0;}
- void removeEventSource(IOTimerEventSource *s);
+ int runAction(int (*action)(OSObject *,void *,void *,void *,void *),OSObject *target) {
+  if(beforeJoin)beforeJoin();
+  std::lock_guard<std::mutex> gate(timerGate);
+  return action(target,nullptr,nullptr,nullptr,nullptr);
+ }
 } loop;
 IOWorkLoop *IOWorkLoop::workLoop(){return &loop;}
 struct IOService:OSObject {IOWorkLoop *getWorkLoop(){assert(false && "native IOAccel gate inversion");return &loop;}};
@@ -74,26 +80,38 @@ struct IORegistryEntry:IOService {
  template<class T>void setProperty(const char *,T){}
 };
 constexpr int kIOReturnSuccess=0,kIOTimerEventSourceOptionsPriorityWorkLoop=255;
-struct IOTimerEventSource {
+struct IOTimerEventSource:OSObject {
  using Action=void (*)(OSObject *,IOTimerEventSource *);
  Action action;unsigned ms=0,arms=0;bool enabled=true,scheduled=false;
  static IOTimerEventSource *timerEventSource(unsigned option,OSObject *,Action a) {
-  assert(option==255);if(failTimer)return nullptr;static IOTimerEventSource s{a};return &s;
+  assert(option==255);if(failTimer)return nullptr;static IOTimerEventSource s;s.action=a;return &s;
  }
  int setTimeoutMS(unsigned delay){assert(loop.source==this);ms=delay;++arms;scheduled=enabled;return 0;}
  void enable(){enabled=true;}
  void cancelTimeout(){scheduled=false;}
  void fire(){std::lock_guard<std::mutex> gate(timerGate);assert(scheduled && loop.source==this);scheduled=false;action(nullptr,this);}
 };
-// XNU setWorkLoop(nullptr) disables the timer. Reattaching a source
-// does not enable it; wakeAtTime can return success without scheduling it.
-void IOWorkLoop::removeEventSource(IOTimerEventSource *s) {
+using thread_call_param_t=void *;
+constexpr unsigned THREAD_CALL_PRIORITY_KERNEL=1, THREAD_CALL_OPTIONS_ONCE=1, kMillisecondScale=1000000;
+struct ThreadCall {
+ void (*callback)(void *,void *);bool scheduled=false;unsigned ms=0,arms=0;
+ void fire(){std::lock_guard<std::mutex> gate(timerGate);assert(scheduled);scheduled=false;callback(nullptr,nullptr);}
+};
+using thread_call_t=ThreadCall *;
+static thread_call_t thread_call_allocate_with_options(void (*fn)(void *,void *),void *,unsigned priority,unsigned options) {
+ assert(priority==THREAD_CALL_PRIORITY_KERNEL && options==THREAD_CALL_OPTIONS_ONCE);
+ static ThreadCall c{fn};return failCall?nullptr:&c;
+}
+static void clock_interval_to_deadline(unsigned ms,unsigned scale,uint64_t *d){assert(scale==kMillisecondScale);*d=ms;}
+static void thread_call_enter_delayed(thread_call_t c,uint64_t d){c->scheduled=true;c->ms=d;++c->arms;}
+static void thread_call_cancel_wait(thread_call_t c){
  if(beforeJoin)beforeJoin();
  std::lock_guard<std::mutex> gate(timerGate);
- assert(source==s);s->enabled=false;s->scheduled=false;source=nullptr;
+ c->scheduled=false;
 }
 struct IOSimpleLock {bool held=false;};
 static IOSimpleLock *IOSimpleLockAlloc(){static IOSimpleLock l;return failLock?nullptr:&l;}
+static void IOSimpleLockFree(IOSimpleLock *){}
 static int IOSimpleLockLockDisableInterrupt(IOSimpleLock *l){assert(l && !l->held);l->held=true;return 1;}
 static void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock *l,int){assert(l->held);l->held=false;}
 #define PANIC(...) throw std::runtime_error("panic")
@@ -196,15 +214,23 @@ static constexpr uint64_t Bank0Events=(1ULL<<6)|(1ULL<<7)|(1ULL<<8)|(1ULL<<36);
 static uint64_t expect(unsigned mask){return (mask&1?((1ULL<<3)|(1ULL<<9)|(1ULL<<15)):0)|(mask&4?((1ULL<<4)|(1ULL<<10)|(1ULL<<16)):0)|(mask&0x80000000U?((1ULL<<5)|(1ULL<<11)|(1ULL<<17)):0);}
 static void checkHits(uint64_t expected){uint64_t got=0;for(auto n:hits){assert(!(got&(1ULL<<n)));got|=1ULL<<n;}assert(got==expected);hits.clear();}
 int main(int argc,char **argv) {
- assert(argc==2);
+ assert(argc==2 || argc==3);
  std::ifstream f(argv[1],std::ios::binary);std::vector<char> original((std::istreambuf_iterator<char>(f)),{});
  auto image=static_cast<uint8_t *>(mmap(nullptr,original.size(),PROT_READ|PROT_WRITE|PROT_EXEC,MAP_ANON|MAP_PRIVATE,-1,0));assert(image!=MAP_FAILED);memcpy(image,original.data(),original.size());
  auto base=reinterpret_cast<uintptr_t>(image);
  assert(!install(base,0x4b480) && !routed);
  image[0x4b0af]^=1;assert(!install(base,original.size()) && !routed);image[0x4b0af]^=1;
- failLock=true;assert(!install(base,original.size()) && !routed);failLock=false;xelpIRQTimer=nullptr;
- failTimer=true;assert(!install(base,original.size()) && !routed);failTimer=false;
- assert(install(base,original.size()) && routed);
+ alignas(8) uint8_t unclaimed[0x20]={};Hardware native;active=&native;
+ failLock=true;assert(install(base,original.size()) && !routed);failLock=false;
+ failTimer=failCall=true;assert(install(base,original.size()) && !routed);
+ XE::wrapTGLHostIRQClassEnable(unclaimed);assert(native.mask[0]==0 && !xelpIRQBridge);
+ failTimer=failCall=false;
+ failLoop=argc==3;
+ assert(install(base,original.size()) && routed && (xelpIRQCall!=nullptr)==failLoop);
+ auto scheduled=[] {return xelpIRQCall?xelpIRQCall->scheduled:xelpIRQTimer->scheduled;};
+ auto armsCount=[] {return xelpIRQCall?xelpIRQCall->arms:xelpIRQTimer->arms;};
+ auto delay=[] {return xelpIRQCall?xelpIRQCall->ms:xelpIRQTimer->ms;};
+ auto fire=[] {if(xelpIRQCall)xelpIRQCall->fire();else xelpIRQTimer->fire();};
  jump(image+0x4aff0,(uintptr_t)routed);
  jump(image+0x4b0c0,(uintptr_t)rcs);jump(image+0x4b116,(uintptr_t)ccs);jump(image+0x4b16c,(uintptr_t)bcs);jump(image+0x4b1c2,(uintptr_t)guc);
  jump(image+0x2da26,(uintptr_t)wake);
@@ -217,9 +243,7 @@ int main(int argc,char **argv) {
  auto start=[&](Hardware &hw,unsigned media=5){
   *reinterpret_cast<uint64_t *>(owner+0x1300)=media==1?0x2f:media==4?0x37:0x3f;
   active=&hw;*reinterpret_cast<void **>(owner+0x1240)=&hw;xelpIRQState={};XE::wrapTGLHostIRQClassEnable(bridge);assert(xelpIRQEnabled);};
- auto stop=[&](){XE::wrapTGLHostIRQClassDisable(bridge);assert(!xelpIRQBridge && !xelpIRQTimer->scheduled && !loop.source && refs[reinterpret_cast<OSObject *>(bridge)]==0);};
- Hardware unavailable;active=&unavailable;*reinterpret_cast<void **>(owner+0x1240)=&unavailable;failLoop=true;
- XE::wrapTGLHostIRQClassEnable(bridge);assert(!xelpIRQBridge && unavailable.mask[0]==0x5a5a0000);failLoop=false;
+ auto stop=[&](){XE::wrapTGLHostIRQClassDisable(bridge);assert(!xelpIRQBridge && !scheduled() && refs[reinterpret_cast<OSObject *>(bridge)]==0);};
  for(unsigned mask:{0U,1U,4U,5U,0x80000000U,0x80000005U}) {
   Hardware hw;start(hw);hw.bank=mask;hw.bank0=0x2008011;
   process(bridge);checkHits(expect(mask)|Bank0Events);assert(!hw.locked && !hw.latch && hw.acks==hw.choices.size());
@@ -236,17 +260,17 @@ int main(int argc,char **argv) {
   process(bridge);checkHits(expect(0x80000005U^XELPVideoIRQ::bits[failed])|Bank0Events);
   assert(xelpIRQState.pending==XELPVideoIRQ::bits[failed] && xelpIRQState.timeouts==1 && hw.reads<=103 && !hw.locked);
   assert(hw.mask[failed]==((failed==2?0x12340000U:failed==1?0xa5a50000U:0x5a5a0000U)|0xffff));
-  assert(!hw.pending() && xelpIRQTimer->scheduled);
+  assert(!hw.pending() && scheduled());
   // Unrelated render traffic cannot postpone an already armed retry.
-  const auto arms=xelpIRQTimer->arms;
+  const auto arms=armsCount();
   for(unsigned i=0;i<100;++i){hw.bank0=0x2008011;process(bridge);checkHits(Bank0Events);}
-  assert(xelpIRQTimer->arms==arms);
+  assert(armsCount()==arms);
   // A stuck producer reasserts but cannot storm the parent line.
   hw.bank|=XELPVideoIRQ::bits[failed];assert(!hw.pending());
-  for(unsigned i=0;i<10;++i){auto before=hw.reads;xelpIRQTimer->fire();assert(hw.reads-before<=100 && hw.wake==0 && !hw.pending() && xelpIRQTimer->ms<=100);checkHits(0);}
-  assert(xelpIRQTimer->ms==100 && xelpIRQState.pending);
-  hw.delay[failed]=0;xelpIRQTimer->fire();checkHits(expect(XELPVideoIRQ::bits[failed]));
-  assert(!xelpIRQState.pending && !xelpIRQTimer->scheduled && xelpIRQState.resolved==1 && !(hw.mask[failed]&0xffff));
+  for(unsigned i=0;i<10;++i){auto before=hw.reads;fire();assert(hw.reads-before<=100 && hw.wake==0 && !hw.pending() && delay()<=100);checkHits(0);}
+  assert(delay()==100 && xelpIRQState.pending);
+  hw.delay[failed]=0;fire();checkHits(expect(XELPVideoIRQ::bits[failed]));
+  assert(!xelpIRQState.pending && !scheduled() && xelpIRQState.resolved==1 && !(hw.mask[failed]&0xffff));
   stop();
  }
  // Native getGPUInfo enumeration (also replayed by adlp_video_route_native)
@@ -260,12 +284,12 @@ int main(int argc,char **argv) {
  // All pending engines can fail together, then recover independently.
  {Hardware hw;start(hw);hw.bank=0x80000005U;for(auto &d:hw.delay)d=~0U;
   process(bridge);checkHits(0);assert(xelpIRQState.pending==0x80000005U && hw.reads<=303 && !hw.pending());
-  hw.delay[1]=0;xelpIRQTimer->fire();checkHits(expect(4));assert(xelpIRQState.pending==0x80000001U);
-  hw.delay[0]=hw.delay[2]=0;xelpIRQTimer->fire();checkHits(expect(0x80000001U));assert(!xelpIRQState.pending);stop();}
+  hw.delay[1]=0;fire();checkHits(expect(4));assert(xelpIRQState.pending==0x80000001U);
+  hw.delay[0]=hw.delay[2]=0;fire();checkHits(expect(0x80000001U));assert(!xelpIRQState.pending);stop();}
  // A nonadvancing clock still has a read bound. An empty matching identity
  // releases quarantine without inventing any native notification.
  {Hardware hw;start(hw);hw.tick=0;hw.bank=4;hw.delay[1]=~0U;process(bridge);assert(hw.reads==4096);checkHits(0);
-  hw.delay[1]=0;hw.intr[1]=0;xelpIRQTimer->fire();checkHits(0);assert(!xelpIRQState.pending);stop();}
+  hw.delay[1]=0;hw.intr[1]=0;fire();checkHits(0);assert(!xelpIRQState.pending);stop();}
  // Stale peer and VECS identities are routed by actual identity, once, before
  // reselecting the original source. Unknown class/instance never dispatches.
  for(uint32_t stale:{0x80210111U,0x80020111U,0x80030111U,0x80310111U}) {
@@ -275,18 +299,18 @@ int main(int argc,char **argv) {
  // Four foreign identities bound the drain and become a visible obligation.
  {Hardware hw;start(hw);hw.bank=1;for(unsigned i=0;i<4;++i)hw.stale.push_back(0x80030001U);
   process(bridge);checkHits(0);assert(xelpIRQState.pending==1 && xelpIRQState.unknown==4 && hw.reads==4);
-  xelpIRQTimer->fire();checkHits(expect(1));assert(!xelpIRQState.pending);stop();}
+  fire();checkHits(expect(1));assert(!xelpIRQState.pending);stop();}
  // Lifecycle invalidation cancels retry before MMIO becomes unavailable.
  {Hardware hw;start(hw);hw.bank=4;hw.delay[1]=~0U;process(bridge);checkHits(0);stop();
   assert(xelpIRQState.retired==1 && !xelpIRQState.pending);xelpIRQRetry(nullptr,xelpIRQTimer);assert(!hw.wake);
   hw.stopped=false;XE::wrapTGLHostIRQClassEnable(bridge);hw.bank=4;process(bridge);checkHits(0);
-  assert(xelpIRQState.pending==4 && xelpIRQTimer->scheduled);
-  hw.delay[1]=0;xelpIRQTimer->fire();checkHits(expect(4));assert(!xelpIRQState.pending);stop();}
+  assert(xelpIRQState.pending==4 && scheduled());
+  hw.delay[1]=0;fire();checkHits(expect(4));assert(!xelpIRQState.pending);stop();}
  // Forcewake can be in progress on the private loop when class-disable
- // closes admission. Source removal joins that callback. Donor processInterrupts
+ // closes admission. Synchronous cancellation joins that callback. Donor processInterrupts
  // still sees bridge+0x8a8 set until the outer disable completes.
  {Hardware hw;start(hw);hw.bank=4;hw.delay[1]=~0U;process(bridge);checkHits(0);
-  const auto reads=hw.reads,arms=xelpIRQTimer->arms;
+  const auto reads=hw.reads,arms=armsCount();
   std::promise<void> inWake,allowReturn;
   auto release=allowReturn.get_future();
   duringWake=[&]{inWake.set_value();release.wait();};
@@ -297,14 +321,14 @@ int main(int argc,char **argv) {
    process(bridge);checkHits(Bank0Events);
    assert(hw.bank==1 && !xelpIRQState.pending);
   };
-  auto worker=std::async(std::launch::async,[&]{xelpIRQTimer->fire();});
+  auto worker=std::async(std::launch::async,[&]{fire();});
   inWake.get_future().wait();
   stop();worker.get();
-  assert(hw.reads==reads && xelpIRQTimer->arms==arms && !xelpIRQArmed);
+  assert(hw.reads==reads && armsCount()==arms && !xelpIRQArmed);
   assert(xelpIRQState.retired==1 && xelpIRQState.resolved==0);
   duringWake={};beforeJoin={};duringNativeDisable={};
  }
- printf("PASS installer -> native process -> production bank owner -> native service; timer faults/peers/lifecycle\n");
+ printf("Checked donor dispatch and modeled retry lifecycle (%s)\n",failLoop?"thread call":"workloop");
 }
 '''.replace('GLUE', glue).replace('INSTALLER', installer).replace('LIFECYCLE', lifecycle)
 with tempfile.TemporaryDirectory() as directory:
@@ -312,7 +336,8 @@ with tempfile.TemporaryDirectory() as directory:
     cpp=directory/'test.cpp'
     cpp.write_text(code)
     subprocess.run(['clang++','-std=c++17','-I'+str(root/'WhateverXe'),str(cpp),'-o',str(directory/'test')],check=True)
-    subprocess.run([str(directory/'test'),str(donor)],check=True)
+    for args in ([], ['fail-attachment']):
+        subprocess.run([str(directory/'test'),str(donor),*args],check=True)
     # Compiled semantic faults must reach and fail behavior assertions. A
     # compiler failure is not accepted as detecting the intended regression.
     header=(root/'WhateverXe/kern_xelp_video_irq.hpp').read_text()
@@ -337,17 +362,18 @@ with tempfile.TemporaryDirectory() as directory:
     result=subprocess.run([str(directory/'mutant'),str(donor)],capture_output=True,text=True)
     assert result.returncode and 'Assertion failed:' in result.stderr,result
     print('DETECTED lost_retry_dispatch')
-    # The observed native GART-collector/stop lock inversion must not return.
-    old='if(xelpIRQLoop->addEventSource(xelpIRQTimer)!=kIOReturnSuccess)return false;'
-    new='if((*reinterpret_cast<IOService **>(static_cast<uint8_t *>(bridge)+0x10))->getWorkLoop()->addEventSource(xelpIRQTimer)!=kIOReturnSuccess)return false;'
+    # The attachment failure must preserve ownership of the delayed interrupt.
+    old='thread_call_enter_delayed(xelpIRQCall,deadline);'
     assert code.count(old)==1
-    cpp.write_text(code.replace(old,new))
+    cpp.write_text(code.replace(old,'/* retry not scheduled */'))
     subprocess.run(['clang++','-std=c++17','-I'+str(directory),str(cpp),'-o',str(directory/'mutant')],check=True)
-    result=subprocess.run([str(directory/'mutant'),str(donor)],capture_output=True,text=True)
-    assert result.returncode and 'native IOAccel gate inversion' in result.stderr,result
-    print('DETECTED native_workloop_gate_inversion')
+    result=subprocess.run([str(directory/'mutant'),str(donor),'fail-attachment'],capture_output=True,text=True,timeout=15)
+    assert result.returncode and 'scheduled()' in result.stderr,result
+    print('DETECTED lost_fallback_retry')
+    # Both backends must join active work without using the accelerator gate.
+    # The check runs from stop after the callback has entered forcewake.
     for name,old,new,oracle in [
-        ('disabled_after_rebind','xelpIRQTimer->enable();','','xelpIRQTimer->scheduled'),
+        ('native_gate_inversion','else xelpIRQLoop->runAction(xelpIRQCancelTimer,nullptr);','else (*reinterpret_cast<IOService **>(static_cast<uint8_t *>(bridge)+0x10))->getWorkLoop()->runAction(xelpIRQCancelTimer,nullptr);','native IOAccel gate inversion'),
         ('retry_after_stop','if(xelpIRQEnabled) {','{','hw.reads==reads'),
         ('late_bank_after_stop','(master&2) && xelpIRQEnabled && xelpIRQBridge==bridge','master&2','got==expected'),
     ]:

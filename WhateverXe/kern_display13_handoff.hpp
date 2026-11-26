@@ -6,6 +6,21 @@
 
 namespace Display13Handoff {
 using Display13FBMemory::field;
+// A full native modeset copies the request even if the old hardware is
+// unreadable. Derive the RGB notification from the request before consulting
+// live registers. VSC and non-RGB color signaling belong to their own modeset.
+struct RGBStreamDepth {
+    uint32_t code, msa;
+    uint32_t notification(uint32_t misc) const {return (misc&~0xe0U)|msa;}
+    static bool requested(const uint32_t *mode,unsigned ddi,RGBStreamDepth &out) {
+        const auto link=mode[1], code=(link>>20)&7;
+        if (ddi>=9 || (link&0xff000000U)!=(0x82000000U|((ddi+1)<<27)) ||
+            code>=4 || (mode[3]&0xc006) || (mode[12]&0x08000800U)) return false;
+        constexpr unsigned msa[]={0x20,0x40,0,0x60};
+        out={code,msa[code]};
+        return true;
+    }
+};
 // setupPlane prepares the next scanout before hwRegsNeedUpdate. A queued
 // native layout can already differ while PLANE_SURFLIVE still shows the GOP.
 inline bool samePlane(const Display13FBMemory::Readout &boot,const void *plane) {

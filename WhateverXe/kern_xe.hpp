@@ -135,6 +135,21 @@ private:
     mach_vm_address_t orgADLSPowerPG {};
     static uint8_t *adlsPowerTarget(void *power);
     static void wrapADLSPowerPG(void *power,bool enable,uint32_t requested);
+    __attribute__((noinline)) void routeTGLDisplayRetention(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size);
+    struct TGLDisplayRetention {
+        void *controller {};
+        uint64_t nativeHz {};
+        uint32_t pll {}, control {}, reference {}, requestedSlices {};
+    } tglDisplayRetention;
+    mach_vm_address_t orgTGLEnableHWDC6 {}, orgTGLDisableHWDC6 {};
+    IOLock *tglDC6Lock {};
+    bool tglDC6Ready {};
+    mach_vm_address_t tglDisplayVoltageLevel {}, tglCDClockTable {};
+    static void wrapTGLEnableHWDC6(void *controller);
+    static void wrapTGLDisableHWDC6(void *controller);
+    void *tglDisplayRetentionAccess(void *controller);
+    void saveTGLDisplayPower(void *controller);
+    void restoreTGLDisplayPower(void *controller);
     mach_vm_address_t orgComboEnableClocks {};
     static bool adlsClockTarget(void *controller,void *port,void *otherPort);
     mach_vm_address_t framebufferClockImage {};
@@ -250,6 +265,7 @@ private:
  bool prepareDisplay13BootScanout(IOPCIDevice *);
  mach_vm_address_t orgBootModeCompare {}, bootModeCaller {}, orgBootResourceInit {};
  static bool wrapBootModeCompare(void *,void *,void *,void *,const void *,void *);
+ static bool prepareDisplay13RGBMode(void *,void *,void *,uint32_t *,const void *,bool retained);
  static bool selectBootMode(void *,void *,void *,void *,const void *,void *);
  static void *wrapBootResourceInit(void *,uint32_t,void *);
     bool xelpBindProbe(void *controller);
@@ -530,6 +546,9 @@ private:
 	mach_vm_address_t orgTGLScanoutAllocate {}, orgTGLScanoutSetup {}, orgTGLPlaneUpdate {}, orgTGLAperture {};
 	mach_vm_address_t orgTGLPlaneSetup {}, orgTGLColorMode {}, orgTGLPixelInfo {};
 	mach_vm_address_t orgTGLModeTiming {};
+	mach_vm_address_t orgTGLRetainedMode {}, tglRetainedModeCaller {};
+	static bool selectTGLBootDepth(bool update, void *controller, void *fb, void *path, void *params, const void *timing, void *scaler);
+	static bool wrapTGLRetainedMode(void *, void *, void *, void *, const void *, void *);
 	bool tglPanelDepthReady {false};
  bool display13PanelPWMReady {},display13PanelPowerReady {},display13PanelProbeReady {};
  mach_vm_address_t orgDisplay13PanelPower {};
@@ -554,6 +573,7 @@ private:
  static void tglApplyPanelTiming(void *controller,bool apply);
  static void wrapTGLPanelConfig(void *controller,uint32_t config);
  static uint32_t wrapTGLPanelTiming(void *controller);
+	static bool prepareDisplay12RGBMode(void *controller,void *path,uint32_t *mode,bool retained);
 	static uint32_t tglPanelDepthPort(void *port);
 	static void wrapTGLModeTiming(void *controller,void *fb,void *timing);
 	mach_vm_address_t orgTGLGamma10 {}, orgTGLRegisterWrite {}, orgTGLFastRegisterWrite {};

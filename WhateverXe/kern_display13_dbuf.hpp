@@ -317,6 +317,26 @@ template<class IO> Status captureCredits(IO &io,State &s) {
     }
     return Status::Complete;
 }
+// A surviving power well does not prove that the scanout buffers survived.
+// Reassert only slices that were requested and acknowledged before wake.
+// Never release or adopt an unrelated slice on a peer's wake.
+template<class IO> bool retainedSlices(IO &io,uint32_t expected,bool repair) {
+    for (unsigned i=0; i<4; ++i) {
+        if (!(expected&(1U<<i))) continue;
+        const auto reg=regs[i];
+        auto value=io.read(reg);
+        if (value==UINT32_MAX) return false;
+        if ((value&(Request|On))==(Request|On)) continue;
+        if (!repair) return false;
+        if (!(value&Request)) io.write(reg,value|Request);
+        io.read(reg); // flush the request before the documented settling delay
+        io.delayUs(10);
+        value=io.read(reg);
+        if (value==UINT32_MAX || (value&(Request|On))!=(Request|On)) return false;
+    }
+    return true;
+}
+
 // The caller records total display power loss, with all timing engines off.
 // Restore only an existing allocation, before its native mode/WM programming.
 // An unpowered bank stays pending until its regular native PG acquisition.
